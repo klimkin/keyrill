@@ -6,7 +6,8 @@ first; its state table, safety invariants and rejected mechanisms apply to every
 Don't write a second inference engine, and don't build a cross-platform editing abstraction
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
-No Windows or Linux adapter exists yet. Each platform starts with the same first slice: one real
+Windows has a fixture-only [SDK TSF proof](windows.md), with controlled COM tests but no live
+acceptance yet. No Linux adapter exists. Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
 rapid continuation and a focus change, all checked against the whole document. Use the fixture
 policy (`kr_set_automatic_policy` with `KR_POLICY_FIXTURE`, which corrects only `ghbdtn` and
@@ -41,8 +42,8 @@ outcome, and honor the key disposition, including `KR_FINISH` with `KR_KEY_REPLA
 scenarios type `ghbdtn` and `руддщ` with Space under the fixture policy, restore with Escape,
 leave an unlisted word alone, and convert `ёлка` and `[jhjij` manually, including under the PC
 keyboard. `./tools/verify` links and runs it on every platform, with the system libraries
-`--print native-static-libs` reports; on Windows it links against the DLL C runtime
-(`-fms-runtime-lib=dll`), as Rust's MSVC staticlib expects.
+`--print native-static-libs` reports. Windows builds it through MSVC and CMake with the DLL C
+runtime, as Rust's MSVC staticlib expects.
 
 Wire the adapter into `tools/verify` the way macOS is: a `uname -s` branch in the default mode
 runs its format check, build and controlled tests, and a separate mode covers anything that needs
@@ -104,7 +105,10 @@ These follow from the architecture and apply on every platform:
 
 ## Windows: Text Services Framework
 
-TSF is the leading proposal ([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
+The fixture-only SDK implementation is in `native/windows/`; its build, maintainer-only
+registration commands, evidence limits, and physical acceptance matrix are in
+[Windows TSF proof](windows.md). Its focus-loss termination gate remains blocked, and it does
+not admit general editors. TSF remains a proposal ([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
 contexts and owned compositions fit the contract better than UI Automation reads plus synthetic
 replacement. Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
 native COM shim if it narrows lifetime risk.
