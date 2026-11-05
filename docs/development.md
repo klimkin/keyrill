@@ -22,9 +22,14 @@ of the header, and it links and runs the C ABI smoke test. On macOS it also chec
 formatting, lints the plists, runs Clang static analysis with findings as errors, builds the app
 and tools, and runs the controlled native tests.
 
+On Windows x64, the default check builds the C11 ABI smoke test with MSVC, checks native
+formatting, builds the TSF proof tools, and runs the controlled COM and registration-free DLL
+tests. See [Windows TSF proof](windows.md) for prerequisites and the separate desktop gate.
+
 | Mode | Requires | What it does |
 |---|---|---|
 | `sanitize` | macOS | Native tests under ASan/UBSan; the Rust library is not instrumented |
+| `sanitize` | Windows x64 and MSVC | Native service tests under AddressSanitizer; the Rust library and UIA inspector are not instrumented |
 | `browser-fixture` | Node 18+ | Deterministic JavaScript checks of the browser fixture |
 | `audit` | cargo-deny 0.20.2 | Advisories, sources, licenses and bans for the app and fuzz graphs |
 | `coverage` | cargo-llvm-cov 0.6.21, `llvm-tools-preview` | Rust line and region coverage, 95% floor |

@@ -6,8 +6,9 @@ clipboard transport, runtime network access, model policy, or personal dictionar
 
 The live acceptance gate is **not passed**. The service has not been registered, enabled, selected,
 or driven with physical keys during implementation. The stock RichEdit editor and read-only UIA
-inspector build, but neither installed-service routing nor the inspector's provider behavior has
-been tested. Controlled COM schedules are not evidence of either.
+inspector build. All four named text and caret oracles pass against the real UIA provider with
+literal fixture data. Installed-service routing remains untested. Controlled COM schedules and
+observer calibration do not establish it.
 
 ## Build and check without installation
 
@@ -146,8 +147,15 @@ It exposes no replacement, selection, keystroke, clipboard, or generic text-dump
 ```
 
 `correction` expects `привет ` in A, `reversal` expects `ghbdtn `, and `continuation` expects
-`привет x`. All expect B empty. The inspector has not been run against a real UIA provider.
-The unavailable computer-use helper does not establish that native UIA itself is unavailable.
+`привет x`. All expect B empty. This fixture's RichEdit UIA Value includes one final carriage
+return beyond the literal document content. The inspector compares the expected string plus
+exactly that one marker; it does not trim whitespace or ignore an extra line break.
+
+The real provider passes all four named oracles with literal fixture data. The observer rejects
+a moved caret, a noncollapsed selection, an extra space, an extra line break, and a changed B
+document. Restoring the expected text and caret makes it pass again. No excluded control is
+queried by the inspector. Entering a target string directly calibrates the observer; it does not
+prove TSF correction, key consumption, or Undo.
 
 | Schedule | Controlled evidence | Physical evidence required |
 |---|---|---|

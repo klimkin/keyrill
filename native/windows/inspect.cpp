@@ -44,7 +44,8 @@ bool Check(HWND window, const wchar_t *expected, bool caret) {
   BSTR text = nullptr;
   if (FAILED(value->get_CurrentValue(&text)))
     return false;
-  bool matches = text && std::wstring(text, SysStringLen(text)) == expected;
+  const std::wstring expected_rich_edit_value = std::wstring(expected) + L'\r';
+  bool matches = text && std::wstring(text, SysStringLen(text)) == expected_rich_edit_value;
   SysFreeString(text);
   if (!matches || !caret)
     return matches;
