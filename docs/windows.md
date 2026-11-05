@@ -4,8 +4,10 @@ This is an x64, fixture-only Text Services Framework adapter. It links the exist
 through [the C ABI](../include/keyrill.h). It has no replacement backend, hooks, input injection,
 clipboard transport, runtime network access, model policy, or personal dictionaries.
 
-The live acceptance gate is **not passed**. The service has not been registered, enabled, selected,
-or driven with physical keys during implementation. The stock RichEdit editor and read-only UIA
+The live acceptance gate is **not passed**. A maintainer registration attempt failed with an
+unspecified HRESULT and left partial state. Read-only TSF enumeration confirms both proof profiles
+are absent. Installed source selection and physical TSF input remain untested.
+The stock RichEdit editor and read-only UIA
 inspector build. All four named text and caret oracles pass against the real UIA provider with
 literal fixture data. Installed-service routing remains untested. Controlled COM schedules and
 observer calibration do not establish it.
@@ -91,26 +93,43 @@ gate. Installation, enablement, source selection, and permission changes belong 
 The build and tests never perform them.
 
 Run status before a change. It prints content-free COM and TSF profile facts without mutation.
+Profile presence requires an exact TSF enumeration match and the expected proof description.
+An enumeration or description API error reports unavailable, rather than absent. Only a completed
+enumeration without a match establishes absence. Registry inspection errors also report unavailable.
 
 ```powershell
 $bin = Resolve-Path target/windows-check/Release
 & "$bin/KeyrillRegister.exe" status
+& "$bin/KeyrillRegister.exe" check
 ```
+
+`check` runs the same read-only, complete EN/RU presence preflight that guards enablement.
+It exits unsuccessfully if either profile is absent or cannot be inspected. The utility makes no
+enablement calls until both profiles pass. After enablement calls, it checks both profiles again
+and reads their enabled state before reporting success. A failed readback stops without rollback
+or retry; an earlier profile's enablement may already have changed.
 
 After accepting the draft's limits, the maintainer can explicitly register it.
 
 ```powershell
 & "$bin/KeyrillRegister.exe" register "$bin/KeyrillTsf.dll"
 & "$bin/KeyrillRegister.exe" status
+& "$bin/KeyrillRegister.exe" check
 & "$bin/KeyrillRegister.exe" enable
 & "$bin/KeyrillRegister.exe" status
 & "$bin/KeyrillProofEditor.exe"
 ```
 
+Run these commands individually and stop if one fails. Preserve the static stage and HRESULT
+from the failure before choosing another registration action.
+
 COM registration writes only the service's `HKCU/Software/Classes/CLSID` key. The utility uses
 TSF's profile and category APIs separately. **Their registration scope and ordinary-user success
-have not been established.** A failure reports its HRESULT and may leave partial registration.
-Inspect status and remove the proof registration before another attempt. There is no automatic
+have not been established.** Each registration and enablement API boundary reports its stage,
+static EN/RU label where applicable, and HRESULT, without DLL paths or queried text.
+A failure may leave partial registration. A generic HRESULT alone does not establish its cause.
+Stop on failure. Do not run enablement to repair incomplete registration. Inspect status before
+deciding on cleanup or a diagnostic retry. There is no automatic
 elevation or machine-wide fallback. Profile registration, explicit enablement, active source
 selection, and service activation are distinct steps. The utility never selects a source.
 Its explicit registration command loads the standard substitute layouts without activating them.
