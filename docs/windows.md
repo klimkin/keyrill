@@ -4,13 +4,14 @@ This is an x64, fixture-only Text Services Framework adapter. It links the exist
 through [the C ABI](../include/keyrill.h). It has no replacement backend, hooks, input injection,
 clipboard transport, runtime network access, model policy, or personal dictionaries.
 
-The live acceptance gate is **not passed**. A maintainer registration attempt failed with an
-unspecified HRESULT and left partial state. Read-only TSF enumeration confirms both proof profiles
-are absent. Installed source selection and physical TSF input remain untested.
-The stock RichEdit editor and read-only UIA
-inspector build. All four named text and caret oracles pass against the real UIA provider with
-literal fixture data. Installed-service routing remains untested. Controlled COM schedules and
-observer calibration do not establish it.
+The live acceptance gate is **not passed**. After an earlier failed attempt, the maintainer
+registered both profiles successfully. Fresh read-only checks report both present and enabled.
+The maintainer selected **Keyrill proof EN**, and a fresh editor module snapshot contained
+`KeyrillTsf.dll`. Physical `ghbdtn` plus Space remained unchanged. The correction oracle failed
+and the reversal oracle passed, establishing unchanged fixture text and an end caret with B empty.
+This does not establish service activation, callback entry, composition ownership, or correction.
+All four named text and caret oracles pass against the real UIA provider with literal fixture
+data. Controlled COM schedules and observer calibration do not establish live correction.
 
 ## Build and check without installation
 
@@ -36,8 +37,8 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 |---|---|
 | `KeyrillTsf.dll` | In-process STA COM text service |
 | `KeyrillRegister.exe` | Explicit maintainer registration, status, and enablement commands |
-| `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, read-only, and password controls |
-| `KeyrillProofInspect.exe` | Read-only, content-free UIA fixture assertions |
+| `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and host routing status |
+| `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host routing snapshots |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
 
@@ -124,8 +125,8 @@ Run these commands individually and stop if one fails. Preserve the static stage
 from the failure before choosing another registration action.
 
 COM registration writes only the service's `HKCU/Software/Classes/CLSID` key. The utility uses
-TSF's profile and category APIs separately. **Their registration scope and ordinary-user success
-have not been established.** Each registration and enablement API boundary reports its stage,
+TSF's profile and category APIs separately. The successful maintainer registration does not
+establish ordinary-user registration scope. Each registration and enablement API boundary reports its stage,
 static EN/RU label where applicable, and HRESULT, without DLL paths or queried text.
 A failure may leave partial registration. A generic HRESULT alone does not establish its cause.
 Stop on failure. Do not run enablement to repair incomplete registration. Inspect status before
@@ -176,9 +177,50 @@ document. Restoring the expected text and caret makes it pass again. No excluded
 queried by the inspector. Entering a target string directly calibrates the observer; it does not
 prove TSF correction, key consumption, or Undo.
 
+### Observe the host routing boundary
+
+The diagnostic editor adds noneditable `STATIC` control 105 outside the tab order. Its initial
+Name starts with `Keyrill host routing v1`. The editor STA records completed DOWN and SYSDOWN
+routing outcomes in memory. A 250 ms timer publishes them only from the outer message loop,
+after routing returns. Nested window-procedure timer dispatch does no diagnostic work.
+The installed DLL supplies no diagnostic data and need not be rebuilt for this host observation.
+
+```powershell
+& "$bin/KeyrillProofInspect.exe" FIXTURE_PID routing
+```
+
+This mode verifies the fixture executable and root class, then reads only control 105's UIA
+Name. It never reads A, B, or the excluded controls. A bounded parser rejects unknown versions,
+fields, malformed values, and oversized status. Output reconstructs known fields rather than
+printing the queried Name. Missing or rejected status exits unsuccessfully.
+
+Read a baseline after source selection and fixture preparation. After one physical fixture
+interval, wait for `publication` to advance and read again. An unchanged publication is stale
+and cannot establish a zero delta. The publication sequence and every counter saturate at
+4294967295. `saturated=1` means deltas are unavailable. There is no reset operation.
+
+| Field | Host observation |
+|---|---|
+| `publication` | Outer-loop status publication sequence, including quiet intervals |
+| `down` | DOWN and SYSDOWN messages reaching the observed outer loop |
+| `test_error` | Failed `ITfKeystrokeMgr::TestKeyDown` calls |
+| `no_interest` | Successful tests with a false interest output |
+| `dispatch` | `ITfKeystrokeMgr::KeyDown` calls after successful test interest |
+| `dispatch_error` | Failed dispatch calls, regardless of the eaten output |
+| `passed` | Successful dispatch calls with a false eaten output |
+| `eaten` | Successful dispatch calls with a true eaten output |
+| `first_error` | First failed host call and hexadecimal HRESULT, or `none` |
+
+These are process-lifetime host outcomes, including source-switch shortcuts, not physical-key
+counts or service-callback counts. A failure already present at baseline cannot be attributed
+to the later fixture interval. No interest cannot distinguish a missing sink from an inactive,
+stopped, or mode-zero service. Successful dispatch does not identify a service or refusal reason.
+Consumption does not prove an owned composition or document change. Run the document oracle
+separately and use one fresh interval to choose the next diagnostic boundary.
+
 | Schedule | Controlled evidence | Physical evidence required |
 |---|---|---|
-| `ghbdtn` plus Space and Escape | Exact whole documents, caret, owned identity, and disposition pass | Installed EN routing, displayed composition, and physical keys untested |
+| `ghbdtn` plus Space and Escape | Exact whole documents, caret, owned identity, and disposition pass | Selected EN and loaded DLL observed; physical `ghbdtn` plus Space remains unchanged; correction and composition unproved |
 | Rapid next letter and moved caret | Bounded finish/replan, exact prefix/suffix preservation pass | Repeat physical typing without dropped or duplicated characters |
 | Denied request, failed session result, missing callback, late callback, null composition | Same-service zero-write and pass-through schedules pass | Real editor lock-denial behavior untested |
 | Range, text, caret, active-membership drift; extra foreign composition | Refusal before write passes | Real host notifications and composition identity untested |
@@ -187,7 +229,7 @@ prove TSF correction, key consumption, or Undo.
 | Focus A to B to A, late old termination | Old authority never revives in doubles | Live mark termination and focus acceptance blocked |
 | Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical excluded-control checks untested |
 | Native Undo after correction and continuation | Not modeled as a TSF guarantee | Whole document, caret, Undo grouping, and subsequent input untested |
-| EN/RU profile and source changes, teardown | Profile-table checks and invalidation pass | Registration, enablement, selected-source changes, and clean teardown untested |
+| EN/RU profile and source changes, teardown | Profile-table checks and invalidation pass | Both profiles present and enabled, EN selected; source transitions and clean teardown untested |
 
-Only x64 MSVC build evidence exists. ARM64, generic editors, real Undo, source registration,
-and physical acceptance remain open. [ADR 007](adr/007-windows-tsf.md) remains proposed.
+Only x64 MSVC build evidence exists. ARM64, generic editors, real Undo, ordinary-user registration
+scope, and physical acceptance remain open. [ADR 007](adr/007-windows-tsf.md) remains proposed.

@@ -1,4 +1,5 @@
 #include "profiles.h"
+#include "routing.h"
 #include <cstdio>
 #include <string>
 #include <uiautomation.h>
@@ -71,11 +72,38 @@ bool Check(HWND window, const wchar_t *expected, bool caret) {
                                                TextPatternRangeEndpoint_End, &comparison)) &&
          comparison == 0;
 }
+bool Routing(HWND root) {
+  HWND status = GetDlgItem(root, 105);
+  wchar_t type[16]{};
+  if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
+    return false;
+  ComPtr<IUIAutomation> automation;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))))
+    return false;
+  ComPtr<IUIAutomationElement> element;
+  if (FAILED(automation->ElementFromHandle(status, &element)))
+    return false;
+  BSTR name = nullptr;
+  HRESULT result = element->get_CurrentName(&name);
+  keyrill::routing::Snapshot snapshot;
+  bool parsed = SUCCEEDED(result) && name &&
+                keyrill::routing::Parse(std::wstring_view(name, SysStringLen(name)), snapshot);
+  SysFreeString(name);
+  if (!parsed)
+    return false;
+  wchar_t known[keyrill::routing::status_capacity]{};
+  if (!keyrill::routing::Format(snapshot, known))
+    return false;
+  wprintf(L"%ls\n", known);
+  return true;
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
-    fwprintf(stderr,
-             L"Usage: KeyrillProofInspect FIXTURE_PID correction|reversal|continuation|empty\n");
+    fwprintf(
+        stderr,
+        L"Usage: KeyrillProofInspect FIXTURE_PID correction|reversal|continuation|empty|routing\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -91,7 +119,8 @@ int wmain(int argc, wchar_t **argv) {
     expected = L"\x043f\x0440\x0438\x0432\x0435\x0442 x";
   if (wcscmp(argv[2], L"empty") == 0)
     expected = L"";
-  if (!expected)
+  bool routing = wcscmp(argv[2], L"routing") == 0;
+  if (!expected && !routing)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -108,6 +137,13 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
+  if (routing) {
+    bool matched = Routing(search.window);
+    CoUninitialize();
+    if (!matched)
+      puts("Fixture routing status unavailable or malformed. No text recorded.");
+    return matched ? 0 : 1;
+  }
   bool matched = Check(GetDlgItem(search.window, 101), expected, true) &&
                  Check(GetDlgItem(search.window, 102), L"", false);
   CoUninitialize();

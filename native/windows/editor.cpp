@@ -1,4 +1,5 @@
 #include "fixture.h"
+#include "routing.h"
 #include <wrl/client.h>
 
 namespace {
@@ -32,8 +33,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     CoUninitialize();
     return 1;
   }
-  HWND window = keyrill::CreateFixture(instance, Window, true);
-  if (!window) {
+  keyrill::routing::Snapshot routing;
+  wchar_t initial[keyrill::routing::status_capacity]{};
+  HWND window = keyrill::CreateFixture(instance, Window, false);
+  HWND status = nullptr;
+  constexpr UINT_PTR status_timer = 1;
+  if (window && keyrill::routing::Format(routing, initial) &&
+      SetWindowPos(window, nullptr, 0, 0, 780, 740, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+    status = CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, 552, 720, 120, window,
+                           reinterpret_cast<HMENU>(105), instance, nullptr);
+  }
+  if (!status || !SetTimer(window, status_timer, 250, nullptr)) {
+    if (window)
+      DestroyWindow(window);
     manager->Deactivate();
     keys.Reset();
     pump.Reset();
@@ -41,15 +53,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     CoUninitialize();
     return 1;
   }
+  ShowWindow(window, SW_SHOW);
   SetFocus(GetDlgItem(window, 101));
   MSG message{};
   BOOL available = FALSE;
   while (SUCCEEDED(pump->GetMessageW(&message, nullptr, 0, 0, &available)) && available) {
-    BOOL interest = FALSE, eaten = FALSE;
-    if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) &&
-        SUCCEEDED(keys->TestKeyDown(message.wParam, message.lParam, &interest)) && interest &&
-        SUCCEEDED(keys->KeyDown(message.wParam, message.lParam, &eaten)) && eaten)
+    if (message.hwnd == window && message.message == WM_TIMER && message.wParam == status_timer) {
+      keyrill::routing::Increment(routing.publication);
+      wchar_t published[keyrill::routing::status_capacity]{};
+      if (keyrill::routing::Format(routing, published))
+        SetWindowTextW(status, published);
       continue;
+    }
+    if (message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) {
+      const auto route = keyrill::routing::RouteDown(
+          [&](BOOL *interest) {
+            return keys->TestKeyDown(message.wParam, message.lParam, interest);
+          },
+          [&](BOOL *eaten) { return keys->KeyDown(message.wParam, message.lParam, eaten); });
+      keyrill::routing::Record(routing, route);
+      if (keyrill::routing::Consumed(route))
+        continue;
+    }
+    BOOL interest = FALSE, eaten = FALSE;
     if ((message.message == WM_KEYUP || message.message == WM_SYSKEYUP) &&
         SUCCEEDED(keys->TestKeyUp(message.wParam, message.lParam, &interest)) && interest &&
         SUCCEEDED(keys->KeyUp(message.wParam, message.lParam, &eaten)) && eaten)
@@ -63,6 +89,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
+  KillTimer(window, status_timer);
   manager->Deactivate();
   keys.Reset();
   pump.Reset();
