@@ -49,8 +49,12 @@ bool Check(HWND window, const wchar_t *expected, bool caret) {
   const std::wstring expected_rich_edit_value = std::wstring(expected) + L'\r';
   bool matches = text && std::wstring(text, SysStringLen(text)) == expected_rich_edit_value;
   SysFreeString(text);
-  if (!matches || !caret)
-    return matches;
+  if (!matches) {
+    puts(caret ? "A document value mismatch." : "B document value mismatch.");
+    return false;
+  }
+  if (!caret)
+    return true;
   ComPtr<IUIAutomationTextPattern> pattern;
   if (FAILED(element->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pattern))))
     return false;
@@ -58,20 +62,28 @@ bool Check(HWND window, const wchar_t *expected, bool caret) {
   if (FAILED(pattern->GetSelection(&selections)))
     return false;
   int count = 0;
-  if (FAILED(selections->get_Length(&count)) || count != 1)
+  if (FAILED(selections->get_Length(&count)) || count != 1) {
+    puts("A selection count unavailable or not one.");
     return false;
+  }
   ComPtr<IUIAutomationTextRange> selection, document;
   if (FAILED(selections->GetElement(0, &selection)) ||
       FAILED(pattern->get_DocumentRange(&document)))
     return false;
   int comparison = 1;
-  if (FAILED(selection->CompareEndpoints(TextPatternRangeEndpoint_Start, selection.Get(),
-                                         TextPatternRangeEndpoint_End, &comparison)) ||
-      comparison)
+  HRESULT compared = selection->CompareEndpoints(TextPatternRangeEndpoint_Start, selection.Get(),
+                                                 TextPatternRangeEndpoint_End, &comparison);
+  if (FAILED(compared) || comparison) {
+    puts(FAILED(compared) ? "A selection comparison unavailable."
+                          : "A selection is not collapsed.");
     return false;
-  return SUCCEEDED(selection->CompareEndpoints(TextPatternRangeEndpoint_End, document.Get(),
-                                               TextPatternRangeEndpoint_End, &comparison)) &&
-         comparison == 0;
+  }
+  bool end = SUCCEEDED(selection->CompareEndpoints(TextPatternRangeEndpoint_End, document.Get(),
+                                                   TextPatternRangeEndpoint_End, &comparison)) &&
+             comparison == 0;
+  if (!end)
+    puts("A caret is not at document end or comparison unavailable.");
+  return end;
 }
 bool Routing(HWND root) {
   HWND status = GetDlgItem(root, 105);
@@ -172,8 +184,9 @@ int wmain(int argc, wchar_t **argv) {
       puts("Fixture diagnostic status unavailable or malformed. No text recorded.");
     return matched ? 0 : 1;
   }
-  bool matched = Check(GetDlgItem(search.window, 101), expected, true) &&
-                 Check(GetDlgItem(search.window, 102), L"", false);
+  bool matched = Check(GetDlgItem(search.window, 101), expected, true);
+  bool other = Check(GetDlgItem(search.window, 102), L"", false);
+  matched = matched && other;
   CoUninitialize();
   puts(matched ? "Fixture document and caret oracle matched. No text recorded."
                : "Fixture oracle mismatch or UIA unavailable. No text recorded.");
