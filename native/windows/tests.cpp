@@ -716,12 +716,79 @@ kr_event Text(wchar_t letter) {
   return event;
 }
 HWND controlled_root = nullptr;
+struct ProfileManager final : ITfInputProcessorProfileMgr,
+                              ITfInputProcessorProfileSubstituteLayout {
+  ULONG references = 1;
+  TF_INPUTPROCESSORPROFILE profile{};
+  HRESULT active_result = S_OK, query_result = S_OK, substitute_result = S_OK;
+  bool query_null = false;
+  HKL substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
+  int active_calls = 0, query_calls = 0, substitute_calls = 0;
+  std::function<void(const char *)> hook;
+  ProfileManager() {
+    profile.dwProfileType = TF_PROFILETYPE_INPUTPROCESSOR;
+    profile.clsid = service_id;
+    profile.guidProfile = profiles[0].id;
+    profile.langid = profiles[0].language;
+    profile.dwFlags = TF_IPP_FLAG_ACTIVE;
+    profile.hkl = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0xe0200409));
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    *out = nullptr;
+    if (id == IID_IUnknown || id == IID_ITfInputProcessorProfileMgr)
+      *out = static_cast<ITfInputProcessorProfileMgr *>(this);
+    else if (id == IID_ITfInputProcessorProfileSubstituteLayout) {
+      ++query_calls;
+      if (hook)
+        hook("profiles.QI");
+      if (!query_null)
+        *out = static_cast<ITfInputProcessorProfileSubstituteLayout *>(this);
+      if (*out)
+        AddRef();
+      return query_result;
+    }
+    if (!*out)
+      return E_NOINTERFACE;
+    AddRef();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetActiveProfile(REFGUID category,
+                                             TF_INPUTPROCESSORPROFILE *out) override {
+    Require(category == GUID_TFCAT_TIP_KEYBOARD, "lookup is restricted to keyboard profiles");
+    ++active_calls;
+    *out = profile;
+    if (hook)
+      hook("GetActiveProfile");
+    return active_result;
+  }
+  HRESULT STDMETHODCALLTYPE GetSubstituteKeyboardLayout(REFCLSID clsid, LANGID language, REFGUID id,
+                                                        HKL *out) override {
+    Require(clsid == profile.clsid && language == profile.langid && id == profile.guidProfile,
+            "dedicated lookup uses the exact captured active profile");
+    ++substitute_calls;
+    *out = substitute;
+    if (hook)
+      hook("GetSubstituteKeyboardLayout");
+    return substitute_result;
+  }
+  STUB(ActivateProfile, (DWORD, LANGID, REFCLSID, REFGUID, HKL, DWORD));
+  STUB(DeactivateProfile, (DWORD, LANGID, REFCLSID, REFGUID, HKL, DWORD));
+  STUB(GetProfile, (DWORD, LANGID, REFCLSID, REFGUID, HKL, TF_INPUTPROCESSORPROFILE *));
+  STUB(EnumProfiles, (LANGID, IEnumTfInputProcessorProfiles **));
+  STUB(ReleaseInputProcessor, (REFCLSID, DWORD));
+  STUB(RegisterProfile, (REFCLSID, LANGID, REFGUID, const WCHAR *, ULONG, const WCHAR *, ULONG,
+                         ULONG, HKL, DWORD, BOOL, DWORD));
+  STUB(UnregisterProfile, (REFCLSID, LANGID, REFGUID, DWORD));
+};
 struct Harness {
   HWND root = nullptr;
   Document a, b;
   Manager manager;
   ComPtr<Service> service;
-  Harness() {
+  Harness(ITfInputProcessorProfileMgr *profile_api = nullptr,
+          decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList) {
     root = controlled_root;
     Require(root != nullptr, "controlled RichEdit metadata fixture created");
     a.window = GetDlgItem(root, 101);
@@ -730,7 +797,7 @@ struct Harness {
     ::SetActiveWindow(root);
     ::SetFocus(a.window);
     Require(::GetFocus() == a.window, "fixture native focus established");
-    service.Attach(new Service);
+    service.Attach(new Service(profile_api, layouts));
     Require(SUCCEEDED(service->Activate(&manager, 42)), "controlled COM service activation");
   }
   ~Harness() {
@@ -766,6 +833,21 @@ diagnostics::Snapshot DiagnosticSnapshot(Service &service) {
               diagnostics::Valid(snapshot),
           "service copies one valid bounded scalar snapshot");
   return snapshot;
+}
+void DedicatedLayoutRegression() {
+  using diagnostics::Counter;
+  ProfileManager profile_api;
+  Harness h(&profile_api);
+  BOOL eaten = TRUE;
+  const auto before = DiagnosticSnapshot(*h.service.Get());
+  Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+          "nontext key passes after dedicated lookup");
+  const auto after = DiagnosticSnapshot(*h.service.Get());
+  Require(after.counts[static_cast<size_t>(Counter::HandleEntered)] ==
+              before.counts[static_cast<size_t>(Counter::HandleEntered)] + 1,
+          "null active substitute field with valid dedicated layout reaches HandleEvent");
+  Require(profile_api.substitute_calls == 1 && h.a.writes == 0 && h.b.writes == 0,
+          "dedicated layout query does not itself write text");
 }
 void DiagnosticRefusalSchedules() {
   using diagnostics::Cause;
@@ -1691,6 +1773,8 @@ int wmain() {
   FixtureLifecycle();
   controlled_root = CreateFixture(GetModuleHandleW(nullptr), FixtureProc, false);
   Require(controlled_root != nullptr, "controlled native metadata fixture");
+  puts("RUN dedicated substitute layout regression");
+  DedicatedLayoutRegression();
   puts("RUN actual service diagnostic codec");
   DiagnosticCodecSchedules();
   puts("RUN actual service diagnostic refusal schedules");

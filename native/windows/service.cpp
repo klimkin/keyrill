@@ -539,7 +539,10 @@ private:
   uint32_t last_disposition_ = KR_KEY_PASS;
 };
 
-Service::Service() { InterlockedIncrement(&object_count); }
+Service::Service(ITfInputProcessorProfileMgr *profile_api, decltype(&GetKeyboardLayoutList) layouts)
+    : profile_dependency_(profile_api), layouts_(layouts) {
+  InterlockedIncrement(&object_count);
+}
 Service::~Service() {
   active_ = false;
   stopped_ = true;
@@ -700,9 +703,13 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
     return E_FAIL;
   }
   TF_INPUTPROCESSORPROFILE profile{};
-  if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
-                                 IID_PPV_ARGS(&profiles_manager_))) &&
-      Current(generation) &&
+  HRESULT profile_result = S_OK;
+  if (profile_dependency_)
+    profiles_manager_ = profile_dependency_;
+  else
+    profile_result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles_manager_));
+  if (SUCCEEDED(profile_result) && profiles_manager_ && Current(generation) &&
       SUCCEEDED(profiles_manager_->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) &&
       Current(generation))
     OnActivated(profile.dwProfileType, profile.langid, profile.clsid, profile.catid,

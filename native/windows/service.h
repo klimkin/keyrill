@@ -18,7 +18,8 @@ class Service final : public ITfTextInputProcessorEx,
                       public ITfFunctionProvider,
                       public diagnostics::SnapshotReader {
 public:
-  Service();
+  explicit Service(ITfInputProcessorProfileMgr *profile_api = nullptr,
+                   decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList);
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override;
   ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;
@@ -85,6 +86,8 @@ private:
   ComPtr<ITfSource> source_;
   ComPtr<ITfKeystrokeMgr> keys_;
   ComPtr<ITfInputProcessorProfileMgr> profiles_manager_;
+  const ComPtr<ITfInputProcessorProfileMgr> profile_dependency_;
+  const decltype(&GetKeyboardLayoutList) layouts_;
   DWORD thread_cookie_ = TF_INVALID_COOKIE;
   DWORD profile_cookie_ = TF_INVALID_COOKIE;
   uint32_t diagnostic_depth_ = 0;
