@@ -69,15 +69,20 @@ bool TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)[256]
   e.units[0] = static_cast<uint16_t>(text[0]);
   return true;
 }
-HKL ProfileLayout(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode) {
+static const Profile *ActiveProfile(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode) {
   if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || profile.clsid != service_id ||
       !(profile.dwFlags & TF_IPP_FLAG_ACTIVE))
     return nullptr;
   for (const auto &entry : profiles)
-    if (entry.id == profile.guidProfile && entry.language == profile.langid && entry.mode == mode &&
-        reinterpret_cast<ULONG_PTR>(profile.hklSubstitute) ==
-            (static_cast<ULONG_PTR>(entry.language) << 16 | entry.language))
-      return profile.hklSubstitute;
+    if (entry.id == profile.guidProfile && entry.language == profile.langid && entry.mode == mode)
+      return &entry;
+  return nullptr;
+}
+HKL ProfileLayout(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode, HKL substitute) {
+  const auto *entry = ActiveProfile(profile, mode);
+  if (entry && reinterpret_cast<ULONG_PTR>(substitute) ==
+                   (static_cast<ULONG_PTR>(entry->language) << 16 | entry->language))
+    return substitute;
   return nullptr;
 }
 
@@ -831,11 +836,18 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       return RPC_E_WRONG_THREAD;
     DiagnosticCallback callback(*this);
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
-    if (busy_) {
+    if (busy_ || key_admission_) {
       Refuse(Stage::Key, Cause::Reentry);
       Invalidate(owned_ != nullptr);
       return S_OK;
     }
+    key_admission_ = true;
+    struct Admission {
+      bool &flag;
+      ~Admission() { flag = false; }
+    } admission{key_admission_};
+    const uint64_t generation = generation_;
+    const uint32_t mode = mode_;
     BYTE state[256]{};
     kr_event event{};
     if (!GetKeyboardState(state)) {
@@ -843,44 +855,87 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       InvalidateForLifecycle();
       return S_OK;
     }
-    uint64_t generation = generation_;
     TF_INPUTPROCESSORPROFILE profile{};
     ComPtr<ITfInputProcessorProfileMgr> manager = profiles_manager_;
     HRESULT profile_result = S_OK;
     if (!Current(generation) || !manager ||
-        FAILED(profile_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) ||
+        (profile_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) != S_OK ||
         !Current(generation)) {
       Refuse(Stage::Profile,
-             FAILED(profile_result) ? Cause::Native
+             profile_result != S_OK ? Cause::Native
              : !active_             ? Cause::Inactive
              : stopped_             ? Cause::Stopped
              : !manager             ? Cause::Missing
                                     : Cause::Stale,
-             FAILED(profile_result) ? profile_result : S_OK);
+             profile_result != S_OK ? profile_result : S_OK);
       InvalidateForLifecycle();
       return S_OK;
     }
-    HKL layout = ProfileLayout(profile, mode_);
-    if (!layout) {
+    if (!ActiveProfile(profile, mode)) {
       Cause cause = profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR ? Cause::WrongType
                     : profile.clsid != service_id                          ? Cause::WrongService
                     : !(profile.dwFlags & TF_IPP_FLAG_ACTIVE)              ? Cause::NotActive
                                                                            : Cause::WrongProfile;
-      if (cause == Cause::WrongProfile)
-        for (const auto &entry : profiles)
-          if (entry.id == profile.guidProfile && entry.language == profile.langid &&
-              entry.mode == mode_)
-            cause = Cause::Substitute;
       Refuse(Stage::Layout, cause);
       InvalidateForLifecycle();
       return S_OK;
     }
-    TranslateKey(key, flags, layout, state, event);
-    if (event.mode != mode_) {
-      Refuse(Stage::Mode, Cause::Predicate);
+    ComPtr<ITfInputProcessorProfileSubstituteLayout> substitute;
+    HRESULT result = manager->QueryInterface(IID_PPV_ARGS(&substitute));
+    if (result != S_OK || !Current(generation) || !substitute) {
+      Refuse(Stage::Layout,
+             result != S_OK         ? Cause::Native
+             : !Current(generation) ? Cause::Stale
+                                    : Cause::Missing,
+             result != S_OK ? result : S_OK);
       InvalidateForLifecycle();
       return S_OK;
     }
+    HKL actual = nullptr;
+    result = substitute->GetSubstituteKeyboardLayout(profile.clsid, profile.langid,
+                                                     profile.guidProfile, &actual);
+    if (result != S_OK || !Current(generation) || !actual) {
+      Refuse(Stage::Layout,
+             result != S_OK         ? Cause::Native
+             : !Current(generation) ? Cause::Stale
+                                    : Cause::Missing,
+             result != S_OK ? result : S_OK);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    HKL layout = ProfileLayout(profile, mode, actual);
+    if (!layout || !layouts_) {
+      Refuse(Stage::Layout, !layout ? Cause::Substitute : Cause::Missing);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    HKL loaded[64]{};
+    int count = layouts_(0, nullptr);
+    if (!Current(generation) || count <= 0 || count > 64) {
+      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    int filled = layouts_(64, loaded);
+    if (!Current(generation) || filled != count) {
+      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    int after = layouts_(0, nullptr);
+    if (!Current(generation) || after != count ||
+        std::find(loaded, loaded + count, layout) == loaded + count) {
+      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    TranslateKey(key, flags, layout, state, event);
+    if (!Current(generation) || event.mode != mode) {
+      Refuse(Stage::Mode, !Current(generation) ? Cause::Stale : Cause::Predicate);
+      InvalidateForLifecycle();
+      return S_OK;
+    }
+    key_admission_ = false;
     *eaten = HandleEvent(context, event);
     if (*eaten)
       diagnostics::Count(diagnostics_, Counter::Consumed);

@@ -27,5 +27,5 @@ inline constexpr Profile profiles[] = {
 inline constexpr wchar_t fixture_class[] = L"KeyrillProofEditor";
 bool ProofWindow(HWND window);
 bool TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)[256], kr_event &event);
-HKL ProfileLayout(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode);
+HKL ProfileLayout(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode, HKL substitute);
 } // namespace keyrill

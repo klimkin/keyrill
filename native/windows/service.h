@@ -77,6 +77,7 @@ private:
   uint64_t generation_ = 1;
   bool active_ = false;
   bool busy_ = false;
+  bool key_admission_ = false;
   bool stopped_ = false;
   uint32_t mode_ = 0;
   TfClientId client_ = TF_CLIENTID_NULL;

@@ -834,20 +834,299 @@ diagnostics::Snapshot DiagnosticSnapshot(Service &service) {
           "service copies one valid bounded scalar snapshot");
   return snapshot;
 }
+int WINAPI ProofLayouts(int capacity, HKL *out) {
+  if (!capacity)
+    return 2;
+  Require(capacity >= 2 && out, "bounded complete loaded-layout observation");
+  out[0] = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
+  out[1] = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
+  return 2;
+}
+int WINAPI MissingProofLayout(int capacity, HKL *out) {
+  if (capacity)
+    out[0] = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
+  return 1;
+}
+int WINAPI IncompleteProofLayouts(int capacity, HKL *) { return capacity ? 1 : 2; }
+int WINAPI ExcessProofLayouts(int, HKL *) { return 65; }
+int WINAPI NoProofLayouts(int, HKL *) { return 0; }
+struct LayoutSchedule {
+  static inline thread_local LayoutSchedule *current = nullptr;
+  std::function<void(int)> hook;
+  int calls = 0;
+  int final_count = 2;
+  LayoutSchedule() {
+    Require(!current, "one scoped loaded-layout fake owns this test thread");
+    current = this;
+  }
+  ~LayoutSchedule() { current = nullptr; }
+  static int WINAPI Observe(int capacity, HKL *out) {
+    Require(current != nullptr, "loaded-layout callback has a live scoped test owner");
+    auto &schedule = *current;
+    int result = ++schedule.calls == 3 ? schedule.final_count : ProofLayouts(capacity, out);
+    if (schedule.hook)
+      schedule.hook(schedule.calls);
+    return result;
+  }
+};
 void DedicatedLayoutRegression() {
   using diagnostics::Counter;
-  ProfileManager profile_api;
-  Harness h(&profile_api);
-  BOOL eaten = TRUE;
-  const auto before = DiagnosticSnapshot(*h.service.Get());
-  Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
-          "nontext key passes after dedicated lookup");
+  for (const auto &entry : profiles) {
+    ProfileManager profile_api;
+    profile_api.profile.guidProfile = entry.id;
+    profile_api.profile.langid = entry.language;
+    profile_api.substitute =
+        reinterpret_cast<HKL>(static_cast<ULONG_PTR>(entry.language) << 16 | entry.language);
+    {
+      Harness h(&profile_api, ProofLayouts);
+      for (HKL field : {static_cast<HKL>(nullptr), reinterpret_cast<HKL>(1)}) {
+        profile_api.profile.hklSubstitute = field;
+        BOOL eaten = TRUE;
+        const auto before = DiagnosticSnapshot(*h.service.Get());
+        Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+                "nontext key passes after dedicated lookup");
+        const auto after = DiagnosticSnapshot(*h.service.Get());
+        Require(after.counts[static_cast<size_t>(Counter::HandleEntered)] ==
+                    before.counts[static_cast<size_t>(Counter::HandleEntered)] + 1,
+                "null active substitute field with valid dedicated layout reaches HandleEvent");
+      }
+      Require(profile_api.substitute_calls == 2 && h.a.writes == 0 && h.b.writes == 0,
+              "each key independently queries its dedicated layout without text writes");
+      h.Oracle(L"", 7);
+    }
+    Require(profile_api.references == 1, "profile dependencies release all local COM ownership");
+  }
+}
+void LayoutRefusalOracle(Harness &h, const diagnostics::Snapshot &before) {
+  using diagnostics::Counter;
   const auto after = DiagnosticSnapshot(*h.service.Get());
-  Require(after.counts[static_cast<size_t>(Counter::HandleEntered)] ==
-              before.counts[static_cast<size_t>(Counter::HandleEntered)] + 1,
-          "null active substitute field with valid dedicated layout reaches HandleEvent");
-  Require(profile_api.substitute_calls == 1 && h.a.writes == 0 && h.b.writes == 0,
-          "dedicated layout query does not itself write text");
+  for (auto counter :
+       {Counter::HandleEntered, Counter::Requested, Counter::Attempted, Counter::Consumed})
+    Require(after.counts[static_cast<size_t>(counter)] ==
+                before.counts[static_cast<size_t>(counter)],
+            "layout refusal never handles, requests, writes, or consumes");
+  Require(h.a.writes == 0 && h.b.writes == 0 && h.a.reads == 0 && h.b.reads == 0,
+          "layout refusal inspects no document text");
+  h.Oracle(L"", 7);
+}
+void DedicatedLayoutNegatives() {
+  using diagnostics::Cause;
+  using diagnostics::Stage;
+  for (int scenario = 0; scenario != 20; ++scenario) {
+    ProfileManager profile_api;
+    profile_api.profile.hklSubstitute = profile_api.substitute;
+    decltype(&GetKeyboardLayoutList) layouts = ProofLayouts;
+    Cause cause = Cause::Substitute;
+    HRESULT result = S_OK;
+    switch (scenario) {
+    case 0:
+      profile_api.active_result = E_FAIL;
+      cause = Cause::Native;
+      result = E_FAIL;
+      break;
+    case 1:
+      profile_api.active_result = S_FALSE;
+      cause = Cause::Native;
+      result = S_FALSE;
+      break;
+    case 2:
+      profile_api.query_result = E_NOINTERFACE;
+      cause = Cause::Native;
+      result = E_NOINTERFACE;
+      break;
+    case 3:
+      profile_api.query_result = S_FALSE;
+      cause = Cause::Native;
+      result = S_FALSE;
+      break;
+    case 4:
+      profile_api.query_null = true;
+      cause = Cause::Missing;
+      break;
+    case 5:
+      profile_api.substitute_result = E_FAIL;
+      cause = Cause::Native;
+      result = E_FAIL;
+      break;
+    case 6:
+      profile_api.substitute_result = S_FALSE;
+      cause = Cause::Native;
+      result = S_FALSE;
+      break;
+    case 7:
+      profile_api.substitute = nullptr;
+      cause = Cause::Missing;
+      break;
+    case 8:
+      profile_api.substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0xe0200409));
+      break;
+    case 9:
+      profile_api.substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
+      break;
+    case 10:
+      layouts = MissingProofLayout;
+      profile_api.profile.guidProfile = profiles[1].id;
+      profile_api.profile.langid = profiles[1].language;
+      profile_api.substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
+      profile_api.profile.hklSubstitute = profile_api.substitute;
+      break;
+    case 11:
+      layouts = IncompleteProofLayouts;
+      break;
+    case 12:
+      layouts = ExcessProofLayouts;
+      break;
+    case 13:
+      layouts = NoProofLayouts;
+      break;
+    case 14:
+      layouts = nullptr;
+      cause = Cause::Missing;
+      break;
+    case 15:
+      profile_api.profile.dwProfileType = TF_PROFILETYPE_KEYBOARDLAYOUT;
+      cause = Cause::WrongType;
+      break;
+    case 16:
+      profile_api.profile.clsid = GUID_NULL;
+      cause = Cause::WrongService;
+      break;
+    case 17:
+      profile_api.profile.dwFlags = 0;
+      cause = Cause::NotActive;
+      break;
+    case 18:
+      profile_api.profile.guidProfile = GUID_NULL;
+      cause = Cause::WrongProfile;
+      break;
+    case 19:
+      profile_api.substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0xffffffff04090409));
+      break;
+    }
+    Harness h(&profile_api, layouts);
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    BOOL eaten = TRUE;
+    Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+            "invalid dedicated admission passes actual key unchanged");
+    LayoutRefusalOracle(h, before);
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    Require(after.latest.stage == (scenario <= 1 ? Stage::Profile : Stage::Layout) &&
+                after.latest.cause == cause && after.latest.result == static_cast<uint32_t>(result),
+            "dedicated failures preserve the actual native result or predicate cause");
+    if (scenario >= 15 && scenario <= 18)
+      Require(profile_api.query_calls == 0 && profile_api.substitute_calls == 0,
+              "foreign active identity is rejected before dedicated lookup");
+  }
+  for (int mismatch = 0; mismatch != 2; ++mismatch) {
+    ProfileManager profile_api;
+    Harness h(&profile_api, ProofLayouts);
+    if (mismatch)
+      profile_api.profile.langid = profiles[1].language;
+    else
+      h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[1].language, service_id,
+                             GUID_TFCAT_TIP_KEYBOARD, profiles[1].id, nullptr,
+                             TF_IPSINK_FLAG_ACTIVE);
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    BOOL eaten = TRUE;
+    Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+            "mismatched profile language or selected mode passes unchanged");
+    LayoutRefusalOracle(h, before);
+    Require(profile_api.query_calls == 0 && profile_api.substitute_calls == 0,
+            "mismatched profile identity cannot query a substitute");
+  }
+}
+void DedicatedLayoutReentry() {
+  for (const char *boundary : {"GetActiveProfile", "profiles.QI", "GetSubstituteKeyboardLayout"}) {
+    for (int schedule = 0; schedule != 6; ++schedule) {
+      ProfileManager profile_api;
+      Harness h(&profile_api, ProofLayouts);
+      bool injected = false;
+      const auto before = DiagnosticSnapshot(*h.service.Get());
+      profile_api.hook = [&](const char *name) {
+        if (injected || std::string(name) != boundary)
+          return;
+        injected = true;
+        if (schedule == 0) {
+          BOOL nested = TRUE;
+          Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &nested) == S_OK && !nested,
+                  "nested key during admission invalidates and passes unchanged");
+        } else if (schedule == 1) {
+          h.service->OnSetFocus(FALSE);
+        } else if (schedule == 2) {
+          Require(h.service->Deactivate() == S_OK && h.service->Activate(&h.manager, 42) == S_OK,
+                  "deactivate and reactivate cannot revive captured admission");
+        } else if (schedule == 3) {
+          throw 1;
+        } else if (schedule == 4) {
+          Require(h.service->Deactivate() == S_OK, "deactivation cannot retain admission");
+        } else {
+          h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[1].language, service_id,
+                                 GUID_TFCAT_TIP_KEYBOARD, profiles[1].id, nullptr,
+                                 TF_IPSINK_FLAG_ACTIVE);
+        }
+      };
+      BOOL eaten = TRUE;
+      const HRESULT result = h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten);
+      Require(injected && !eaten && result == (schedule == 3 ? E_FAIL : S_OK),
+              "each reentrant native boundary refuses the outer key before handling");
+      LayoutRefusalOracle(h, before);
+      profile_api.hook = nullptr;
+      if (schedule < 3) {
+        const auto resumed = DiagnosticSnapshot(*h.service.Get());
+        Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+                "later fresh key can resume after scoped admission releases");
+        const auto after = DiagnosticSnapshot(*h.service.Get());
+        Require(after.counts[static_cast<size_t>(diagnostics::Counter::HandleEntered)] ==
+                    resumed.counts[static_cast<size_t>(diagnostics::Counter::HandleEntered)] + 1,
+                "scoped admission does not leave the service permanently busy");
+      }
+    }
+  }
+  for (int boundary = 1; boundary != 4; ++boundary) {
+    for (int schedule = 0; schedule != 6; ++schedule) {
+      LayoutSchedule layouts;
+      ProfileManager profile_api;
+      Harness h(&profile_api, LayoutSchedule::Observe);
+      const auto before = DiagnosticSnapshot(*h.service.Get());
+      layouts.hook = [&](int call) {
+        if (call != boundary)
+          return;
+        if (schedule == 0) {
+          BOOL nested = TRUE;
+          Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &nested) == S_OK && !nested,
+                  "nested key at each loaded-layout boundary invalidates admission");
+        } else if (schedule == 1) {
+          h.service->OnSetFocus(FALSE);
+        } else if (schedule == 2) {
+          Require(h.service->Deactivate() == S_OK && h.service->Activate(&h.manager, 42) == S_OK,
+                  "loaded-layout observation cannot survive reactivation");
+        } else if (schedule == 3) {
+          throw 1;
+        } else if (schedule == 4) {
+          Require(h.service->Deactivate() == S_OK,
+                  "loaded-layout observation cannot outlive activation");
+        } else {
+          h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[1].language, service_id,
+                                 GUID_TFCAT_TIP_KEYBOARD, profiles[1].id, nullptr,
+                                 TF_IPSINK_FLAG_ACTIVE);
+        }
+      };
+      BOOL eaten = TRUE;
+      Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == (schedule == 3 ? E_FAIL : S_OK) &&
+                  !eaten && layouts.calls == boundary,
+              "invalidation at each loaded-layout call stops all later admission work");
+      LayoutRefusalOracle(h, before);
+    }
+  }
+  LayoutSchedule layouts;
+  layouts.final_count = 1;
+  ProfileManager profile_api;
+  Harness h(&profile_api, LayoutSchedule::Observe);
+  const auto before = DiagnosticSnapshot(*h.service.Get());
+  BOOL eaten = TRUE;
+  Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten && layouts.calls == 3,
+          "changed count after a complete loaded-layout fill refuses admission");
+  LayoutRefusalOracle(h, before);
 }
 void DiagnosticRefusalSchedules() {
   using diagnostics::Cause;
@@ -1721,11 +2000,11 @@ void Keyboard() {
   profile.dwFlags = TF_IPP_FLAG_ACTIVE;
   profile.hkl = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0xe0200409));
   profile.hklSubstitute = en;
-  Require(ProfileLayout(profile, KR_EN) == en,
+  Require(ProfileLayout(profile, KR_EN, en) == en,
           "synthetic TIP handle uses validated actual substitute");
-  Require(!ProfileLayout(profile, KR_RU), "mismatched selected profile mode passes");
+  Require(!ProfileLayout(profile, KR_RU, en), "mismatched selected profile mode passes");
   profile.hklSubstitute = ru;
-  Require(!ProfileLayout(profile, KR_EN), "mismatched substitute cannot translate keys");
+  Require(!ProfileLayout(profile, KR_EN, ru), "mismatched substitute cannot translate keys");
 }
 void TeardownAndConstructorExceptions() {
   long before_objects = object_count;
@@ -1775,6 +2054,10 @@ int wmain() {
   Require(controlled_root != nullptr, "controlled native metadata fixture");
   puts("RUN dedicated substitute layout regression");
   DedicatedLayoutRegression();
+  puts("RUN dedicated substitute layout negatives");
+  DedicatedLayoutNegatives();
+  puts("RUN dedicated substitute layout reentry");
+  DedicatedLayoutReentry();
   puts("RUN actual service diagnostic codec");
   DiagnosticCodecSchedules();
   puts("RUN actual service diagnostic refusal schedules");

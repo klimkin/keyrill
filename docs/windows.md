@@ -109,12 +109,26 @@ FINISH passes an ordinary next key without replanning, but keeps a reserved comm
 Unknown effects stop correction for the activation. No guessed cleanup or committed-range
 replacement follows. A nested key invalidates the outer request and passes unchanged.
 
-The active TSF profile supplies a validated actual substitute HKL. Translation uses that layout
-with the current Shift and Caps Lock state and `ToUnicodeEx`'s no-state-change flag. Synthetic
-TIP handles are not treated as keyboard layouts. Only the stable EN and RU proof profiles are
-accepted. An unsupported profile or layout invalidates authority and passes without a guessed
-finish. Shortcuts, dead keys, and coalesced repeat messages request a verified owned finish before
-passing through.
+Each key validates the active TSF profile's exact type, service, profile, language, active flag,
+and selected mode before querying `ITfInputProcessorProfileSubstituteLayout` on its captured
+profile manager. `GetSubstituteKeyboardLayout` must return `S_OK` and a non-null canonical EN
+or RU layout for that exact profile. The active profile's `hkl` and `hklSubstitute` fields do not
+supply substitute authority. The independently returned layout must be an exact member of a
+complete loaded-layout observation bounded to 64 entries, with matching counts before, during,
+and after enumeration. No layout is loaded or activated on this path.
+
+Generation checks surround native queries. Local COM references keep the queried objects alive,
+and a separate key-admission guard makes nested keys invalidate and pass through before event
+handling. The guard releases before `HandleEvent`, whose existing busy guard owns edit-session
+reentry. Diagnostic callback depth supplies no editing authority. Controlled tests inject profile
+and loaded-layout dependencies per service instance and exercise actual `OnKeyDown`; they do not
+establish physical TSF routing or document acceptance.
+
+Translation uses the validated layout with the current Shift and Caps Lock state and
+`ToUnicodeEx`'s no-state-change flag. Synthetic TIP handles are not treated as keyboard layouts.
+Only the stable EN and RU proof profiles are accepted. An unsupported profile or layout
+invalidates authority and passes without a guessed finish. Shortcuts, dead keys, and coalesced
+repeat messages request a verified owned finish before passing through.
 
 Focus loss, source changes, context changes, and teardown invalidate authority. **The service
 does not yet prove clean termination of a live RichEdit mark on these transitions.** If a mark
