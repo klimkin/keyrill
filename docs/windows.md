@@ -60,6 +60,14 @@ activation is refused. Read-only, password, sensitive, uncertain, foreign-compos
 controls get no text read and no composition. This executable-name restriction is a proof
 support policy, not a security boundary or approval for arbitrary RichEdit hosts.
 
+Input scope comes from the context owner's read-only application property through
+[`ITfContext::GetAppProperty`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-getappproperty).
+Admission requires `S_OK`, a non-null property, and `S_OK` from
+[`ITfReadOnlyProperty::GetValue`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)
+with an `ITfInputScope` value containing exactly one `IS_DEFAULT`. `S_FALSE` means unsupported
+property or unavailable range value and refuses admission. Missing or uncertain metadata stays
+pass-through. Controlled application-property tests do not establish live RichEdit admission.
+
 An owned mark retains canonical context and composition identities, exact ACP extent, and
 bounded verified UTF-16 text. Each update checks active composition membership, generation,
 expected text, returned extent, and caret. It verifies the returned range, composition range,

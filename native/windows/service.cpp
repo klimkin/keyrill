@@ -195,13 +195,14 @@ private:
         Disabled(context_.Get(), GUID_COMPARTMENT_EMPTYCONTEXT) ||
         Disabled(manager.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED))
       return false;
-    ComPtr<ITfProperty> property;
-    if (!Good(context_->GetProperty(GUID_PROP_INPUTSCOPE, &property)) || !property)
+    ComPtr<ITfReadOnlyProperty> property;
+    HRESULT result = context_->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
+    if (!Good(result) || result != S_OK || !property)
       return false;
     VARIANT value;
     VariantInit(&value);
-    HRESULT result = property->GetValue(cookie, selection, &value);
-    if (!Good(result) || value.vt != VT_UNKNOWN || !value.punkVal) {
+    result = property->GetValue(cookie, selection, &value);
+    if (!Good(result) || result != S_OK || value.vt != VT_UNKNOWN || !value.punkVal) {
       VariantClear(&value);
       return false;
     }
