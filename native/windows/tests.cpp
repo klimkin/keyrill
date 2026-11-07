@@ -28,6 +28,16 @@ void Require(bool condition, const char *label) {
   ULONG references = 1
 
 struct Document;
+struct ApplicationScopeProperty {
+  HRESULT result = S_OK;
+  bool present = true;
+  HRESULT value_result = S_OK;
+  VARTYPE value_type = VT_UNKNOWN;
+  bool value_present = true;
+  HRESULT scopes_result = S_OK;
+  bool scopes_present = true;
+  UINT scopes_count = 1;
+};
 struct Span {
   LONG start, length;
 };
@@ -127,6 +137,7 @@ struct Document final : ITfContext,
   LONG selection_length = 0;
   DWORD status = 0;
   InputScope scope = IS_DEFAULT;
+  ApplicationScopeProperty application_scope;
   bool disabled = false;
   bool foreign = false;
   bool reject_composition = false;
@@ -163,6 +174,8 @@ struct Document final : ITfContext,
       *out = static_cast<ITfContextView *>(this);
     else if (id == IID_ITfProperty)
       *out = static_cast<ITfProperty *>(this);
+    else if (id == IID_ITfReadOnlyProperty)
+      *out = static_cast<ITfReadOnlyProperty *>(static_cast<ITfProperty *>(this));
     else if (id == IID_ITfInputScope)
       *out = static_cast<ITfInputScope *>(this);
     else if (id == IID_ITfCompartmentMgr)
@@ -228,26 +241,40 @@ struct Document final : ITfContext,
   HRESULT STDMETHODCALLTYPE GetProperty(REFGUID id, ITfProperty **out) override {
     Call("GetProperty");
     Require(id == GUID_PROP_INPUTSCOPE, "only scope metadata property");
-    *out = static_cast<ITfProperty *>(this);
-    AddRef();
-    return S_OK;
+    *out = nullptr;
+    return S_FALSE;
+  }
+  HRESULT STDMETHODCALLTYPE GetAppProperty(REFGUID id, ITfReadOnlyProperty **out) override {
+    Call("GetAppProperty");
+    Require(id == GUID_PROP_INPUTSCOPE, "only scope metadata application property");
+    *out = nullptr;
+    if (application_scope.present) {
+      *out = static_cast<ITfProperty *>(this);
+      AddRef();
+    }
+    return application_scope.result;
   }
   HRESULT STDMETHODCALLTYPE GetValue(TfEditCookie, ITfRange *, VARIANT *out) override {
     Call("scope.GetValue");
     VariantInit(out);
-    out->vt = VT_UNKNOWN;
-    out->punkVal = static_cast<ITfInputScope *>(this);
-    AddRef();
-    return S_OK;
+    out->vt = application_scope.value_type;
+    if (out->vt == VT_UNKNOWN && application_scope.value_present) {
+      out->punkVal = static_cast<ITfInputScope *>(this);
+      AddRef();
+    }
+    return application_scope.value_result;
   }
   HRESULT STDMETHODCALLTYPE GetInputScopes(InputScope **out, UINT *count) override {
     Call("GetInputScopes");
-    *out = static_cast<InputScope *>(CoTaskMemAlloc(sizeof(InputScope)));
-    if (!*out)
-      return E_OUTOFMEMORY;
-    **out = scope;
-    *count = 1;
-    return S_OK;
+    *out = nullptr;
+    *count = application_scope.scopes_count;
+    if (application_scope.scopes_present) {
+      *out = static_cast<InputScope *>(CoTaskMemAlloc(sizeof(InputScope)));
+      if (!*out)
+        return E_OUTOFMEMORY;
+      **out = scope;
+    }
+    return application_scope.scopes_result;
   }
   HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID, ITfCompartment **out) override {
     Call("GetCompartment");
@@ -285,7 +312,6 @@ struct Document final : ITfContext,
   STUB(GetStart, (TfEditCookie, ITfRange **));
   STUB(GetEnd, (TfEditCookie, ITfRange **));
   STUB(EnumViews, (IEnumTfContextViews **));
-  STUB(GetAppProperty, (REFGUID, ITfReadOnlyProperty **));
   STUB(TrackProperties, (const GUID **, ULONG, const GUID **, ULONG, ITfReadOnlyProperty **));
   STUB(EnumProperties, (IEnumTfProperties **));
   STUB(GetDocumentMgr, (ITfDocumentMgr **));
@@ -564,6 +590,61 @@ struct Harness {
     Require(b.text == L"prefix suffix" && b.caret == 7, "other document unchanged");
   }
 };
+void ApplicationInputScope() {
+  Harness h;
+  for (const wchar_t *p = L"ghbdtn "; *p; ++p) {
+    bool eaten = h.Key(*p, false);
+    if (!eaten) {
+      fprintf(stderr, "FAIL: application input scope expected consumed=true, actual=false\n");
+      std::exit(1);
+    }
+  }
+  h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
+  Require(h.a.active_composition && h.a.starts == 1 && h.a.max_request_writes == 1,
+          "application input scope supports one owned mark with one write per request");
+}
+void UncertainApplicationInputScope() {
+  for (int scenario = 0; scenario != 14; ++scenario) {
+    Harness h;
+    auto &property = h.a.application_scope;
+    if (scenario == 0) {
+      property.result = S_FALSE;
+      property.present = false;
+    }
+    if (scenario == 1)
+      property.result = S_FALSE;
+    if (scenario == 2)
+      property.result = E_FAIL;
+    if (scenario == 3)
+      property.present = false;
+    if (scenario == 4) {
+      property.value_result = S_FALSE;
+      property.value_type = VT_EMPTY;
+    }
+    if (scenario == 5)
+      property.value_result = E_FAIL;
+    if (scenario == 6)
+      property.value_type = VT_EMPTY;
+    if (scenario == 7)
+      property.value_present = false;
+    if (scenario == 8)
+      property.value_type = VT_I4;
+    if (scenario == 9)
+      property.scopes_result = E_FAIL;
+    if (scenario == 10)
+      property.scopes_count = 0;
+    if (scenario == 11)
+      property.scopes_present = false;
+    if (scenario == 12)
+      h.a.scope = static_cast<InputScope>(-1);
+    if (scenario == 13)
+      h.a.scope = IS_EMAIL_SMTPEMAILADDRESS;
+    Require(!h.Key(L'g', false), "uncertain application input scope passes key unchanged");
+    Require(h.a.reads == 0 && h.a.starts == 0 && h.a.writes == 0,
+            "uncertain application input scope has no text reads, composition starts or writes");
+    h.Oracle(L"", 7);
+  }
+}
 void CorrectionAndReversal() {
   Harness h;
   h.Type(L"ghbdtn ");
@@ -927,6 +1008,10 @@ int wmain() {
   Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialized");
   controlled_root = CreateFixture(GetModuleHandleW(nullptr), DefWindowProcW, false);
   Require(controlled_root != nullptr, "controlled native metadata fixture");
+  puts("RUN uncertain application input scope");
+  UncertainApplicationInputScope();
+  puts("RUN application input scope correction");
+  ApplicationInputScope();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
   puts("RUN rapid continuation");
