@@ -212,11 +212,14 @@ It exposes no replacement, selection, keystroke, clipboard, or generic text-dump
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID correction
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID reversal
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID continuation
+& "$bin/KeyrillProofInspect.exe" FIXTURE_PID focus
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID empty
 ```
 
 `correction` expects `привет ` in A, `reversal` expects `ghbdtn `, and `continuation` expects
-`привет x`. All expect B empty. This fixture's RichEdit UIA Value includes one final carriage
+`привет x`. Those cases expect B empty. The `focus` oracle expects `привет ghbdtn ` in A with
+the collapsed end caret and exactly `x` in B. It checks that returning to A does not resume
+correction across a committed partial word. This fixture's RichEdit UIA Value includes one final carriage
 return beyond the literal document content. The inspector compares the expected string plus
 exactly that one marker; it does not trim whitespace or ignore an extra line break.
 

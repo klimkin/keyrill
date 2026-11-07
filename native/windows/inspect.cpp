@@ -142,7 +142,7 @@ bool ServiceStatus(HWND root) {
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
     fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
-                     L"correction|reversal|continuation|empty|routing|service\n");
+                     L"correction|reversal|continuation|focus|empty|routing|service\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -150,12 +150,17 @@ int wmain(int argc, wchar_t **argv) {
   if (!pid || !end || *end)
     return 2;
   const wchar_t *expected = nullptr;
+  const wchar_t *other_expected = L"";
   if (wcscmp(argv[2], L"correction") == 0)
     expected = L"\x043f\x0440\x0438\x0432\x0435\x0442 ";
   if (wcscmp(argv[2], L"reversal") == 0)
     expected = L"ghbdtn ";
   if (wcscmp(argv[2], L"continuation") == 0)
     expected = L"\x043f\x0440\x0438\x0432\x0435\x0442 x";
+  if (wcscmp(argv[2], L"focus") == 0) {
+    expected = L"\x043f\x0440\x0438\x0432\x0435\x0442 ghbdtn ";
+    other_expected = L"x";
+  }
   if (wcscmp(argv[2], L"empty") == 0)
     expected = L"";
   bool routing = wcscmp(argv[2], L"routing") == 0;
@@ -185,7 +190,7 @@ int wmain(int argc, wchar_t **argv) {
     return matched ? 0 : 1;
   }
   bool matched = Check(GetDlgItem(search.window, 101), expected, true);
-  bool other = Check(GetDlgItem(search.window, 102), L"", false);
+  bool other = Check(GetDlgItem(search.window, 102), other_expected, false);
   matched = matched && other;
   CoUninitialize();
   puts(matched ? "Fixture document and caret oracle matched. No text recorded."
