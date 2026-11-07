@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <thread>
 #include <vector>
 
 using namespace keyrill;
@@ -252,6 +253,10 @@ struct Document final : ITfContext,
   InputScope scope = IS_DEFAULT;
   ApplicationScopeProperty application_scope;
   bool disabled = false;
+  bool empty_disabled = false;
+  bool queried_empty = false;
+  bool view_present = true;
+  HRESULT scope_interface_result = S_OK;
   bool foreign = false;
   bool reject_composition = false;
   bool callback = true;
@@ -289,9 +294,11 @@ struct Document final : ITfContext,
       *out = static_cast<ITfProperty *>(this);
     else if (id == IID_ITfReadOnlyProperty)
       *out = static_cast<ITfReadOnlyProperty *>(static_cast<ITfProperty *>(this));
-    else if (id == IID_ITfInputScope)
+    else if (id == IID_ITfInputScope) {
+      if (FAILED(scope_interface_result))
+        return scope_interface_result;
       *out = static_cast<ITfInputScope *>(this);
-    else if (id == IID_ITfCompartmentMgr)
+    } else if (id == IID_ITfCompartmentMgr)
       *out = static_cast<ITfCompartmentMgr *>(this);
     else if (id == IID_ITfCompartment)
       *out = static_cast<ITfCompartment *>(this);
@@ -337,8 +344,9 @@ struct Document final : ITfContext,
   }
   HRESULT STDMETHODCALLTYPE GetActiveView(ITfContextView **out) override {
     Call("GetActiveView");
-    *out = static_cast<ITfContextView *>(this);
-    AddRef();
+    *out = view_present ? static_cast<ITfContextView *>(this) : nullptr;
+    if (*out)
+      AddRef();
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE GetWnd(HWND *out) override {
@@ -391,8 +399,9 @@ struct Document final : ITfContext,
     }
     return application_scope.scopes_result;
   }
-  HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID, ITfCompartment **out) override {
+  HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID id, ITfCompartment **out) override {
     Call("GetCompartment");
+    queried_empty = id == GUID_COMPARTMENT_EMPTYCONTEXT;
     *out = static_cast<ITfCompartment *>(this);
     AddRef();
     return S_OK;
@@ -401,7 +410,7 @@ struct Document final : ITfContext,
     Call("compartment.GetValue");
     VariantInit(out);
     out->vt = VT_I4;
-    out->lVal = disabled;
+    out->lVal = queried_empty ? empty_disabled : disabled;
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE StartComposition(TfEditCookie, ITfRange *range, ITfCompositionSink *,
@@ -548,11 +557,23 @@ HRESULT Composition::EndComposition(TfEditCookie) {
 struct Manager final : ITfThreadMgr,
                        ITfDocumentMgr,
                        ITfSource,
+                       ITfSourceSingle,
                        ITfKeystrokeMgr,
                        ITfCompartmentMgr,
                        ITfCompartment {
   Document *top = nullptr;
   bool disabled = false;
+  bool diagnostic_source = true;
+  bool throw_advise = false;
+  bool throw_unadvise = false;
+  HRESULT diagnostic_advise_result = S_OK;
+  HRESULT diagnostic_unadvise_result = S_OK;
+  HRESULT provider_result = S_OK;
+  bool provider_null = false;
+  std::function<void()> diagnostic_advise_hook;
+  std::function<void()> diagnostic_unadvise_hook;
+  ComPtr<IUnknown> diagnostic_sink;
+  int diagnostic_advises = 0, diagnostic_unadvises = 0, provider_queries = 0;
   int references = 1;
   int key_unadvises = 0, thread_unadvises = 0, profile_unadvises = 0;
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
@@ -567,6 +588,8 @@ struct Manager final : ITfThreadMgr,
       *out = static_cast<ITfDocumentMgr *>(this);
     else if (id == IID_ITfSource)
       *out = static_cast<ITfSource *>(this);
+    else if (id == IID_ITfSourceSingle && diagnostic_source)
+      *out = static_cast<ITfSourceSingle *>(this);
     else if (id == IID_ITfKeystrokeMgr)
       *out = static_cast<ITfKeystrokeMgr *>(this);
     else if (id == IID_ITfCompartmentMgr)
@@ -635,7 +658,38 @@ struct Manager final : ITfThreadMgr,
   STUB(SetFocus, (ITfDocumentMgr *));
   STUB(AssociateFocus, (HWND, ITfDocumentMgr *, ITfDocumentMgr **));
   STUB(IsThreadFocus, (BOOL *));
-  STUB(GetFunctionProvider, (REFCLSID, ITfFunctionProvider **));
+  HRESULT STDMETHODCALLTYPE GetFunctionProvider(REFCLSID id, ITfFunctionProvider **out) override {
+    Require(id == service_id, "poll asks only for the actual service provider");
+    ++provider_queries;
+    *out = nullptr;
+    if (provider_result != S_OK)
+      return provider_result;
+    if (provider_null)
+      return S_OK;
+    return diagnostic_sink ? diagnostic_sink->QueryInterface(IID_PPV_ARGS(out)) : TF_E_NOPROVIDER;
+  }
+  HRESULT STDMETHODCALLTYPE AdviseSingleSink(TfClientId client, REFIID id,
+                                             IUnknown *sink) override {
+    Require(client == 42 && id == IID_ITfFunctionProvider,
+            "diagnostic registration captured client");
+    ++diagnostic_advises;
+    if (diagnostic_advise_hook)
+      diagnostic_advise_hook();
+    diagnostic_sink = sink;
+    if (throw_advise)
+      throw 1;
+    return diagnostic_advise_result;
+  }
+  HRESULT STDMETHODCALLTYPE UnadviseSingleSink(TfClientId client, REFIID id) override {
+    Require(client == 42 && id == IID_ITfFunctionProvider, "diagnostic cleanup captured client");
+    ++diagnostic_unadvises;
+    diagnostic_sink.Reset();
+    if (diagnostic_unadvise_hook)
+      diagnostic_unadvise_hook();
+    if (throw_unadvise)
+      throw 1;
+    return diagnostic_unadvise_result;
+  }
   STUB(EnumFunctionProviders, (IEnumTfFunctionProviders **));
   STUB(GetGlobalCompartment, (ITfCompartmentMgr **));
   STUB(CreateContext, (TfClientId, DWORD, IUnknown *, ITfContext **, TfEditCookie *));
@@ -706,6 +760,494 @@ struct Harness {
     Require(b.text == L"prefix suffix" && b.caret == 7, "other document unchanged");
   }
 };
+diagnostics::Snapshot DiagnosticSnapshot(Service &service) {
+  diagnostics::Snapshot snapshot;
+  Require(service.Copy(sizeof(snapshot), diagnostics::version, &snapshot) == S_OK &&
+              diagnostics::Valid(snapshot),
+          "service copies one valid bounded scalar snapshot");
+  return snapshot;
+}
+void DiagnosticRefusalSchedules() {
+  using diagnostics::Cause;
+  using diagnostics::Counter;
+  using diagnostics::Stage;
+  for (int scenario = 0; scenario != 18; ++scenario) {
+    Harness h;
+    Stage stage = Stage::AppProperty;
+    Cause cause = Cause::Native;
+    HRESULT result = E_FAIL;
+    auto &property = h.a.application_scope;
+    switch (scenario) {
+    case 0:
+      property.result = E_FAIL;
+      break;
+    case 1:
+      property.result = S_FALSE;
+      result = S_FALSE;
+      break;
+    case 2:
+      property.present = false;
+      cause = Cause::Missing;
+      result = S_OK;
+      break;
+    case 3:
+      property.value_result = E_ACCESSDENIED;
+      stage = Stage::AppValue;
+      result = E_ACCESSDENIED;
+      break;
+    case 4:
+      property.value_type = VT_EMPTY;
+      stage = Stage::AppValue;
+      cause = Cause::WrongType;
+      result = S_OK;
+      break;
+    case 5:
+      property.value_present = false;
+      stage = Stage::AppValue;
+      cause = Cause::Missing;
+      result = S_OK;
+      break;
+    case 6:
+      h.a.scope_interface_result = E_NOINTERFACE;
+      stage = Stage::ScopeInterface;
+      result = E_NOINTERFACE;
+      break;
+    case 7:
+      property.scopes_result = S_FALSE;
+      stage = Stage::Scopes;
+      result = S_FALSE;
+      break;
+    case 8:
+      property.scopes_count = 2;
+      stage = Stage::Scopes;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 9:
+      h.a.status = TF_SD_READONLY;
+      stage = Stage::Status;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 10:
+      h.a.disabled = true;
+      stage = Stage::ContextDisabled;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 11:
+      h.a.empty_disabled = true;
+      stage = Stage::EmptyContext;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 12:
+      h.manager.disabled = true;
+      stage = Stage::ThreadDisabled;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 13:
+      h.a.foreign = true;
+      stage = Stage::Foreign;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 14:
+      h.a.selection_length = 1;
+      stage = Stage::Selection;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 15:
+      h.a.view_present = false;
+      stage = Stage::Focus;
+      cause = Cause::Missing;
+      result = S_OK;
+      break;
+    case 16:
+      h.a.text[6] = L'x';
+      stage = Stage::Boundary;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    case 17:
+      h.a.window = GetDlgItem(h.root, 103);
+      ::SetFocus(h.a.window);
+      stage = Stage::ProofWindow;
+      cause = Cause::Predicate;
+      result = S_OK;
+      break;
+    }
+    const auto before = h.a.text;
+    const auto caret = h.a.caret;
+    Require(!h.Key(L'g', false), "observed refusal preserves key disposition");
+    const auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(snapshot.first.present && snapshot.first.stage == stage &&
+                snapshot.first.cause == cause &&
+                snapshot.first.result == static_cast<uint32_t>(result) &&
+                snapshot.latest == snapshot.first &&
+                snapshot.refusals[static_cast<size_t>(stage)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::HandleEntered)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::SessionEntered)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::SessionCompleted)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::Attempted)] == 0,
+            "first refusal identifies exact observed native result or predicate");
+    Require(h.a.text == before && h.a.caret == caret && h.a.writes == 0 && h.a.starts == 0 &&
+                h.b.text == L"prefix suffix",
+            "diagnostic refusal preserves whole documents and authority");
+  }
+  for (int scenario = 0; scenario != 3; ++scenario) {
+    Harness h;
+    h.a.callback = false;
+    if (scenario == 0)
+      h.a.request_result = E_ACCESSDENIED;
+    if (scenario == 1)
+      h.a.session_result = TF_E_SYNCHRONOUS;
+    Require(!h.Key(L'g', false), "observed unentered request passes key");
+    auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(snapshot.request_present && snapshot.session_present &&
+                snapshot.request_result == static_cast<uint32_t>(h.a.request_result) &&
+                snapshot.session_result == static_cast<uint32_t>(h.a.session_result) &&
+                snapshot.first.stage == (scenario == 0 ? Stage::Request : Stage::Session) &&
+                snapshot.first.cause == (scenario == 2 ? Cause::Predicate : Cause::Native) &&
+                snapshot.counts[static_cast<size_t>(Counter::Requested)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::SessionEntered)] == 0 &&
+                snapshot.counts[static_cast<size_t>(Counter::SessionCompleted)] == 0 &&
+                h.a.writes == 0,
+            "request denial differs from denied or unentered session");
+  }
+  {
+    Harness h;
+    Require(h.Key(L'g', false), "diagnosed verified write consumes key");
+    auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(!snapshot.first.present &&
+                snapshot.counts[static_cast<size_t>(Counter::Attempted)] == 1 &&
+                snapshot.counts[static_cast<size_t>(Counter::Verified)] == 1,
+            "attempted write and verified outcome remain distinct");
+    h.a.write_result = E_FAIL;
+    Require(h.Key(L'h', false), "attempted unknown preserves consumed disposition");
+    snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(snapshot.stopped && snapshot.first.stage == Stage::Apply &&
+                snapshot.first.cause == Cause::Native &&
+                snapshot.counts[static_cast<size_t>(Counter::Unknown)] == 1,
+            "unknown write remains observable in stopped active service");
+    BOOL interest = TRUE;
+    h.service->OnTestKeyDown(&h.a, 0, 0, &interest);
+    snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(!interest && snapshot.latest.stage == Stage::Test &&
+                snapshot.latest.cause == Cause::Stopped,
+            "test refusal distinguishes stopped service");
+  }
+}
+void DiagnosticExceptionSchedules() {
+  using namespace diagnostics;
+  for (const char *boundary : {"GetAppProperty", "SetText.before", "SetText.after"}) {
+    Harness h;
+    bool thrown = false;
+    h.a.hook = [&](const char *name) {
+      if (std::string(name) == boundary) {
+        thrown = true;
+        throw 1;
+      }
+    };
+    const bool attempted = std::string(boundary) != "GetAppProperty";
+    Require(h.Key(L'g', false) == attempted && thrown,
+            "diagnostic exception preserves existing key disposition");
+    h.a.hook = nullptr;
+    const auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    Require(snapshot.first.present && snapshot.first == snapshot.latest &&
+                snapshot.first.stage == (attempted ? Stage::Apply : Stage::AppProperty) &&
+                snapshot.first.cause == Cause::Exception && snapshot.first.result == 0 &&
+                snapshot.counts[static_cast<size_t>(Counter::Attempted)] == (attempted ? 1u : 0u) &&
+                snapshot.counts[static_cast<size_t>(Counter::Unknown)] == (attempted ? 1u : 0u) &&
+                snapshot.counts[static_cast<size_t>(Counter::Verified)] == 0 && snapshot.stopped,
+            "throwing native boundary retains active stage and counts unknown once");
+    const bool wrote = std::string(boundary) == "SetText.after";
+    Require(h.a.text == (wrote ? L"prefix gsuffix" : L"prefix suffix") && h.a.caret == 7 &&
+                h.a.writes == (wrote ? 1 : 0) && h.b.text == L"prefix suffix" && h.b.caret == 7,
+            "exception diagnostics preserve actual whole documents without repair or replay");
+    Require(!h.Key(L'h', false) && h.a.writes == (wrote ? 1 : 0),
+            "unknown exception stops further writes");
+  }
+}
+struct DiagnosticProvider final : ITfFunctionProvider, diagnostics::SnapshotReader {
+  ULONG references = 1;
+  diagnostics::Snapshot snapshot;
+  HRESULT result = S_OK;
+  bool throwing = false;
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    *out = nullptr;
+    if (id == IID_IUnknown || id == IID_ITfFunctionProvider)
+      *out = static_cast<ITfFunctionProvider *>(this);
+    else if (id == diagnostics::snapshot_iid)
+      *out = static_cast<diagnostics::SnapshotReader *>(this);
+    if (!*out)
+      return E_NOINTERFACE;
+    AddRef();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetFunction(REFGUID function, REFIID id, IUnknown **out) override {
+    Require(function == GUID_NULL && id == diagnostics::snapshot_iid,
+            "private readonly snapshot discovery");
+    return QueryInterface(id, reinterpret_cast<void **>(out));
+  }
+  HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
+                                 diagnostics::Snapshot *out) override {
+    Require(size == sizeof(*out) && requested_version == diagnostics::version,
+            "poll bounded versioned copy");
+    *out = {};
+    if (throwing)
+      throw 1;
+    if (result == S_OK)
+      *out = snapshot;
+    return result;
+  }
+  STUB(GetType, (GUID *));
+  STUB(GetDescription, (BSTR *));
+};
+void DiagnosticPublicationSchedules() {
+  using namespace diagnostics;
+  DiagnosticProvider provider;
+  Harness h;
+  Poller poller;
+  poller.Poll(&h.manager);
+  h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+  provider.snapshot.active = provider.snapshot.activation = 1;
+  poller.Poll(&h.manager);
+  Require(poller.value.availability == Availability::Available && poller.value.source == 2 &&
+              poller.value.continuity == Continuity::Reset,
+          "canonical provider change resets interval");
+  for (int scenario = 0; scenario != 4; ++scenario) {
+    provider.result = scenario == 0 ? E_ACCESSDENIED : scenario == 1 ? S_FALSE : S_OK;
+    provider.throwing = scenario == 2;
+    provider.snapshot.active = scenario == 3 ? 2 : 1;
+    poller.Poll(&h.manager);
+    Require(poller.value.availability == Availability::Error &&
+                poller.value.snapshot == Snapshot{} && poller.value.continuity == Continuity::None,
+            "failed throwing incomplete or malformed reads replace cached success");
+  }
+  provider.throwing = false;
+  provider.snapshot.active = 0;
+  poller.Poll(&h.manager);
+  Require(poller.value.availability == Availability::Inactive && !poller.value.snapshot.active,
+          "inactive publication replaces cached active snapshot");
+  provider.snapshot.active = 1;
+  poller.Poll(&h.manager);
+  Require(poller.value.continuity == Continuity::Reset,
+          "availability recovery begins a new interval");
+  poller.Poll(&h.manager);
+  Require(poller.value.continuity == Continuity::Same,
+          "second available sample can share baseline");
+  ++provider.snapshot.activation;
+  poller.Poll(&h.manager);
+  Require(poller.value.continuity == Continuity::Reset,
+          "same identity new activation resets interval");
+  h.manager.provider_result = E_FAIL;
+  poller.Poll(&h.manager);
+  Require(poller.value.availability == Availability::Error &&
+              poller.value.result == static_cast<uint32_t>(E_FAIL) &&
+              poller.value.snapshot == Snapshot{},
+          "failed provider discovery is an error rather than absence");
+  h.manager.provider_result = S_OK;
+  h.manager.provider_null = true;
+  poller.Poll(&h.manager);
+  Require(poller.value.availability == Availability::Error && poller.value.result == 0 &&
+              poller.value.snapshot == Snapshot{},
+          "successful null provider is a predicate error");
+  h.manager.provider_null = false;
+  poller.value.publication = UINT32_MAX - 1;
+  poller.Poll(&h.manager);
+  Require(poller.value.publication == UINT32_MAX && poller.value.saturated &&
+              poller.value.continuity == Continuity::Indeterminate,
+          "host saturation makes continuity indeterminate");
+  poller.Reset();
+}
+void DiagnosticLifetimeSchedules() {
+  using diagnostics::Availability;
+  using diagnostics::Cause;
+  using diagnostics::Continuity;
+  using diagnostics::Counter;
+  {
+    Harness h;
+    Require(h.manager.diagnostic_advises == 1 && h.manager.diagnostic_sink,
+            "proof process registers actual provider once");
+    diagnostics::Poller poller;
+    poller.Poll(&h.manager);
+    Require(poller.value.availability == Availability::Available &&
+                poller.value.continuity == Continuity::Reset && poller.value.source == 1,
+            "actual registered provider begins a new interval");
+    const auto activation = poller.value.snapshot.activation;
+    h.service->OnSetFocus(FALSE);
+    h.service->OnActivated(0, 0, service_id, GUID_NULL, profiles[0].id, nullptr,
+                           TF_IPSINK_FLAG_ACTIVE);
+    poller.Poll(&h.manager);
+    Require(poller.value.availability == Availability::Available &&
+                poller.value.continuity == Continuity::Same && poller.value.source == 1 &&
+                poller.value.snapshot.activation == activation,
+            "editing generations do not break service activation continuity");
+    BOOL interest = FALSE;
+    h.service->OnTestKeyDown(&h.a, 0, 0, &interest);
+    Require(interest, "actual service test interest observed");
+    ComPtr<diagnostics::SnapshotReader> retained;
+    Require(h.manager.diagnostic_sink->QueryInterface(
+                diagnostics::snapshot_iid, reinterpret_cast<void **>(retained.GetAddressOf())) ==
+                S_OK,
+            "retained diagnostic interface");
+    bool busy = false;
+    h.a.hook = [&](const char *name) {
+      if (!busy && std::string(name) == "GetSelection") {
+        busy = true;
+        diagnostics::Snapshot rejected;
+        rejected.active = 1;
+        Require(retained->Copy(sizeof(rejected), diagnostics::version, &rejected) == E_PENDING &&
+                    rejected == diagnostics::Snapshot{},
+                "busy snapshot output is cleared");
+        poller.Poll(&h.manager);
+        Require(poller.value.availability == Availability::Busy &&
+                    poller.value.snapshot == diagnostics::Snapshot{},
+                "busy publication replaces cached success");
+      }
+    };
+    Require(h.Key(L'g', false) && busy, "busy observation does not affect editing");
+    h.a.hook = nullptr;
+    poller.Poll(&h.manager);
+    Require(poller.value.continuity == Continuity::Reset && poller.value.source == 2,
+            "available after failed read resets interval");
+    h.manager.provider_result = TF_E_NOPROVIDER;
+    poller.Poll(&h.manager);
+    Require(poller.value.availability == Availability::Missing &&
+                poller.value.snapshot == diagnostics::Snapshot{},
+            "provider absence replaces cached success");
+    h.manager.provider_result = S_OK;
+    h.service->Deactivate();
+    diagnostics::Snapshot inactive;
+    Require(retained->Copy(sizeof(inactive), diagnostics::version, &inactive) == S_OK &&
+                !inactive.active && inactive.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
+            "retained interface reports inactive with lifetime history");
+    Require(SUCCEEDED(h.service->Activate(&h.manager, 42)), "same service reactivation");
+    poller.Poll(&h.manager);
+    Require(poller.value.availability == Availability::Available &&
+                poller.value.snapshot.activation == activation + 1 &&
+                poller.value.continuity == Continuity::Reset &&
+                poller.value.snapshot.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
+            "new activation resets baseline and preserves lifetime counters");
+    poller.Reset();
+  }
+  {
+    Harness h;
+    diagnostics::Snapshot output;
+    output.active = 1;
+    Require(h.service->Copy(sizeof(output), diagnostics::version + 1, &output) == E_INVALIDARG &&
+                output == diagnostics::Snapshot{},
+            "incompatible version clears output");
+    output.active = 1;
+    Require(h.service->Copy(sizeof(output) - 1, diagnostics::version, &output) == E_INVALIDARG &&
+                output.active == 0,
+            "incompatible size clears supplied prefix");
+    HRESULT wrong_thread = S_OK;
+    output.active = 1;
+    std::thread thread(
+        [&] { wrong_thread = h.service->Copy(sizeof(output), diagnostics::version, &output); });
+    thread.join();
+    Require(wrong_thread == RPC_E_WRONG_THREAD && output == diagnostics::Snapshot{},
+            "wrong thread cannot read mutable service state");
+    ComPtr<Service> other;
+    other.Attach(new Service);
+    BOOL interest = TRUE;
+    other->OnTestKeyDown(nullptr, 0, 0, &interest);
+    Require(!interest && DiagnosticSnapshot(*other.Get()).first.cause == Cause::Inactive &&
+                DiagnosticSnapshot(*h.service.Get())
+                        .counts[static_cast<size_t>(Counter::TestEntered)] == 0,
+            "independent instances own independent counters");
+    h.service->OnActivated(0, 0, GUID_NULL, GUID_NULL, GUID_NULL, nullptr, 0);
+    h.service->OnTestKeyDown(&h.a, 0, 0, &interest);
+    Require(!interest && DiagnosticSnapshot(*h.service.Get()).latest.cause == Cause::ModeUnset,
+            "test refusal distinguishes missing mode");
+  }
+  for (int scenario = 0; scenario != 9; ++scenario) {
+    Harness h;
+    h.service->Deactivate();
+    const int initial_advises = h.manager.diagnostic_advises;
+    const int initial_unadvises = h.manager.diagnostic_unadvises;
+    if (scenario == 0)
+      h.manager.diagnostic_source = false;
+    if (scenario == 1)
+      h.manager.diagnostic_advise_result = E_FAIL;
+    if (scenario == 2)
+      h.manager.throw_advise = true;
+    if (scenario == 3)
+      h.manager.diagnostic_advise_hook = [&] { h.service->Deactivate(); };
+    if (scenario == 4)
+      h.manager.diagnostic_unadvise_result = E_FAIL;
+    if (scenario == 5)
+      h.manager.throw_unadvise = true;
+    if (scenario == 6 || scenario == 7) {
+      h.manager.throw_advise = true;
+      h.manager.diagnostic_unadvise_result = E_FAIL;
+      h.manager.throw_unadvise = scenario == 7;
+    }
+    if (scenario == 8)
+      h.manager.diagnostic_unadvise_hook = [&] { h.service->Deactivate(); };
+    Require(h.service->Activate(&h.manager, 42) == S_OK,
+            "best effort diagnostic registration preserves activation result");
+    h.service->Deactivate();
+    h.service->Deactivate();
+    Require(
+        !h.manager.diagnostic_sink &&
+            h.manager.diagnostic_advises == initial_advises + (scenario == 0 ? 0 : 1) &&
+            h.manager.diagnostic_unadvises == initial_unadvises + (scenario == 0 ? 0 : 1),
+        "failed throwing or reentrant registration cleans captured ownership once without retry");
+    h.manager.diagnostic_advise_hook = nullptr;
+    h.manager.diagnostic_unadvise_hook = nullptr;
+    h.manager.throw_unadvise = false;
+  }
+}
+void DiagnosticCodecSchedules() {
+  using namespace diagnostics;
+  Require(SameActivation(true, 1, 1) && !SameActivation(false, 1, 1) &&
+              !SameActivation(true, 2, 1) && !SameActivation(true, 0, 0) &&
+              !SameActivation(true, UINT32_MAX, UINT32_MAX),
+          "saturated serial cannot publish registration ownership after reentry");
+  Publication publication;
+  wchar_t text[status_capacity]{};
+  Publication parsed;
+  Require(Format(publication, text) && Parse(text, parsed),
+          "absent provider has canonical bounded publication");
+  publication.availability = Availability::Available;
+  publication.continuity = Continuity::Reset;
+  publication.source = publication.snapshot.activation = publication.snapshot.active = 1;
+  Refuse(publication.snapshot, Stage::AppProperty, Cause::Native, S_FALSE);
+  Require(Format(publication, text) && Parse(text, parsed) &&
+              parsed.snapshot == publication.snapshot,
+          "typed codec preserves native S_FALSE and exact first refusal");
+  const std::wstring good(text);
+  for (const auto &bad : {good + L"; unexpected=1", good.substr(1), good + L" ",
+                          std::wstring(L"Keyrill service v2") + good.substr(18),
+                          good.substr(0, good.size() - 1), std::wstring(status_capacity, L'x')})
+    Require(!Parse(bad, parsed), "codec rejects malformed truncated extra or oversized payload");
+  for (const auto &replacement :
+       {std::pair{L"active=1", L"active=2"}, std::pair{L"source=1", L"source=01"},
+        std::pair{L"result=0", L"result=4294967296"}, std::pair{L"/Native/1", L"/Predicate/1"},
+        std::pair{L"state=Available", L"state=Fresh"}}) {
+    std::wstring bad = good;
+    const auto position = bad.find(replacement.first);
+    Require(position != std::wstring::npos, "malformed codec target present");
+    bad.replace(position, wcslen(replacement.first), replacement.second);
+    Require(!Parse(bad, parsed), "codec rejects invalid enums booleans numbers and discriminants");
+  }
+  publication.snapshot.counts[0] = UINT32_MAX - 1;
+  Count(publication.snapshot, Counter::TestEntered);
+  Count(publication.snapshot, Counter::TestEntered);
+  Require(publication.snapshot.saturated && publication.snapshot.counts[0] == UINT32_MAX,
+          "scalar counters saturate without wrapping");
+  publication.continuity = Continuity::Indeterminate;
+  Require(Format(publication, text) && Parse(text, parsed), "saturation remains explicit in codec");
+  publication.snapshot.saturated = 0;
+  Require(!Format(publication, text), "codec rejects hidden saturation");
+}
 void ApplicationInputScope(InputScope scope) {
   Harness h;
   h.a.scope = scope;
@@ -1149,6 +1691,16 @@ int wmain() {
   FixtureLifecycle();
   controlled_root = CreateFixture(GetModuleHandleW(nullptr), FixtureProc, false);
   Require(controlled_root != nullptr, "controlled native metadata fixture");
+  puts("RUN actual service diagnostic codec");
+  DiagnosticCodecSchedules();
+  puts("RUN actual service diagnostic refusal schedules");
+  DiagnosticRefusalSchedules();
+  puts("RUN actual service diagnostic exception schedules");
+  DiagnosticExceptionSchedules();
+  puts("RUN actual service diagnostic publication schedules");
+  DiagnosticPublicationSchedules();
+  puts("RUN actual service diagnostic lifetime schedules");
+  DiagnosticLifetimeSchedules();
   puts("RUN default application input scope correction");
   ApplicationInputScope(IS_DEFAULT);
   puts("RUN text application input scope correction");

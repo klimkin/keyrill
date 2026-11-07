@@ -1,5 +1,6 @@
 #pragma once
 #include "profiles.h"
+#include "service_diagnostics.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -13,7 +14,9 @@ class Service final : public ITfTextInputProcessorEx,
                       public ITfKeyEventSink,
                       public ITfThreadMgrEventSink,
                       public ITfCompositionSink,
-                      public ITfInputProcessorProfileActivationSink {
+                      public ITfInputProcessorProfileActivationSink,
+                      public ITfFunctionProvider,
+                      public diagnostics::SnapshotReader {
 public:
   Service();
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override;
@@ -22,6 +25,10 @@ public:
   HRESULT STDMETHODCALLTYPE Activate(ITfThreadMgr *manager, TfClientId client) override;
   HRESULT STDMETHODCALLTYPE ActivateEx(ITfThreadMgr *, TfClientId, DWORD) override;
   HRESULT STDMETHODCALLTYPE Deactivate() override;
+  HRESULT STDMETHODCALLTYPE GetType(GUID *) override;
+  HRESULT STDMETHODCALLTYPE GetDescription(BSTR *) override;
+  HRESULT STDMETHODCALLTYPE GetFunction(REFGUID, REFIID, IUnknown **) override;
+  HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, diagnostics::Snapshot *) override;
   HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *) override;
@@ -42,6 +49,11 @@ public:
 
 private:
   friend class EditSession;
+  struct DiagnosticCallback {
+    Service &service;
+    explicit DiagnosticCallback(Service &value) : service(value) { ++service.diagnostic_depth_; }
+    ~DiagnosticCallback() { --service.diagnostic_depth_; }
+  };
   ~Service();
   struct Owned {
     ComPtr<ITfContext> context;
@@ -54,6 +66,11 @@ private:
   void Invalidate(bool stop);
   void InvalidateForLifecycle();
   bool Current(uint64_t generation) const;
+  void RegisterDiagnostics() noexcept;
+  void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
+  void Refuse(diagnostics::Stage stage, diagnostics::Cause cause, HRESULT result = S_OK) noexcept {
+    diagnostics::Refuse(diagnostics_, stage, cause, result);
+  }
   ULONG references_ = 1;
   DWORD thread_ = GetCurrentThreadId();
   uint64_t generation_ = 1;
@@ -70,5 +87,9 @@ private:
   ComPtr<ITfInputProcessorProfileMgr> profiles_manager_;
   DWORD thread_cookie_ = TF_INVALID_COOKIE;
   DWORD profile_cookie_ = TF_INVALID_COOKIE;
+  uint32_t diagnostic_depth_ = 0;
+  diagnostics::Snapshot diagnostics_;
+  ComPtr<ITfSourceSingle> diagnostic_source_;
+  TfClientId diagnostic_client_ = TF_CLIENTID_NULL;
 };
 } // namespace keyrill

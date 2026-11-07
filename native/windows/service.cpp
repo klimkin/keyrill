@@ -1,12 +1,16 @@
 #include "service.h"
 #include <algorithm>
 #include <cwctype>
+#include <exception>
 #include <inputscope.h>
 #include <limits>
 #include <new>
 #include <richedit.h>
 
 namespace keyrill {
+using diagnostics::Cause;
+using diagnostics::Counter;
+using diagnostics::Stage;
 long object_count = 0;
 
 bool ProofWindow(HWND window) {
@@ -82,8 +86,13 @@ public:
   EditSession(Service &owner, ITfContext *context, kr_event event)
       : owner_keep_(&owner), owner_(owner), generation_(owner.generation_), event_(event) {
     context_ = context;
-    if (owner_.Current(generation_) && context_)
-      context_->QueryInterface(IID_PPV_ARGS(&context_id_));
+    if (owner_.Current(generation_) && context_) {
+      HRESULT result = context_->QueryInterface(IID_PPV_ARGS(&context_id_));
+      if (FAILED(result))
+        owner_.Refuse(Stage::Session, Cause::Native, result);
+      else if (!context_id_)
+        owner_.Refuse(Stage::Session, Cause::Missing);
+    }
   }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
     if (!out)
@@ -103,16 +112,23 @@ public:
     return n;
   }
   HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
-    if (entered_ || !Alive())
+    if (entered_ || !Alive()) {
+      owner_.Refuse(Stage::Session, entered_ ? Cause::Reentry : Cause::Stale);
       return E_FAIL;
+    }
     entered_ = true;
+    diagnostics::Count(owner_.diagnostics_, Counter::SessionEntered);
     try {
       Run(cookie);
     } catch (...) {
+      owner_.Refuse(stage_, Cause::Exception);
+      if (wrote_ && !outcome_recorded_)
+        diagnostics::Count(owner_.diagnostics_, Counter::Unknown);
       owner_.Invalidate(true);
       eaten = UnknownDisposition();
     }
     completed = true;
+    diagnostics::Count(owner_.diagnostics_, Counter::SessionCompleted);
     return S_OK;
   }
   bool completed = false;
@@ -127,108 +143,161 @@ public:
 private:
   ~EditSession() = default;
   bool Alive() const { return !expired_ && context_id_ && owner_.Current(generation_); }
-  bool Good(HRESULT result) const { return SUCCEEDED(result) && Alive(); }
-  bool Identity(IUnknown *object, IUnknown *expected) {
-    ComPtr<IUnknown> identity;
-    if (!object || !Good(object->QueryInterface(IID_PPV_ARGS(&identity))))
+  struct Observe {
+    EditSession &session;
+    Stage previous;
+    int exceptions = std::uncaught_exceptions();
+    Observe(EditSession &value, Stage stage) : session(value), previous(value.stage_) {
+      session.stage_ = stage;
+    }
+    ~Observe() {
+      if (std::uncaught_exceptions() == exceptions)
+        session.stage_ = previous;
+    }
+  };
+  bool Check(bool value, Cause cause = Cause::Predicate) {
+    if (!value)
+      owner_.Refuse(stage_, cause);
+    return value;
+  }
+  bool Good(HRESULT result) {
+    bool good = SUCCEEDED(result) && Alive();
+    if (!good)
+      owner_.Refuse(stage_, FAILED(result) ? Cause::Native : Cause::Stale,
+                    FAILED(result) ? result : S_OK);
+    return good;
+  }
+  bool Exact(HRESULT result) {
+    if (!Good(result))
       return false;
-    return identity.Get() == expected && Alive();
+    if (result != S_OK) {
+      owner_.Refuse(stage_, Cause::Native, result);
+      return false;
+    }
+    return true;
+  }
+  bool Identity(IUnknown *object, IUnknown *expected) {
+    Observe observe(*this, Stage::Context);
+    ComPtr<IUnknown> identity;
+    if (!Check(object != nullptr, Cause::Missing) ||
+        !Good(object->QueryInterface(IID_PPV_ARGS(&identity))))
+      return false;
+    return Check(identity.Get() == expected && Alive());
   }
   bool Focused() {
+    Observe observe(*this, Stage::Focus);
     ComPtr<ITfThreadMgr> manager = owner_.manager_;
-    if (!Alive() || !manager)
+    if (!Check(Alive(), Cause::Stale) || !Check(manager != nullptr, Cause::Missing))
       return false;
     ComPtr<ITfDocumentMgr> document;
     ComPtr<ITfContext> top;
     ComPtr<ITfContextView> view;
     HWND window = nullptr;
-    if (!Good(manager->GetFocus(&document)) || !document || !Good(document->GetTop(&top)) ||
-        !Identity(top.Get(), context_id_.Get()) || !Good(context_->GetActiveView(&view)) || !view ||
+    if (!Good(manager->GetFocus(&document)) || !Check(document != nullptr, Cause::Missing) ||
+        !Good(document->GetTop(&top)) || !Identity(top.Get(), context_id_.Get()) ||
+        !Good(context_->GetActiveView(&view)) || !Check(view != nullptr, Cause::Missing) ||
         !Good(view->GetWnd(&window)))
       return false;
-    return window && ::GetFocus() == window && ProofWindow(window) && Alive();
+    if (!Check(window && ::GetFocus() == window))
+      return false;
+    stage_ = Stage::ProofWindow;
+    return Check(ProofWindow(window) && Alive());
   }
   bool Extent(ITfRange *range, LONG &start, LONG &length) {
+    Observe observe(*this, Stage::Context);
     ComPtr<ITfContext> context;
     if (!Good(range->GetContext(&context)) || !Identity(context.Get(), context_id_.Get()))
       return false;
     ComPtr<ITfRangeACP> acp;
     if (!Good(range->QueryInterface(IID_PPV_ARGS(&acp))) || !Good(acp->GetExtent(&start, &length)))
       return false;
-    return start >= 0 && length >= 0 && start <= std::numeric_limits<LONG>::max() - length;
+    return Check(start >= 0 && length >= 0 && start <= std::numeric_limits<LONG>::max() - length);
   }
   bool Selection(TfEditCookie cookie, ComPtr<ITfRange> &range, LONG &caret, bool collapsed = true) {
+    Observe observe(*this, Stage::Selection);
     TF_SELECTION selection{};
     ULONG fetched = 0;
     HRESULT result = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
     range.Attach(selection.range);
-    if (!Good(result) || fetched != 1 || !range || selection.style.fInterimChar)
+    if (!Good(result) || !Check(fetched == 1 && range && !selection.style.fInterimChar))
       return false;
     LONG length = 0;
-    return Extent(range.Get(), caret, length) && (!collapsed || length == 0);
+    return Extent(range.Get(), caret, length) && Check(!collapsed || length == 0);
   }
-  bool Disabled(IUnknown *target, REFGUID id) {
+  bool Disabled(IUnknown *target, REFGUID id, Stage stage) {
+    Observe observe(*this, stage);
     ComPtr<ITfCompartmentMgr> compartments;
-    if (!target || !Good(target->QueryInterface(IID_PPV_ARGS(&compartments))))
+    if (!Check(target != nullptr, Cause::Missing) ||
+        !Good(target->QueryInterface(IID_PPV_ARGS(&compartments))))
       return true;
     ComPtr<ITfCompartment> compartment;
-    if (!Good(compartments->GetCompartment(id, &compartment)) || !compartment)
+    if (!Good(compartments->GetCompartment(id, &compartment)) ||
+        !Check(compartment != nullptr, Cause::Missing))
       return true;
     VARIANT value;
     VariantInit(&value);
     HRESULT result = compartment->GetValue(&value);
-    bool disabled = !Good(result) || (value.vt != VT_EMPTY && value.vt != VT_I4) ||
-                    (value.vt == VT_I4 && value.lVal != 0);
+    bool disabled = !Good(result) || !Check((value.vt == VT_EMPTY || value.vt == VT_I4) &&
+                                            (value.vt != VT_I4 || value.lVal == 0));
     VariantClear(&value);
-    return disabled || !Alive();
+    return disabled || !Check(Alive(), Cause::Stale);
   }
   bool Admit(TfEditCookie cookie, ITfRange *selection) {
+    Observe observe(*this, Stage::Focus);
     ComPtr<ITfContextView> view;
     HWND window = nullptr;
-    if (!Focused() || !Good(context_->GetActiveView(&view)) || !view ||
-        !Good(view->GetWnd(&window)) || !ProofWindow(window) || !Alive())
+    if (!Focused() || !Good(context_->GetActiveView(&view)) ||
+        !Check(view != nullptr, Cause::Missing) || !Good(view->GetWnd(&window)) ||
+        !Check(ProofWindow(window) && Alive()))
       return false;
+    stage_ = Stage::Status;
     TF_STATUS status{};
     ComPtr<ITfThreadMgr> manager = owner_.manager_;
-    if (!Good(context_->GetStatus(&status)) || (status.dwDynamicFlags & TF_SD_READONLY) ||
-        Disabled(context_.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED) ||
-        Disabled(context_.Get(), GUID_COMPARTMENT_EMPTYCONTEXT) ||
-        Disabled(manager.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED))
+    if (!Good(context_->GetStatus(&status)) || !Check(!(status.dwDynamicFlags & TF_SD_READONLY)) ||
+        Disabled(context_.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED, Stage::ContextDisabled) ||
+        Disabled(context_.Get(), GUID_COMPARTMENT_EMPTYCONTEXT, Stage::EmptyContext) ||
+        Disabled(manager.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED, Stage::ThreadDisabled))
       return false;
+    stage_ = Stage::AppProperty;
     ComPtr<ITfReadOnlyProperty> property;
     HRESULT result = context_->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
-    if (!Good(result) || result != S_OK || !property)
+    if (!Exact(result) || !Check(property != nullptr, Cause::Missing))
       return false;
     VARIANT value;
     VariantInit(&value);
+    stage_ = Stage::AppValue;
     result = property->GetValue(cookie, selection, &value);
-    if (!Good(result) || result != S_OK || value.vt != VT_UNKNOWN || !value.punkVal) {
+    if (!Exact(result) || !Check(value.vt == VT_UNKNOWN, Cause::WrongType) ||
+        !Check(value.punkVal != nullptr, Cause::Missing)) {
       VariantClear(&value);
       return false;
     }
+    stage_ = Stage::ScopeInterface;
     ComPtr<ITfInputScope> scope;
     result = value.punkVal->QueryInterface(IID_PPV_ARGS(&scope));
     VariantClear(&value);
-    if (!Good(result) || !scope)
+    if (!Good(result) || !Check(scope != nullptr, Cause::Missing))
       return false;
+    stage_ = Stage::Scopes;
     InputScope *scopes = nullptr;
     UINT count = 0;
     result = scope->GetInputScopes(&scopes, &count);
-    bool ordinary = Good(result) && result == S_OK && count == 1 && scopes &&
-                    (scopes[0] == IS_DEFAULT || scopes[0] == IS_TEXT);
+    bool ordinary = Exact(result) && Check(count == 1 && scopes &&
+                                           (scopes[0] == IS_DEFAULT || scopes[0] == IS_TEXT));
     CoTaskMemFree(scopes);
-    return ordinary && Alive();
+    return ordinary && Check(Alive(), Cause::Stale);
   }
   bool NoForeign(TfEditCookie, ITfRange *, ComPtr<ITfContextComposition> &cc) {
+    Observe observe(*this, Stage::Foreign);
     if (!Good(context_->QueryInterface(IID_PPV_ARGS(&cc))))
       return false;
     ComPtr<IEnumITfCompositionView> enumerator;
-    if (!Good(cc->EnumCompositions(&enumerator)) || !enumerator)
+    if (!Good(cc->EnumCompositions(&enumerator)) || !Check(enumerator != nullptr, Cause::Missing))
       return false;
     ComPtr<ITfCompositionView> view;
     ULONG fetched = 0;
     HRESULT result = enumerator->Next(1, &view, &fetched);
-    return Good(result) && fetched == 0;
+    return Good(result) && Check(fetched == 0);
   }
   bool ActiveComposition(IUnknown *expected) {
     ComPtr<ITfContextComposition> cc;
@@ -236,7 +305,7 @@ private:
     ComPtr<ITfCompositionView> view;
     ULONG fetched = 0;
     if (!Good(context_->QueryInterface(IID_PPV_ARGS(&cc))) ||
-        !Good(cc->EnumCompositions(&enumerator)) || !enumerator ||
+        !Good(cc->EnumCompositions(&enumerator)) || !Check(enumerator != nullptr, Cause::Missing) ||
         !Good(enumerator->Next(1, &view, &fetched)) || fetched != 1 || !view ||
         !Identity(view.Get(), expected))
       return false;
@@ -275,21 +344,24 @@ private:
     return Alive();
   }
   bool Boundary(TfEditCookie cookie, ITfRange *selection, LONG caret) {
+    Observe observe(*this, Stage::Boundary);
     if (!caret)
       return true;
     ComPtr<ITfRange> prefix;
     LONG shifted = 0;
     if (!Good(selection->Clone(&prefix)) ||
-        !Good(prefix->ShiftStart(cookie, -1, &shifted, nullptr)) || shifted != -1)
+        !Good(prefix->ShiftStart(cookie, -1, &shifted, nullptr)) || !Check(shifted == -1))
       return false;
     LONG start = 0, length = 0;
-    if (!Extent(prefix.Get(), start, length) || start != caret - 1 || length != 1)
+    if (!Extent(prefix.Get(), start, length) || !Check(start == caret - 1 && length == 1))
       return false;
     wchar_t text[2]{};
     ULONG count = 0;
-    return Good(prefix->GetText(cookie, 0, text, 2, &count)) && count == 1 && iswspace(text[0]);
+    return Good(prefix->GetText(cookie, 0, text, 2, &count)) &&
+           Check(count == 1 && iswspace(text[0]));
   }
   bool Apply(TfEditCookie cookie, const kr_plan &plan) {
+    Observe observe(*this, Stage::Apply);
     std::wstring expected(plan.expected, plan.expected + plan.expected_len);
     std::wstring desired(plan.mark, plan.mark + plan.mark_len);
     ComPtr<ITfRange> range;
@@ -328,6 +400,7 @@ private:
     if (!Focused())
       return false;
     if (plan.action != KR_FINISH || desired != expected) {
+      diagnostics::Count(owner_.diagnostics_, Counter::Attempted);
       wrote_ = true;
       if (!Good(range->SetText(cookie, 0, desired.data(), static_cast<LONG>(desired.size()))))
         return false;
@@ -361,6 +434,7 @@ private:
     } else {
       if (!Focused())
         return false;
+      diagnostics::Count(owner_.diagnostics_, Counter::Attempted);
       wrote_ = true;
       if (!Good(composition->EndComposition(cookie)))
         return false;
@@ -378,7 +452,7 @@ private:
     return true;
   }
   void Run(TfEditCookie cookie) {
-    if (!Alive())
+    if (!Check(Alive(), Cause::Stale))
       return;
     ComPtr<ITfRange> selection;
     LONG caret = 0;
@@ -387,6 +461,7 @@ private:
     if (!Admit(cookie, selection.Get()))
       return;
     if (owner_.owned_ && owner_.owned_->context_id.Get() != context_id_.Get()) {
+      owner_.Refuse(Stage::Context, Cause::Predicate);
       owner_.Invalidate(true);
       return;
     }
@@ -398,25 +473,38 @@ private:
       event_.context = KR_CTX_BOUNDARY;
     }
     for (int iteration = 0; iteration != 2 && Alive(); ++iteration) {
+      stage_ = Stage::Plan;
       kr_plan plan{};
       if (kr_plan_event(owner_.engine_, &event_, &plan) != KR_OK) {
+        owner_.Refuse(Stage::Plan, Cause::Predicate);
         owner_.Invalidate(true);
         return;
       }
       last_action_ = plan.action;
       last_disposition_ = plan.disposition;
       if (plan.action != KR_MARK && plan.action != KR_FINISH) {
-        kr_commit(owner_.engine_, plan.plan_id, KR_APPLIED_VERIFIED);
+        if (kr_commit(owner_.engine_, plan.plan_id, KR_APPLIED_VERIFIED) != KR_OK)
+          owner_.Refuse(Stage::Acknowledge, Cause::Predicate);
         return;
       }
       wrote_ = false;
+      outcome_recorded_ = false;
+      const auto previous_refusals = owner_.diagnostics_.refusals;
       bool applied = Apply(cookie, plan);
       uint32_t outcome = applied  ? KR_APPLIED_VERIFIED
                          : wrote_ ? KR_ATTEMPTED_UNKNOWN
                                   : KR_REFUSED_BEFORE_WRITE;
+      diagnostics::Count(owner_.diagnostics_, applied  ? Counter::Verified
+                                              : wrote_ ? Counter::Unknown
+                                                       : Counter::Refused);
+      outcome_recorded_ = true;
+      if (!applied && owner_.diagnostics_.refusals == previous_refusals)
+        owner_.Refuse(Stage::Apply, Cause::Predicate);
       bool current = Alive();
-      if (current && kr_commit(owner_.engine_, plan.plan_id, outcome) != KR_OK)
+      if (current && kr_commit(owner_.engine_, plan.plan_id, outcome) != KR_OK) {
+        owner_.Refuse(Stage::Acknowledge, Cause::Predicate);
         applied = false;
+      }
       if (!applied || !current) {
         eaten = UnknownDisposition();
         owner_.Invalidate(wrote_ || owner_.owned_ != nullptr);
@@ -441,10 +529,12 @@ private:
   kr_event event_;
   ComPtr<ITfContext> context_;
   ComPtr<IUnknown> context_id_;
+  Stage stage_ = Stage::Session;
   ULONG references_ = 1;
   bool entered_ = false;
   bool expired_ = false;
   bool wrote_ = false;
+  bool outcome_recorded_ = false;
   uint32_t last_action_ = KR_PASS;
   uint32_t last_disposition_ = KR_KEY_PASS;
 };
@@ -471,6 +561,10 @@ HRESULT Service::QueryInterface(REFIID id, void **out) {
     *out = static_cast<ITfCompositionSink *>(this);
   else if (id == IID_ITfInputProcessorProfileActivationSink)
     *out = static_cast<ITfInputProcessorProfileActivationSink *>(this);
+  else if (id == IID_ITfFunctionProvider)
+    *out = static_cast<ITfFunctionProvider *>(this);
+  else if (id == diagnostics::snapshot_iid)
+    *out = static_cast<diagnostics::SnapshotReader *>(this);
   if (!*out)
     return E_NOINTERFACE;
   AddRef();
@@ -482,6 +576,84 @@ ULONG Service::Release() {
   if (!n)
     delete this;
   return n;
+}
+HRESULT Service::GetType(GUID *type) {
+  if (!type)
+    return E_POINTER;
+  *type = service_id;
+  return S_OK;
+}
+HRESULT Service::GetDescription(BSTR *description) {
+  if (!description)
+    return E_POINTER;
+  *description = SysAllocString(L"Keyrill proof service diagnostics");
+  return *description ? S_OK : E_OUTOFMEMORY;
+}
+HRESULT Service::GetFunction(REFGUID function, REFIID interface_id, IUnknown **output) {
+  if (!output)
+    return E_POINTER;
+  *output = nullptr;
+  if (function != GUID_NULL || interface_id != diagnostics::snapshot_iid)
+    return E_NOINTERFACE;
+  *output = static_cast<diagnostics::SnapshotReader *>(this);
+  AddRef();
+  return S_OK;
+}
+HRESULT Service::Copy(uint32_t size, uint32_t requested_version, diagnostics::Snapshot *output) {
+  if (!output)
+    return E_POINTER;
+  ZeroMemory(output, (std::min)(static_cast<size_t>(size), sizeof(*output)));
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  if (size != sizeof(*output) || requested_version != diagnostics::version)
+    return E_INVALIDARG;
+  if (busy_ || diagnostic_depth_)
+    return E_PENDING;
+  *output = diagnostics_;
+  output->active = active_;
+  output->stopped = stopped_;
+  output->mode = mode_;
+  return S_OK;
+}
+void Service::UnregisterDiagnostics(ITfSourceSingle *source, TfClientId client) noexcept {
+  try {
+    source->UnadviseSingleSink(client, IID_ITfFunctionProvider);
+  } catch (...) {
+  }
+}
+void Service::RegisterDiagnostics() noexcept {
+  try {
+    wchar_t path[32768]{};
+    DWORD length = GetModuleFileNameW(nullptr, path, 32768);
+    const wchar_t *base = wcsrchr(path, L'\\');
+    if (!length || length >= 32768 || !base || _wcsicmp(base + 1, L"KeyrillProofEditor.exe") != 0 ||
+        !diagnostics::SameActivation(active_, diagnostics_.activation, diagnostics_.activation))
+      return;
+    ComPtr<Service> self(this);
+    ComPtr<ITfThreadMgr> manager = manager_;
+    const auto client = client_;
+    const auto activation = diagnostics_.activation;
+    ComPtr<ITfSourceSingle> source;
+    if (!manager || FAILED(manager.As(&source)) || !source ||
+        !diagnostics::SameActivation(active_, diagnostics_.activation, activation))
+      return;
+    HRESULT result = E_UNEXPECTED;
+    try {
+      result = source->AdviseSingleSink(client, IID_ITfFunctionProvider,
+                                        static_cast<ITfFunctionProvider *>(this));
+    } catch (...) {
+      UnregisterDiagnostics(source.Get(), client);
+      return;
+    }
+    if (SUCCEEDED(result) &&
+        diagnostics::SameActivation(active_, diagnostics_.activation, activation)) {
+      diagnostic_source_ = source;
+      diagnostic_client_ = client;
+    } else {
+      UnregisterDiagnostics(source.Get(), client);
+    }
+  } catch (...) {
+  }
 }
 bool Service::Current(uint64_t generation) const {
   return active_ && !stopped_ && generation_ == generation && GetCurrentThreadId() == thread_;
@@ -511,6 +683,7 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
   manager_ = manager;
   client_ = client;
   active_ = true;
+  diagnostics::Increment(diagnostics_.activation, diagnostics_.saturated);
   stopped_ = false;
   uint64_t generation = generation_;
   if (FAILED(manager_->QueryInterface(IID_PPV_ARGS(&source_))) || !Current(generation) ||
@@ -534,6 +707,7 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
       Current(generation))
     OnActivated(profile.dwProfileType, profile.langid, profile.clsid, profile.catid,
                 profile.guidProfile, profile.hkl, TF_IPSINK_FLAG_ACTIVE);
+  RegisterDiagnostics();
   return S_OK;
 } catch (...) {
   Deactivate();
@@ -546,6 +720,9 @@ HRESULT Service::Deactivate() {
   ComPtr<Service> self(this);
   InvalidateForLifecycle();
   active_ = false;
+  auto diagnostic_source = std::move(diagnostic_source_);
+  const auto diagnostic_client = diagnostic_client_;
+  diagnostic_client_ = TF_CLIENTID_NULL;
   auto keys = std::move(keys_);
   auto source = std::move(source_);
   auto manager = std::move(manager_);
@@ -577,12 +754,21 @@ HRESULT Service::Deactivate() {
   } catch (...) {
     result = E_FAIL;
   }
+  if (diagnostic_source && diagnostic_client != TF_CLIENTID_NULL)
+    UnregisterDiagnostics(diagnostic_source.Get(), diagnostic_client);
   return result;
 }
 bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
-  if (GetCurrentThreadId() != thread_ || !active_ || stopped_ || !context)
+  if (GetCurrentThreadId() != thread_)
     return false;
+  DiagnosticCallback callback(*this);
+  diagnostics::Count(diagnostics_, Counter::HandleEntered);
+  if (!active_ || stopped_ || !context) {
+    Refuse(Stage::Handle, !active_ ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::Missing);
+    return false;
+  }
   if (busy_) {
+    Refuse(Stage::Handle, Cause::Reentry);
     Invalidate(owned_ != nullptr);
     return false;
   }
@@ -593,17 +779,32 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
     request.Attach(new EditSession(*this, context, event));
     if (request->valid()) {
       HRESULT session_result = E_FAIL;
+      diagnostics::Count(diagnostics_, Counter::Requested);
+      diagnostics_.request_present = diagnostics_.session_present = 0;
+      diagnostics_.request_result = diagnostics_.session_result = 0;
       HRESULT request_result = context->RequestEditSession(
           client_, request.Get(), TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+      diagnostics_.request_present = diagnostics_.session_present = 1;
+      diagnostics_.request_result = static_cast<uint32_t>(request_result);
+      diagnostics_.session_result = static_cast<uint32_t>(session_result);
       request->Expire();
       if (SUCCEEDED(request_result) && SUCCEEDED(session_result) && request->completed)
         eaten = request->eaten;
       else {
+        if (FAILED(request_result))
+          Refuse(Stage::Request, Cause::Native, request_result);
+        else if (FAILED(session_result))
+          Refuse(Stage::Session, Cause::Native, session_result);
+        else
+          Refuse(Stage::Session, Cause::Predicate);
         eaten = request->UnknownDisposition();
         Invalidate(request->attempted() || owned_ != nullptr);
       }
+    } else {
+      Refuse(Stage::Session, Cause::Stale);
     }
   } catch (...) {
+    Refuse(Stage::Handle, Cause::Exception);
     if (request)
       eaten = request->UnknownDisposition();
     Invalidate(true);
@@ -621,38 +822,64 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
   try {
     if (GetCurrentThreadId() != thread_)
       return RPC_E_WRONG_THREAD;
+    DiagnosticCallback callback(*this);
+    diagnostics::Count(diagnostics_, Counter::KeyEntered);
     if (busy_) {
+      Refuse(Stage::Key, Cause::Reentry);
       Invalidate(owned_ != nullptr);
       return S_OK;
     }
     BYTE state[256]{};
     kr_event event{};
     if (!GetKeyboardState(state)) {
+      Refuse(Stage::Keyboard, Cause::Predicate);
       InvalidateForLifecycle();
       return S_OK;
     }
     uint64_t generation = generation_;
     TF_INPUTPROCESSORPROFILE profile{};
     ComPtr<ITfInputProcessorProfileMgr> manager = profiles_manager_;
+    HRESULT profile_result = S_OK;
     if (!Current(generation) || !manager ||
-        FAILED(manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) ||
+        FAILED(profile_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) ||
         !Current(generation)) {
+      Refuse(Stage::Profile,
+             FAILED(profile_result) ? Cause::Native
+             : !active_             ? Cause::Inactive
+             : stopped_             ? Cause::Stopped
+             : !manager             ? Cause::Missing
+                                    : Cause::Stale,
+             FAILED(profile_result) ? profile_result : S_OK);
       InvalidateForLifecycle();
       return S_OK;
     }
     HKL layout = ProfileLayout(profile, mode_);
     if (!layout) {
+      Cause cause = profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR ? Cause::WrongType
+                    : profile.clsid != service_id                          ? Cause::WrongService
+                    : !(profile.dwFlags & TF_IPP_FLAG_ACTIVE)              ? Cause::NotActive
+                                                                           : Cause::WrongProfile;
+      if (cause == Cause::WrongProfile)
+        for (const auto &entry : profiles)
+          if (entry.id == profile.guidProfile && entry.language == profile.langid &&
+              entry.mode == mode_)
+            cause = Cause::Substitute;
+      Refuse(Stage::Layout, cause);
       InvalidateForLifecycle();
       return S_OK;
     }
     TranslateKey(key, flags, layout, state, event);
     if (event.mode != mode_) {
+      Refuse(Stage::Mode, Cause::Predicate);
       InvalidateForLifecycle();
       return S_OK;
     }
     *eaten = HandleEvent(context, event);
+    if (*eaten)
+      diagnostics::Count(diagnostics_, Counter::Consumed);
     return S_OK;
   } catch (...) {
+    Refuse(Stage::Key, Cause::Exception);
     Invalidate(true);
     return E_FAIL;
   }
@@ -660,7 +887,13 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
 HRESULT Service::OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
   if (!eaten)
     return E_POINTER;
+  DiagnosticCallback callback(*this);
+  diagnostics::Count(diagnostics_, Counter::TestEntered);
   *eaten = active_ && !stopped_ && mode_ != 0;
+  if (*eaten)
+    diagnostics::Count(diagnostics_, Counter::Interested);
+  else
+    Refuse(Stage::Test, !active_ ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::ModeUnset);
   return S_OK;
 }
 HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {

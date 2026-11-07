@@ -37,8 +37,8 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 |---|---|
 | `KeyrillTsf.dll` | In-process STA COM text service |
 | `KeyrillRegister.exe` | Explicit maintainer registration, status, and enablement commands |
-| `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and host routing status |
-| `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host routing snapshots |
+| `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
+| `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
 
@@ -218,7 +218,8 @@ The diagnostic editor adds noneditable `STATIC` control 105 outside the tab orde
 Name starts with `Keyrill host routing v1`. The editor STA records completed DOWN and SYSDOWN
 routing outcomes in memory. A 250 ms timer publishes them only from the outer message loop,
 after routing returns. Nested window-procedure timer dispatch does no diagnostic work.
-The installed DLL supplies no diagnostic data and need not be rebuilt for this host observation.
+Control 105 reports only host routing. Control 106 separately reports the actual service when
+the reviewed diagnostic DLL is registered and loaded.
 
 ```powershell
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID routing
@@ -252,6 +253,67 @@ to the later fixture interval. No interest cannot distinguish a missing sink fro
 stopped, or mode-zero service. Successful dispatch does not identify a service or refusal reason.
 Consumption does not prove an owned composition or document change. Run the document oracle
 separately and use one fresh interval to choose the next diagnostic boundary.
+
+### Observe the actual service refusal
+
+The diagnostic editor polls its current thread manager with `GetFunctionProvider(service_id)`
+from the same outer-loop timer. It never constructs a service to obtain diagnostics. The service
+registers its `ITfFunctionProvider` through `ITfSourceSingle` only in `KeyrillProofEditor.exe`.
+Registration is best effort and does not change activation success or editing eligibility.
+The private interface copies a fixed native scalar snapshot with an exact size and version.
+It exports no document data, identifiers, offsets, keys, text, pointer values, or cookies.
+
+```powershell
+& "$bin/KeyrillProofInspect.exe" FIXTURE_PID service
+```
+
+This command reads only noneditable `STATIC` control 106. Its bounded typed codec rejects
+unknown versions, fields, enum labels, malformed numbers, inconsistent status, and oversized
+input. The inspector reconstructs accepted fields and makes one attempt. A valid unavailable
+publication is printed as such. It does not establish service callbacks or physical correction.
+
+`state=Available` means the current poll copied valid data from the registered provider.
+`Missing` means TSF returned `TF_E_NOPROVIDER`. Other discovery failures, a successful null
+provider, failed or malformed reads, and exceptions report `Error`. An active callback reports
+`Busy` with no snapshot. A retained interface after deactivation reports `Inactive`. Each poll
+replaces the preceding publication, including successful data. There is no cached success.
+The service's existing editing `busy_` flag and a scalar callback-depth guard prevent incomplete
+reads. The depth guard affects only diagnostic availability and performs no native query.
+
+Read a baseline after fixture preparation, then read again after one physical interval and
+advancing `publication`. One UIA sample alone does not prove freshness. The editor retains the
+provider's canonical `IUnknown` locally. It exports only a host-local `source` sequence.
+`continuity=Reset` begins a new baseline when provider identity or `activation` changes, or
+availability recovers. `Same` permits comparison with the previous available baseline.
+Editing generation changes do not end diagnostic activation continuity. Every counter saturates
+at 4294967295. Saturation is explicit, and `Indeterminate` forbids interval deltas. Activation
+serial saturation also stops new diagnostic registration, since an old activation cannot be
+distinguished safely. The editor releases its retained identity before COM uninitialization.
+
+`TestEntered`, `Interested`, `KeyEntered`, and `Consumed` count actual service callbacks and their
+existing outputs. `HandleEntered`, `Requested`, `SessionEntered`, and `SessionCompleted` separate
+handling from lock requests and completed callbacks. Present request and session HRESULTs belong
+to the most recent returned request. `Attempted`, `Verified`, `Refused`, and `Unknown` report the
+existing write and acknowledgement path, rather than inferring edits from native success.
+The named stage fields count refusals. `first` and `latest` give presence, stage, cause, and the
+native HRESULT for `Native` causes. A successful `S_FALSE` rejection remains a native result.
+A failed predicate after successful calls has its named stage and a zero result.
+
+Counters and first/latest refusal are service-instance lifetime history. They survive
+reactivation, while `activation` advances and the host resets its interval baseline. A first
+refusal from an earlier activation is not evidence for a later physical interval. `active`,
+`stopped`, and `mode` describe the copied state, so a stopped active service remains inspectable.
+All recording inside key and edit callbacks changes fixed scalar fields only. It adds no native
+queries, allocation, formatting, document writes, or key-disposition decisions. Teardown detaches
+diagnostic ownership before cleanup. Failed, throwing, or reentrant partial registration gets
+one captured-source cleanup attempt without retrying an unknown operation.
+
+Controlled schedules cover exact refusal stages and native versus predicate failures, request
+denial versus unentered/completed sessions, busy and incompatible reads, malformed publication,
+provider absence and errors, retained inactive interfaces, independent instances, saturation,
+activation continuity, and failed or reentrant registration cleanup. These are controlled COM
+observations. Real installed-service UIA evidence still requires maintainer registration of this
+reviewed build and the separate physical document, composition, continuation, and focus gates.
 
 | Schedule | Controlled evidence | Physical evidence required |
 |---|---|---|

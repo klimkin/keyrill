@@ -1,5 +1,6 @@
 #include "profiles.h"
 #include "routing.h"
+#include "service_diagnostics.h"
 #include <cstdio>
 #include <string>
 #include <uiautomation.h>
@@ -98,12 +99,38 @@ bool Routing(HWND root) {
   wprintf(L"%ls\n", known);
   return true;
 }
+bool ServiceStatus(HWND root) {
+  HWND status = GetDlgItem(root, 106);
+  wchar_t type[16]{};
+  if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
+    return false;
+  ComPtr<IUIAutomation> automation;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))))
+    return false;
+  ComPtr<IUIAutomationElement> element;
+  if (FAILED(automation->ElementFromHandle(status, &element)))
+    return false;
+  BSTR name = nullptr;
+  HRESULT result = element->get_CurrentName(&name);
+  keyrill::diagnostics::Publication publication;
+  bool parsed =
+      SUCCEEDED(result) && name &&
+      keyrill::diagnostics::Parse(std::wstring_view(name, SysStringLen(name)), publication);
+  SysFreeString(name);
+  if (!parsed)
+    return false;
+  wchar_t known[keyrill::diagnostics::status_capacity]{};
+  if (!keyrill::diagnostics::Format(publication, known))
+    return false;
+  wprintf(L"%ls\n", known);
+  return true;
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
-    fwprintf(
-        stderr,
-        L"Usage: KeyrillProofInspect FIXTURE_PID correction|reversal|continuation|empty|routing\n");
+    fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
+                     L"correction|reversal|continuation|empty|routing|service\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -120,7 +147,8 @@ int wmain(int argc, wchar_t **argv) {
   if (wcscmp(argv[2], L"empty") == 0)
     expected = L"";
   bool routing = wcscmp(argv[2], L"routing") == 0;
-  if (!expected && !routing)
+  bool service = wcscmp(argv[2], L"service") == 0;
+  if (!expected && !routing && !service)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -137,11 +165,11 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
-  if (routing) {
-    bool matched = Routing(search.window);
+  if (routing || service) {
+    bool matched = service ? ServiceStatus(search.window) : Routing(search.window);
     CoUninitialize();
     if (!matched)
-      puts("Fixture routing status unavailable or malformed. No text recorded.");
+      puts("Fixture diagnostic status unavailable or malformed. No text recorded.");
     return matched ? 0 : 1;
   }
   bool matched = Check(GetDlgItem(search.window, 101), expected, true) &&
