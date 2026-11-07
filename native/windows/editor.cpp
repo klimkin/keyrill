@@ -1,6 +1,8 @@
+#include "denial_fixture.h"
 #include "fixture.h"
 #include "routing.h"
 #include "service_diagnostics.h"
+#include <shellapi.h>
 #include <wrl/client.h>
 
 namespace {
@@ -14,6 +16,14 @@ LRESULT CALLBACK Window(HWND window, UINT message, WPARAM w, LPARAM l) {
 }
 } // namespace
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  int argc = 0;
+  auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv)
+    return 2;
+  const auto startup = keyrill::denial::ParseStartup(argc, argv);
+  LocalFree(argv);
+  if (startup == keyrill::denial::Startup::Invalid)
+    return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
   Microsoft::WRL::ComPtr<ITfThreadMgr> manager;
@@ -41,18 +51,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   HWND window = keyrill::CreateFixture(instance, Window, false);
   HWND status = nullptr;
   HWND service_status = nullptr;
+  HWND denial_status = nullptr;
+  const bool deny_locks = startup == keyrill::denial::Startup::DenyTsfLocks;
   constexpr UINT_PTR status_timer = 1;
   if (window && keyrill::routing::Format(routing, initial) &&
       SetWindowPos(window, nullptr, 0, 0, 1040, 1060, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
-    status = CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, 552, 720, 120, window,
-                           reinterpret_cast<HMENU>(105), instance, nullptr);
+    if (deny_locks) {
+      HWND field = GetDlgItem(window, 101);
+      if (field) {
+        const auto implemented = SendMessageW(field, EM_SETEDITSTYLE, SES_CTFNOLOCK, SES_CTFNOLOCK);
+        const auto observed = SendMessageW(field, EM_GETEDITSTYLE, 0, 0);
+        if (implemented == observed && (observed & SES_CTFNOLOCK) &&
+            SetWindowTextW(window, keyrill::denial::title))
+          denial_status = CreateWindowW(
+              L"STATIC", keyrill::denial::setup_status, WS_CHILD | WS_VISIBLE, 16, 552, 990, 24,
+              window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::denial::setup_id)),
+              instance, nullptr);
+      }
+    }
+    status = CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, deny_locks ? 580 : 552,
+                           720, deny_locks ? 96 : 120, window, reinterpret_cast<HMENU>(105),
+                           instance, nullptr);
     wchar_t service_initial[keyrill::diagnostics::status_capacity]{};
     if (keyrill::diagnostics::Format(service.value, service_initial))
       service_status =
           CreateWindowW(L"STATIC", service_initial, WS_CHILD | WS_VISIBLE, 16, 680, 990, 320,
                         window, reinterpret_cast<HMENU>(106), instance, nullptr);
   }
-  if (!status || !service_status || !SetTimer(window, status_timer, 250, nullptr)) {
+  if (!status || !service_status || (deny_locks && !denial_status) ||
+      !SetTimer(window, status_timer, 250, nullptr)) {
     if (window)
       DestroyWindow(window);
     manager->Deactivate();

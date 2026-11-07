@@ -1,3 +1,4 @@
+#include "denial_fixture.h"
 #include "profiles.h"
 #include "routing.h"
 #include "service_diagnostics.h"
@@ -111,7 +112,7 @@ bool Routing(HWND root) {
   wprintf(L"%ls\n", known);
   return true;
 }
-bool ServiceStatus(HWND root) {
+bool ReadServicePublication(HWND root, keyrill::diagnostics::Publication &publication) {
   HWND status = GetDlgItem(root, 106);
   wchar_t type[16]{};
   if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
@@ -125,12 +126,15 @@ bool ServiceStatus(HWND root) {
     return false;
   BSTR name = nullptr;
   HRESULT result = element->get_CurrentName(&name);
-  keyrill::diagnostics::Publication publication;
   bool parsed =
       SUCCEEDED(result) && name &&
       keyrill::diagnostics::Parse(std::wstring_view(name, SysStringLen(name)), publication);
   SysFreeString(name);
-  if (!parsed)
+  return parsed;
+}
+bool ServiceStatus(HWND root) {
+  keyrill::diagnostics::Publication publication;
+  if (!ReadServicePublication(root, publication))
     return false;
   wchar_t known[keyrill::diagnostics::status_capacity]{};
   if (!keyrill::diagnostics::Format(publication, known))
@@ -138,11 +142,42 @@ bool ServiceStatus(HWND root) {
   wprintf(L"%ls\n", known);
   return true;
 }
+keyrill::denial::Setup DenialSetup(HWND root) {
+  HWND status = GetDlgItem(root, keyrill::denial::setup_id);
+  wchar_t type[16]{};
+  if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
+    return keyrill::denial::Setup::Unknown;
+  ComPtr<IUIAutomation> automation;
+  ComPtr<IUIAutomationElement> element;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))) ||
+      FAILED(automation->ElementFromHandle(status, &element)))
+    return keyrill::denial::Setup::Unknown;
+  BSTR name = nullptr;
+  HRESULT result = element->get_CurrentName(&name);
+  const auto setup = SUCCEEDED(result) && name
+                         ? keyrill::denial::ParseSetup(std::wstring_view(name, SysStringLen(name)))
+                         : keyrill::denial::Setup::Unknown;
+  SysFreeString(name);
+  return setup;
+}
+bool NativeDenial(HWND root) {
+  if (DenialSetup(root) != keyrill::denial::Setup::Confirmed)
+    return false;
+  keyrill::diagnostics::Publication first, second;
+  if (!ReadServicePublication(root, first) || !Check(GetDlgItem(root, 101), L"ghbdtn ", true) ||
+      !Check(GetDlgItem(root, 102), L"", false))
+    return false;
+  Sleep(600);
+  return ReadServicePublication(root, second) &&
+         keyrill::denial::Matches(DenialSetup(root), first, second) &&
+         Check(GetDlgItem(root, 101), L"ghbdtn ", true) && Check(GetDlgItem(root, 102), L"", false);
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
     fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
-                     L"correction|reversal|continuation|focus|empty|routing|service\n");
+                     L"correction|reversal|continuation|focus|empty|routing|service|denial\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -165,7 +200,8 @@ int wmain(int argc, wchar_t **argv) {
     expected = L"";
   bool routing = wcscmp(argv[2], L"routing") == 0;
   bool service = wcscmp(argv[2], L"service") == 0;
-  if (!expected && !routing && !service)
+  bool denial = wcscmp(argv[2], L"denial") == 0;
+  if (!expected && !routing && !service && !denial)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -182,6 +218,13 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
+  if (denial) {
+    bool matched = NativeDenial(search.window);
+    CoUninitialize();
+    puts(matched ? "Fixture native denial oracle matched. No text recorded."
+                 : "Fixture native denial mismatch or unavailable evidence. No text recorded.");
+    return matched ? 0 : 1;
+  }
   if (routing || service) {
     bool matched = service ? ServiceStatus(search.window) : Routing(search.window);
     CoUninitialize();

@@ -1,3 +1,4 @@
+#include "denial_fixture.h"
 #include "fixture.h"
 #include "service.h"
 #include <algorithm>
@@ -15,6 +16,126 @@ void Require(bool condition, const char *label) {
     fprintf(stderr, "FAIL: %s\n", label);
     std::exit(1);
   }
+}
+void NativeDenialGateSchedules() {
+  using namespace diagnostics;
+  bool (*volatile matches)(denial::Setup, const Publication &, const Publication &) noexcept =
+      denial::Matches;
+  const wchar_t *normal[] = {L"KeyrillProofEditor.exe"};
+  const wchar_t *denied[] = {normal[0], L"--deny-tsf-locks"};
+  const wchar_t *unknown[] = {normal[0], L"--unknown"};
+  const wchar_t *duplicate[] = {normal[0], denied[1], denied[1]};
+  const wchar_t *extra[] = {normal[0], denied[1], L"extra"};
+  Require(denial::ParseStartup(1, normal) == denial::Startup::Normal &&
+              denial::ParseStartup(2, denied) == denial::Startup::DenyTsfLocks &&
+              denial::ParseStartup(2, unknown) == denial::Startup::Invalid &&
+              denial::ParseStartup(3, duplicate) == denial::Startup::Invalid &&
+              denial::ParseStartup(3, extra) == denial::Startup::Invalid,
+          "startup accepts only no arguments or one denial flag");
+  Require(denial::ParseSetup(denial::setup_status) == denial::Setup::Confirmed &&
+              denial::ParseSetup(L"") == denial::Setup::Unknown &&
+              denial::ParseSetup(L"Keyrill native denial v2; setup=Confirmed") ==
+                  denial::Setup::Unknown,
+          "denial setup requires the exact known confirmation");
+  Publication first;
+  first.publication = 10;
+  first.source = 2;
+  first.availability = Availability::Available;
+  first.continuity = Continuity::Same;
+  auto &s = first.snapshot;
+  s.activation = 3;
+  s.active = 1;
+  s.mode = KR_EN;
+  s.request_present = s.session_present = 1;
+  s.request_result = S_OK;
+  s.session_result = static_cast<uint32_t>(TF_E_SYNCHRONOUS);
+  s.counts[static_cast<size_t>(Counter::Requested)] = 8;
+  Refuse(s, Stage::Session, Cause::Native, TF_E_SYNCHRONOUS);
+  Publication second = first;
+  ++second.publication;
+  Require(matches(denial::Setup::Confirmed, first, second),
+          "fresh matching native session denial with zero effects is accepted");
+  auto request_first = first;
+  auto &r = request_first.snapshot;
+  r.request_result = static_cast<uint32_t>(E_ACCESSDENIED);
+  r.session_present = r.session_result = 0;
+  r.refusals = {};
+  r.first = r.latest = {};
+  Refuse(r, Stage::Request, Cause::Native, E_ACCESSDENIED);
+  auto request_second = request_first;
+  ++request_second.publication;
+  Require(matches(denial::Setup::Confirmed, request_first, request_second),
+          "fresh matching failed native request with zero effects is accepted");
+  Require(!matches(denial::Setup::Unknown, first, second),
+          "normal or unconfirmed host cannot establish denial");
+  auto reject = [&](const Publication &changed, const char *label) {
+    Require(!matches(denial::Setup::Confirmed, first, changed), label);
+  };
+  auto changed = second;
+  changed.availability = Availability::Missing;
+  changed.continuity = Continuity::None;
+  changed.snapshot = {};
+  reject(changed, "provider absence cannot establish denial");
+  changed = second;
+  changed.snapshot.counts[static_cast<size_t>(Counter::Requested)] = 0;
+  reject(changed, "no edit requests cannot establish denial");
+  for (uint32_t mode : {0u, static_cast<uint32_t>(KR_RU)}) {
+    changed = second;
+    changed.snapshot.mode = mode;
+    reject(changed, "wrong or unknown source mode cannot establish EN denial");
+  }
+  reject(first, "unchanged publication cannot establish freshness");
+  changed = second;
+  changed.publication = first.publication - 1;
+  reject(changed, "older publication cannot establish freshness");
+  changed = second;
+  changed.snapshot.session_result = S_OK;
+  reject(changed, "successful session cannot establish native denial");
+  changed = second;
+  changed.snapshot.request_result = S_FALSE;
+  reject(changed, "non-S_OK success request cannot certify session denial");
+  changed = second;
+  changed.snapshot.session_present = changed.snapshot.session_result = 0;
+  reject(changed, "absent session result cannot certify denial");
+  for (auto effect : {Counter::SessionEntered, Counter::SessionCompleted, Counter::Attempted,
+                      Counter::Verified, Counter::Unknown, Counter::Consumed}) {
+    changed = second;
+    changed.snapshot.counts[static_cast<size_t>(effect)] = 1;
+    reject(changed, "callback entry or document or key effect cannot establish zero-effect denial");
+    auto dirty_first = first;
+    dirty_first.snapshot.counts[static_cast<size_t>(effect)] = 1;
+    Require(!matches(denial::Setup::Confirmed, dirty_first, second),
+            "earlier sample effects cannot disappear into a clean sample");
+  }
+  for (int identity = 0; identity != 3; ++identity) {
+    changed = second;
+    if (identity == 0)
+      ++changed.source;
+    else if (identity == 1)
+      ++changed.snapshot.activation;
+    else
+      changed.continuity = Continuity::Reset;
+    reject(changed, "foreign or reset publication identity cannot establish continuity");
+  }
+  changed = second;
+  changed.snapshot.latest.result = static_cast<uint32_t>(E_FAIL);
+  reject(changed, "unmatched native refusal cannot establish request outcome");
+  changed = second;
+  changed.snapshot.latest.cause = Cause::Predicate;
+  changed.snapshot.latest.result = 0;
+  reject(changed, "predicate refusal cannot establish native denial");
+  changed = second;
+  changed.snapshot.stopped = 1;
+  reject(changed, "stopped service cannot establish live denial");
+  changed = second;
+  changed.saturated = changed.snapshot.saturated = 1;
+  changed.continuity = Continuity::Indeterminate;
+  reject(changed, "saturated observations cannot establish fresh denial");
+  changed = second;
+  changed.availability = Availability::Busy;
+  changed.continuity = Continuity::None;
+  changed.snapshot = {};
+  reject(changed, "unavailable callback snapshot cannot establish denial");
 }
 struct FixtureScopeObservation {
   HWND window;
@@ -2047,6 +2168,8 @@ int wmain() {
   setvbuf(stdout, nullptr, _IONBF, 0);
   setvbuf(stderr, nullptr, _IONBF, 0);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  puts("RUN native denial fixture gates");
+  NativeDenialGateSchedules();
   Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialized");
   puts("RUN fixture input scope lifecycle");
   FixtureLifecycle();

@@ -325,6 +325,40 @@ queries, allocation, formatting, document writes, or key-disposition decisions. 
 diagnostic ownership before cleanup. Failed, throwing, or reentrant partial registration gets
 one captured-source cleanup attempt without retrying an unknown operation.
 
+### Repeatable native lock denial
+
+The proof editor has one immutable test mode. Start a fresh instance with
+`KeyrillProofEditor.exe --deny-tsf-locks`. Before showing the window, it sets `SES_CTFNOLOCK`
+on its own writable A control and requires the setter result to match the immediate
+`EM_GETEDITSTYLE` readback with that bit set. Uncertain setup exits with code 1 through the
+existing teardown. The distinct window caption and noneditable `STATIC` control 107 report
+confirmed setup. This is a fixture condition, not an input-method setting or an editing fallback.
+Starting without arguments keeps the ordinary fixture behavior. Unknown, duplicate, or extra
+arguments exit with code 2 before COM startup.
+
+With A and B initially empty and the reviewed service selected in EN by the maintainer, type
+physical `ghbdtn` and Space into A, then run the read-only oracle.
+
+```powershell
+& "$bin/KeyrillProofInspect.exe" FIXTURE_PID denial
+```
+
+This oracle requires the known setup confirmation, exactly `ghbdtn ` with a collapsed end
+caret in A, and empty B. It checks the documents before and after a single 600 ms CLI wait.
+Two service publications must advance with the same provider source and activation, both
+Available, active, unstopped, EN, and unsaturated. The later publication must retain `Same`
+continuity. Both must show positive `Requested`, either a failed native request HRESULT or an
+`S_OK` request with a present failed session HRESULT, and a matching latest native refusal.
+`SessionEntered`, `SessionCompleted`, `Attempted`, `Verified`, `Unknown`, and `Consumed` must
+all remain zero. Missing providers, paused publication, successful sessions, wrong source modes,
+and unchanged text alone cannot pass. The wait observes outer-loop publications outside native
+input callbacks and never retries an edit. Output contains only the result, without queried text.
+
+Controlled pure schedules cover these acceptance and rejection cases without sleeps. A pass
+establishes this fixture's observed native refusal and literal document state. It does not prove
+key origin, composition, correction, Undo, or other applications. Physical verification of this
+promoted mode remains a separate maintainer gate.
+
 Controlled schedules cover exact refusal stages and native versus predicate failures, request
 denial versus unentered/completed sessions, busy and incompatible reads, malformed publication,
 provider absence and errors, retained inactive interfaces, independent instances, saturation,
