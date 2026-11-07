@@ -5,6 +5,7 @@
 namespace {
 LRESULT CALLBACK Window(HWND window, UINT message, WPARAM w, LPARAM l) {
   if (message == WM_DESTROY) {
+    keyrill::ResetFixtureInputScopes(window);
     PostQuitMessage(0);
     return 0;
   }

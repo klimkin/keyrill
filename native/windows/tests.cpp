@@ -15,6 +15,118 @@ void Require(bool condition, const char *label) {
     std::exit(1);
   }
 }
+struct FixtureScopeObservation {
+  HWND window;
+  int id;
+  InputScope scope;
+  bool alive;
+  bool owning_thread;
+};
+struct FixtureScopeCalls {
+  FixtureScopeObservation assignments[4]{};
+  FixtureScopeObservation removals[4]{};
+  UINT assignments_count = 0;
+  UINT removals_count = 0;
+  bool overflow = false;
+  bool removing = false;
+  UINT fail_assignment = 0;
+  bool throw_assignment = false;
+  UINT fail_removal = 0;
+  UINT throw_removal = 0;
+  HWND destroyed = nullptr;
+  UINT destructions = 0;
+  HRESULT removal_result = S_OK;
+  void Record(HWND window, InputScope scope) noexcept {
+    auto &count = removing ? removals_count : assignments_count;
+    auto *calls = removing ? removals : assignments;
+    if (count < 4)
+      calls[count] = {window, GetDlgCtrlID(window), scope, IsWindow(window) != FALSE,
+                      GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId()};
+    else
+      overflow = true;
+    ++count;
+  }
+} fixture_scope_calls;
+FixtureScopeSetter fixture_reset = SetFixtureInputScope;
+HRESULT WINAPI ObserveFixtureScope(HWND window, InputScope scope) {
+  fixture_scope_calls.Record(window, scope);
+  if (fixture_scope_calls.removing) {
+    if (fixture_scope_calls.removals_count == fixture_scope_calls.throw_removal)
+      throw 1;
+    if (fixture_scope_calls.removals_count == fixture_scope_calls.fail_removal)
+      return E_ACCESSDENIED;
+  } else if (fixture_scope_calls.assignments_count == fixture_scope_calls.fail_assignment) {
+    if (fixture_scope_calls.throw_assignment)
+      throw 1;
+    return E_ACCESSDENIED;
+  }
+  return SetFixtureInputScope(window, scope);
+}
+LRESULT CALLBACK FixtureProc(HWND window, UINT message, WPARAM w, LPARAM l) {
+  if (message == WM_DESTROY) {
+    fixture_scope_calls.removing = true;
+    fixture_scope_calls.removal_result = ResetFixtureInputScopes(window, fixture_reset);
+    fixture_scope_calls.removing = false;
+    fixture_scope_calls.destroyed = window;
+    ++fixture_scope_calls.destructions;
+    return 0;
+  }
+  return DefWindowProcW(window, message, w, l);
+}
+void FixtureScopeOracle(UINT children, HRESULT expected) {
+  Require(!fixture_scope_calls.overflow && fixture_scope_calls.assignments_count == children &&
+              fixture_scope_calls.removals_count == children &&
+              fixture_scope_calls.destructions == 1 &&
+              fixture_scope_calls.removal_result == expected &&
+              !IsWindow(fixture_scope_calls.destroyed),
+          "fixture attempts every known child reset once before root destruction");
+  const InputScope expected_scopes[] = {IS_TEXT, IS_TEXT, IS_DEFAULT, IS_PASSWORD};
+  for (UINT i = 0; i != children; ++i) {
+    const auto &assigned = fixture_scope_calls.assignments[i];
+    const auto &removed = fixture_scope_calls.removals[i];
+    Require(assigned.id == static_cast<int>(101 + i) && assigned.scope == expected_scopes[i] &&
+                assigned.alive && assigned.owning_thread && removed.id == assigned.id &&
+                removed.window == assigned.window && removed.scope == IS_DEFAULT && removed.alive &&
+                removed.owning_thread && !IsWindow(removed.window),
+            "fixture declares exact scopes and resets live children on their owning thread");
+  }
+}
+void FixtureLifecycle() {
+  HINSTANCE instance = GetModuleHandleW(nullptr);
+  fixture_reset = ObserveFixtureScope;
+  fixture_scope_calls = {};
+  HWND root = CreateFixture(instance, FixtureProc, false, ObserveFixtureScope);
+  Require(root != nullptr, "observed fixture created");
+  Require((GetWindowLongW(GetDlgItem(root, 103), GWL_STYLE) & ES_READONLY) &&
+              (GetWindowLongW(GetDlgItem(root, 104), GWL_STYLE) & ES_PASSWORD),
+          "fixture read-only and password styles remain excluded");
+  Require(DestroyWindow(root) != FALSE, "observed fixture destroyed");
+  FixtureScopeOracle(4, S_OK);
+  for (bool throwing : {false, true}) {
+    for (UINT position = 1; position != 5; ++position) {
+      fixture_scope_calls = {};
+      fixture_scope_calls.fail_assignment = position;
+      fixture_scope_calls.throw_assignment = throwing;
+      Require(!CreateFixture(instance, FixtureProc, false, ObserveFixtureScope),
+              "failed or throwing setup returns no partial fixture");
+      FixtureScopeOracle(position, S_OK);
+    }
+  }
+  for (int scenario = 0; scenario != 2; ++scenario) {
+    fixture_scope_calls = {};
+    root = CreateFixture(instance, FixtureProc, false, ObserveFixtureScope);
+    Require(root != nullptr, "fixture for reset failure created");
+    fixture_scope_calls.fail_removal = scenario == 1 ? 2 : 1;
+    fixture_scope_calls.throw_removal = scenario == 1 ? 1 : 2;
+    Require(DestroyWindow(root) != FALSE, "fixture with reset failure destroyed");
+    FixtureScopeOracle(4, scenario == 1 ? E_UNEXPECTED : E_ACCESSDENIED);
+  }
+  fixture_scope_calls = {};
+  Require(!CreateFixture(instance, DefWindowProcW, false, ObserveFixtureScope) &&
+              fixture_scope_calls.assignments_count == 0 && fixture_scope_calls.destructions == 0,
+          "fixture class reuse refuses a different window procedure");
+  fixture_reset = SetFixtureInputScope;
+}
 #define STUB(name, args)                                                                           \
   HRESULT STDMETHODCALLTYPE name args override { return E_NOTIMPL; }
 #define REFCOUNT                                                                                   \
@@ -37,6 +149,7 @@ struct ApplicationScopeProperty {
   HRESULT scopes_result = S_OK;
   bool scopes_present = true;
   UINT scopes_count = 1;
+  InputScope second_scope = IS_TEXT;
 };
 struct Span {
   LONG start, length;
@@ -269,10 +382,12 @@ struct Document final : ITfContext,
     *out = nullptr;
     *count = application_scope.scopes_count;
     if (application_scope.scopes_present) {
-      *out = static_cast<InputScope *>(CoTaskMemAlloc(sizeof(InputScope)));
+      *out = static_cast<InputScope *>(CoTaskMemAlloc(sizeof(InputScope) * std::max(1u, *count)));
       if (!*out)
         return E_OUTOFMEMORY;
       **out = scope;
+      if (*count > 1)
+        (*out)[1] = application_scope.second_scope;
     }
     return application_scope.scopes_result;
   }
@@ -558,6 +673,7 @@ struct Harness {
     a.window = GetDlgItem(root, 101);
     b.window = GetDlgItem(root, 102);
     manager.top = &a;
+    ::SetActiveWindow(root);
     ::SetFocus(a.window);
     Require(::GetFocus() == a.window, "fixture native focus established");
     service.Attach(new Service);
@@ -590,12 +706,14 @@ struct Harness {
     Require(b.text == L"prefix suffix" && b.caret == 7, "other document unchanged");
   }
 };
-void ApplicationInputScope() {
+void ApplicationInputScope(InputScope scope) {
   Harness h;
+  h.a.scope = scope;
   for (const wchar_t *p = L"ghbdtn "; *p; ++p) {
     bool eaten = h.Key(*p, false);
     if (!eaten) {
-      fprintf(stderr, "FAIL: application input scope expected consumed=true, actual=false\n");
+      fprintf(stderr, "FAIL: application input scope %d expected consumed=true, actual=false\n",
+              static_cast<int>(scope));
       std::exit(1);
     }
   }
@@ -604,7 +722,7 @@ void ApplicationInputScope() {
           "application input scope supports one owned mark with one write per request");
 }
 void UncertainApplicationInputScope() {
-  for (int scenario = 0; scenario != 14; ++scenario) {
+  for (int scenario = 0; scenario != 22; ++scenario) {
     Harness h;
     auto &property = h.a.application_scope;
     if (scenario == 0) {
@@ -639,6 +757,27 @@ void UncertainApplicationInputScope() {
       h.a.scope = static_cast<InputScope>(-1);
     if (scenario == 13)
       h.a.scope = IS_EMAIL_SMTPEMAILADDRESS;
+    if (scenario == 14)
+      property.value_result = S_FALSE;
+    if (scenario == 15)
+      h.a.scope = IS_PRIVATE;
+    if (scenario == 16)
+      h.a.scope = IS_PASSWORD;
+    if (scenario == 17)
+      h.a.scope = static_cast<InputScope>(0x7fffffff);
+    if (scenario == 18) {
+      h.a.scope = IS_TEXT;
+      property.scopes_count = 2;
+      property.second_scope = IS_PRIVATE;
+    }
+    if (scenario == 19)
+      property.scopes_count = 2;
+    if (scenario == 20) {
+      h.a.scope = IS_TEXT;
+      property.scopes_count = 2;
+    }
+    if (scenario == 21)
+      property.scopes_result = S_FALSE;
     Require(!h.Key(L'g', false), "uncertain application input scope passes key unchanged");
     Require(h.a.reads == 0 && h.a.starts == 0 && h.a.writes == 0,
             "uncertain application input scope has no text reads, composition starts or writes");
@@ -1006,12 +1145,16 @@ int wmain() {
   setvbuf(stderr, nullptr, _IONBF, 0);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialized");
-  controlled_root = CreateFixture(GetModuleHandleW(nullptr), DefWindowProcW, false);
+  puts("RUN fixture input scope lifecycle");
+  FixtureLifecycle();
+  controlled_root = CreateFixture(GetModuleHandleW(nullptr), FixtureProc, false);
   Require(controlled_root != nullptr, "controlled native metadata fixture");
+  puts("RUN default application input scope correction");
+  ApplicationInputScope(IS_DEFAULT);
+  puts("RUN text application input scope correction");
+  ApplicationInputScope(IS_TEXT);
   puts("RUN uncertain application input scope");
   UncertainApplicationInputScope();
-  puts("RUN application input scope correction");
-  ApplicationInputScope();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
   puts("RUN rapid continuation");
