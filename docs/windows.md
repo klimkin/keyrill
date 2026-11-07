@@ -55,8 +55,9 @@ asynchronous work, cached cookie, retry, or key replay is allowed. Admission req
 native focused HWND and the thread manager's current top context to match the captured target.
 
 Admission is restricted to the named proof executable and root window class, writable controls
-101 and 102, ordinary input scope, and non-disabled context and thread compartments. Secure-mode
-activation is refused. Read-only, password, sensitive, uncertain, foreign-composed, and unknown
+101 and 102, a known singleton `IS_DEFAULT` or `IS_TEXT` input scope, and non-disabled context and
+thread compartments. Secure-mode activation is refused. Read-only, password, sensitive, uncertain,
+foreign-composed, and unknown
 controls get no text read and no composition. This executable-name restriction is a proof
 support policy, not a security boundary or approval for arbitrary RichEdit hosts.
 
@@ -64,9 +65,35 @@ Input scope comes from the context owner's read-only application property throug
 [`ITfContext::GetAppProperty`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-getappproperty).
 Admission requires `S_OK`, a non-null property, and `S_OK` from
 [`ITfReadOnlyProperty::GetValue`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)
-with an `ITfInputScope` value containing exactly one `IS_DEFAULT`. `S_FALSE` means unsupported
-property or unavailable range value and refuses admission. Missing or uncertain metadata stays
-pass-through. Controlled application-property tests do not establish live RichEdit admission.
+with a non-null `ITfInputScope` value. Its
+[`GetInputScopes`](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-itfinputscope-getinputscopes)
+must return `S_OK`, a non-null array, and exactly one `IS_DEFAULT` or `IS_TEXT`. `S_FALSE` from
+either property call refuses admission, including a valid-looking value returned with that status.
+Missing, private, password, unknown, mixed, and multiple scopes stay pass-through before text
+reads or composition starts. Controlled application-property tests do not establish live RichEdit
+admission.
+
+The fixture declares `IS_TEXT` for writable A and B. Control 103 retains its read-only style and
+default scope, and control 104 retains its password style and password scope. A native metadata
+probe on empty stock RichEdit A observed `S_OK` for explicit `IS_TEXT` setup, the application
+getter, range value, interface query, and scope retrieval. The value was `VT_UNKNOWN` and the
+array contained exactly one `IS_TEXT`, with matching context, range, native focus, and a granted
+synchronous read cookie. An explicit one-element `IS_DEFAULT` list still produced an unavailable
+value both empty and after public fixture letter `g`, including a fresh read. Default removes the
+scope association. A later fresh launch with explicit `IS_TEXT` returned `E_FAIL` from the range
+value getter despite `S_OK` from setup and valid context, range, view, and synchronous edit-session
+checks. Explicit `IS_TEXT` can supply admissible metadata but does not guarantee its availability.
+Missing metadata still refuses admission. Neither observation establishes an owned composition,
+verified correction, or physical acceptance.
+
+Both fixture window procedures attempt `IS_DEFAULT` for every existing known field during parent
+`WM_DESTROY`, while the children still exist on their owning thread. Partial setup failure uses
+the same teardown. A failed or throwing reset does not prevent later children from being attempted.
+The helper returns the first non-success result and does not retry after destruction. This is an
+attempt to remove metadata under the
+[`SetInputScope` lifecycle contract](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-setinputscope),
+not a document or removal oracle. Controlled tests observe actual child validity, thread ownership,
+and reset order during normal and partial teardown.
 
 An owned mark retains canonical context and composition identities, exact ACP extent, and
 bounded verified UTF-16 text. Each update checks active composition membership, generation,

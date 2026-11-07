@@ -214,7 +214,8 @@ private:
     InputScope *scopes = nullptr;
     UINT count = 0;
     result = scope->GetInputScopes(&scopes, &count);
-    bool ordinary = Good(result) && count == 1 && scopes && scopes[0] == IS_DEFAULT;
+    bool ordinary = Good(result) && result == S_OK && count == 1 && scopes &&
+                    (scopes[0] == IS_DEFAULT || scopes[0] == IS_TEXT);
     CoTaskMemFree(scopes);
     return ordinary && Alive();
   }
