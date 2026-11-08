@@ -422,7 +422,7 @@ private:
     if (!Extent(actual.Get(), actual_start, actual_length) || actual_start != start ||
         actual_length != length || !Read(cookie, actual.Get(), desired))
       return false;
-    if (plan.action == KR_MARK) {
+    if (plan.action == KR_MARK || desired != expected) {
       ComPtr<ITfRange> caret;
       if (!Good(actual->Clone(&caret)) || !Good(caret->Collapse(cookie, TF_ANCHOR_END)))
         return false;
@@ -435,6 +435,8 @@ private:
         return false;
       if (!OwnedRange(cookie, desired, true, actual))
         return false;
+    }
+    if (plan.action == KR_MARK) {
       owner_.owned_->verified = desired;
     } else {
       if (!Focused())
@@ -450,6 +452,12 @@ private:
       ComPtr<ITfContextComposition> cc;
       if (!NoForeign(cookie, actual.Get(), cc))
         return false;
+      if (desired != expected) {
+        ComPtr<ITfRange> verified_caret;
+        LONG position = 0;
+        if (!Selection(cookie, verified_caret, position) || position != start + length)
+          return false;
+      }
       owner_.owned_.reset();
       if (!Alive())
         return false;
