@@ -2,6 +2,7 @@
 #include "editor_window.h"
 #include "fixture.h"
 #include "fixture_mode.h"
+#include "keys.h"
 #include "service.h"
 #include <algorithm>
 #include <cstdio>
@@ -1038,6 +1039,265 @@ int WINAPI ProofLayouts(int capacity, HKL *out) {
   out[0] = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
   out[1] = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
   return 2;
+}
+struct KeyboardState {
+  BYTE previous[256]{};
+  BYTE state[256]{};
+  KeyboardState() {
+    Require(GetKeyboardState(previous) && SetKeyboardState(state),
+            "test thread keyboard state captured and cleared");
+  }
+  ~KeyboardState() { Require(SetKeyboardState(previous), "test thread keyboard state restored"); }
+  void Set(int key, BYTE value) {
+    state[key] = value;
+    state[VK_CONTROL] = state[VK_LCONTROL] | state[VK_RCONTROL];
+    state[VK_MENU] = state[VK_LMENU] | state[VK_RMENU];
+    state[VK_SHIFT] = state[VK_LSHIFT] | state[VK_RSHIFT];
+    Require(SetKeyboardState(state), "controlled keyboard transition applied to this thread");
+  }
+  bool Down(Harness &h, WPARAM key, LPARAM repeat = 1) {
+    LPARAM scan = static_cast<LPARAM>(MapVirtualKeyW(static_cast<UINT>(key), MAPVK_VK_TO_VSC));
+    BOOL eaten = TRUE;
+    Require(h.service->OnKeyDown(&h.a, key, (scan << 16) | repeat, &eaten) == S_OK,
+            "actual keydown entrypoint completes");
+    return eaten != FALSE;
+  }
+  void Up(Harness &h, WPARAM key) {
+    BOOL eaten = TRUE;
+    Require(h.service->OnKeyUp(&h.a, key, 0xc0000001, &eaten) == S_OK && !eaten,
+            "actual keyup entrypoint passes");
+  }
+  bool Chord(Harness &h, WPARAM key) {
+    int reads = h.a.reads, writes = h.a.writes;
+    int requests = h.a.calls["RequestEditSession"];
+    Set(VK_LCONTROL, 0x80);
+    Require(!Down(h, VK_CONTROL), "Ctrl down passes");
+    Set(VK_LMENU, 0x80);
+    Require(!Down(h, VK_MENU), "Alt down passes");
+    Require(h.a.reads == reads && h.a.writes == writes &&
+                h.a.calls["RequestEditSession"] == requests,
+            "modifier downs neither inspect text nor request an edit");
+    bool eaten = Down(h, key);
+    Up(h, key);
+    Set(VK_LMENU, 0);
+    Up(h, VK_MENU);
+    Set(VK_LCONTROL, 0);
+    Up(h, VK_CONTROL);
+    return eaten;
+  }
+  void Type(Harness &h, const char *keys) {
+    for (const char *p = keys; *p; ++p) {
+      Require(Down(h, static_cast<WPARAM>(*p)), "physical letter is owned");
+      Up(h, static_cast<WPARAM>(*p));
+    }
+  }
+};
+void CommandKeySequences() {
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    auto *composition = h.a.composition.Get();
+    Require(keyboard.Chord(h, 'K') && h.a.composition.Get() == composition,
+            "full manual chord converts the same owned composition");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442", 13);
+    Require(keyboard.Chord(h, 'Z') && h.a.composition.Get() == composition,
+            "full reverse chord restores the same owned receipt");
+    h.Oracle(L"ghbdtn", 13);
+    Require(h.a.max_request_writes == 1, "each command plan performs at most one write");
+  }
+  for (WPARAM key : {static_cast<WPARAM>('K'), static_cast<WPARAM>('Z')}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    Require(keyboard.Chord(h, key), "acknowledged idle command reserves its key without writing");
+    h.Oracle(L"", 7);
+    Require(h.a.writes == 0 && h.a.starts == 0, "idle command never creates a composition");
+    keyboard.Type(h, "HELLO");
+    int writes = h.a.writes;
+    if (key == 'Z') {
+      Require(keyboard.Chord(h, key) && h.a.writes == writes && h.a.active_composition,
+              "absent reversal receipt consumes without ending the owned word");
+      h.Oracle(L"hello", 12);
+    }
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    Require(keyboard.Down(h, VK_SPACE), "fixture correction retains boundary receipt");
+    Require(keyboard.Chord(h, 'Z'), "reverse chord restores retained fixture boundary");
+    h.Oracle(L"ghbdtn ", 14);
+    Require(keyboard.Down(h, 'X'), "continuation expires boundary receipt and starts next word");
+    int writes = h.a.writes;
+    Require(keyboard.Chord(h, 'Z') && h.a.writes == writes,
+            "expired reversal command consumes but does not rewrite committed text");
+    h.Oracle(L"ghbdtn x", 15);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "G");
+    auto *composition = h.a.composition.Get();
+    int requests = h.a.calls["RequestEditSession"];
+    keyboard.Set(VK_LSHIFT, 0x80);
+    Require(!keyboard.Down(h, VK_SHIFT) && h.a.calls["RequestEditSession"] == requests &&
+                h.a.composition.Get() == composition,
+            "Shift down preserves the owned word without an edit session");
+    Require(keyboard.Down(h, 'H'), "shifted letter stays in the owned word");
+    keyboard.Set(VK_LSHIFT, 0);
+    keyboard.Up(h, VK_SHIFT);
+    keyboard.Type(h, "B");
+    h.Oracle(L"gHb", 10);
+    keyboard.Set(VK_LWIN, 0x80);
+    Require(!keyboard.Down(h, VK_LWIN) && h.a.active_composition,
+            "Windows modifier down preserves the owned word");
+    keyboard.Set(VK_LWIN, 0);
+    keyboard.Up(h, VK_LWIN);
+    Require(h.a.composition.Get() == composition && h.a.starts == 1,
+            "modifier transitions do not replace composition identity");
+  }
+  for (int extra : {VK_LSHIFT, VK_RSHIFT, VK_LWIN, VK_RWIN, VK_RMENU, VK_RCONTROL}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(extra, 0x80);
+    Require(!keyboard.Chord(h, 'K') && !h.a.active_composition,
+            "extra modifier refuses manual chord and finishes ordinary shortcut");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(!keyboard.Down(h, VK_CONTROL), "AltGr Ctrl prefix passes");
+    keyboard.Set(VK_RMENU, 0x80);
+    Require(!keyboard.Down(h, VK_MENU) && h.a.active_composition,
+            "AltGr modifier prefix preserves the owned word");
+    Require(!keyboard.Down(h, 'K') && !h.a.active_composition,
+            "AltGr K finishes and passes without manual conversion");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    Require(!keyboard.Down(h, 'K', 2) && !h.a.active_composition,
+            "coalesced command repeat finishes and passes original message intact");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    int reads = h.a.reads, writes = h.a.writes;
+    profile.substitute = nullptr;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(!keyboard.Down(h, VK_CONTROL) && h.service->stopped() && h.a.reads == reads &&
+                h.a.writes == writes,
+            "modifier down still refuses a lost substitute layout before document inspection");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_CAPITAL, 1);
+    Require(keyboard.Chord(h, 'K'), "Caps Lock does not reject reserved physical chord");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442", 13);
+  }
+  for (WPARAM special : {static_cast<WPARAM>(VK_BACK), static_cast<WPARAM>(VK_ESCAPE)}) {
+    for (bool shift : {false, true}) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      KeyboardState keyboard;
+      keyboard.Type(h, "GHBDTN");
+      keyboard.Set(VK_LSHIFT, shift ? 0x80 : 0);
+      bool eaten = keyboard.Down(h, special);
+      Require(eaten == (!shift && special == VK_BACK),
+              "Backspace edits only without Shift and unreserved Escape passes");
+      h.Oracle(!shift && special == VK_BACK ? L"ghbdt" : L"ghbdtn",
+               !shift && special == VK_BACK ? 12 : 13);
+      Require(h.a.active_composition == (!shift && special == VK_BACK),
+              "shifted special keys finish and pass");
+    }
+  }
+  for (int failure = 0; failure != 5; ++failure) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    if (failure == 0) {
+      h.a.callback = false;
+      h.a.request_result = TF_E_SYNCHRONOUS;
+    }
+    if (failure == 1)
+      h.a.request_result = E_FAIL;
+    if (failure == 2)
+      h.a.session_result = E_FAIL;
+    if (failure == 3)
+      h.a.throw_after_callback = true;
+    if (failure == 4)
+      h.a.hook = [&](const char *name) {
+        if (std::string(name) == "GetSelection")
+          h.service->OnSetFocus(FALSE);
+      };
+    Require(!keyboard.Chord(h, 'K'),
+            "denied, failed, throwing or stale nonwriting command passes without reservation");
+    h.a.hook = nullptr;
+    h.Oracle(L"", 7);
+    Require(h.a.writes == 0 && h.a.starts == 0, "failed idle command has no native effect");
+  }
+  for (int failure = 0; failure != 4; ++failure) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    int writes = h.a.writes;
+    if (failure == 0)
+      --h.a.caret;
+    if (failure == 1)
+      h.a.write_result = E_FAIL;
+    bool injected = false;
+    if (failure >= 2)
+      h.a.hook = [&](const char *name) {
+        if (!injected && std::string(name) == (failure == 2 ? "GetRange" : "SetText.after")) {
+          injected = true;
+          BOOL nested = TRUE;
+          Require(h.service->OnKeyDown(&h.a, VK_SHIFT, 1, &nested) == S_OK && !nested,
+                  "reentrant modifier passes and invalidates command authority");
+        }
+      };
+    bool eaten = keyboard.Chord(h, 'K');
+    h.a.hook = nullptr;
+    bool attempted = failure == 1 || failure == 3;
+    Require(eaten == attempted && h.a.writes == writes + (attempted ? 1 : 0) &&
+                h.service->stopped(),
+            "manual refusal passes and attempted unknown consumes with no replay");
+    h.Oracle(attempted ? L"\x043f\x0440\x0438\x0432\x0435\x0442" : L"ghbdtn",
+             failure == 0 ? 12 : 13);
+    Require(!keyboard.Down(h, 'X') && h.a.writes == writes + (attempted ? 1 : 0),
+            "stopped unknown command never retries or repairs");
+  }
+  for (bool secure : {false, true}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.a.scope = secure ? IS_PASSWORD : IS_EMAIL_SMTPEMAILADDRESS;
+    Require(!keyboard.Chord(h, 'K') && h.a.reads == 0 && h.a.writes == 0 && h.a.starts == 0,
+            "commands do not inspect or compose in excluded or uncertain controls");
+    h.Oracle(L"", 7);
+  }
 }
 int WINAPI MissingProofLayout(int capacity, HKL *out) {
   if (capacity)
@@ -4103,36 +4363,82 @@ void ReentrantBoundaries() {
 }
 void Keyboard() {
   BYTE state[256]{};
-  kr_event event{};
   HKL en = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
   HKL ru = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
-  Require(TranslateKey('G', 0x220001, en, state, event) && event.units[0] == L'g',
-          "EN actual layout translation");
+  auto translate = [&](WPARAM key, LPARAM flags, HKL layout) {
+    auto translated = TranslateKey(key, flags, layout, state);
+    Require(std::holds_alternative<kr_event>(translated), "ordinary key produces a typed event");
+    return std::get<kr_event>(translated);
+  };
+  Require(translate('G', 0x220001, en).units[0] == L'g', "EN actual layout translation");
   state[VK_SHIFT] = 0x80;
-  Require(TranslateKey('G', 0x220001, en, state, event) && event.units[0] == L'G',
-          "Shift preserved");
+  Require(translate('G', 0x220001, en).units[0] == L'G', "Shift preserved");
   state[VK_SHIFT] = 0;
   state[VK_CAPITAL] = 1;
-  Require(TranslateKey('G', 0x220001, en, state, event) && event.units[0] == L'G',
-          "Caps Lock preserved");
+  Require(translate('G', 0x220001, en).units[0] == L'G', "Caps Lock preserved");
   state[VK_CAPITAL] = 0;
   // RU may not be installed. No utility loads or selects it during tests.
   HKL layouts[64]{};
   int count = GetKeyboardLayoutList(64, layouts);
-  if (std::find(layouts, layouts + count, ru) != layouts + count)
-    Require(TranslateKey('H', 0x230001, ru, state, event) && event.units[0] == L'\x0440',
-            "RU actual layout translation");
+  bool russian = std::find(layouts, layouts + count, ru) != layouts + count;
+  if (russian)
+    Require(translate('H', 0x230001, ru).units[0] == L'\x0440', "RU actual layout translation");
   else
     puts("SKIP: RU layout translation runtime check. Layout is not already loaded.");
   state[VK_CONTROL] = 0x80;
-  Require(!TranslateKey('G', 0x220001, en, state, event), "shortcut not interpreted as text");
+  Require(translate('G', 0x220001, en).role == KR_FINISH_REQUEST,
+          "shortcut not interpreted as text");
   state[VK_CONTROL] = 0;
   Harness repeat;
   repeat.Type(L"gh");
-  Require(!TranslateKey('G', 0x220003, en, state, event) && event.role == KR_FINISH_REQUEST &&
-              !repeat.service->HandleEvent(&repeat.a, event) && !repeat.a.active_composition,
+  auto event = translate('G', 0x220003, en);
+  Require(event.role == KR_FINISH_REQUEST && !repeat.service->HandleEvent(&repeat.a, event) &&
+              !repeat.a.active_composition,
           "coalesced repeat finishes owned mark and passes original message intact");
-  Require(!TranslateKey('G', 0x220000, en, state, event), "malformed zero repeat count passes");
+  Require(translate('G', 0x220000, en).role == KR_FINISH_REQUEST,
+          "malformed zero repeat count passes");
+  struct Oem {
+    UINT key;
+    const wchar_t *en;
+    const wchar_t *ru;
+  };
+  const Oem oem[] = {
+      {VK_OEM_1, L";:", L"жЖ"},     {VK_OEM_PLUS, L"=+", L"=+"},   {VK_OEM_COMMA, L",<", L"бБ"},
+      {VK_OEM_MINUS, L"-_", L"-_"}, {VK_OEM_PERIOD, L".>", L"юЮ"}, {VK_OEM_2, L"/?", L".,"},
+      {VK_OEM_3, L"`~", L"ёЁ"},     {VK_OEM_4, L"[{", L"хХ"},      {VK_OEM_5, L"\\|", L"\\/"},
+      {VK_OEM_6, L"]}", L"ъЪ"},     {VK_OEM_7, L"'\"", L"эЭ"},     {VK_OEM_102, L"\\|", L"\\/"}};
+  for (HKL layout : {en, ru}) {
+    if (layout == ru && !russian)
+      continue;
+    for (const auto &entry : oem) {
+      for (bool shift : {false, true}) {
+        for (bool caps : {false, true}) {
+          state[VK_SHIFT] = shift ? 0x80 : 0;
+          state[VK_CAPITAL] = caps ? 1 : 0;
+          auto translated = translate(entry.key, 1, layout);
+          const auto *expected = layout == en ? entry.en : entry.ru;
+          bool cased = expected[0] != expected[1] && expected[0] >= L'а' && expected[0] <= L'ё';
+          auto index = layout == ru && cased ? shift != caps : shift;
+          Require(translated.role == KR_TEXT && translated.len == 1 &&
+                      translated.units[0] == expected[index],
+                  "every PC OEM key preserves actual layout Shift and Caps translation");
+        }
+      }
+    }
+  }
+  state[VK_SHIFT] = state[VK_CAPITAL] = 0;
+  for (WPARAM key : {static_cast<WPARAM>(VK_TAB), static_cast<WPARAM>(VK_RETURN),
+                     static_cast<WPARAM>(VK_F12), static_cast<WPARAM>(VK_DELETE)})
+    Require(translate(key, 1, en).role == KR_FINISH_REQUEST,
+            "control and nontext keys remain native finish requests");
+  for (WPARAM key :
+       {static_cast<WPARAM>(VK_CONTROL), static_cast<WPARAM>(VK_LCONTROL),
+        static_cast<WPARAM>(VK_RCONTROL), static_cast<WPARAM>(VK_MENU),
+        static_cast<WPARAM>(VK_LMENU), static_cast<WPARAM>(VK_RMENU), static_cast<WPARAM>(VK_SHIFT),
+        static_cast<WPARAM>(VK_LSHIFT), static_cast<WPARAM>(VK_RSHIFT),
+        static_cast<WPARAM>(VK_LWIN), static_cast<WPARAM>(VK_RWIN)})
+    Require(std::holds_alternative<ModifierOnly>(TranslateKey(key, 1, en, state)),
+            "modifier-only result has no Rust event");
   TF_INPUTPROCESSORPROFILE profile{};
   profile.dwProfileType = TF_PROFILETYPE_INPUTPROCESSOR;
   profile.clsid = service_id;
@@ -4146,6 +4452,61 @@ void Keyboard() {
   Require(!ProfileLayout(profile, KR_RU, en), "mismatched selected profile mode passes");
   profile.hklSubstitute = ru;
   Require(!ProfileLayout(profile, KR_EN, ru), "mismatched substitute cannot translate keys");
+}
+void OemCommandSequences() {
+  for (bool shifted : {false, true}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Set(VK_LSHIFT, shifted ? 0x80 : 0);
+    Require(keyboard.Down(h, VK_OEM_4), "provisional bracket starts an owned word");
+    keyboard.Set(VK_LSHIFT, 0);
+    keyboard.Type(h, "JHJIJ");
+    Require(keyboard.Chord(h, 'K'), "OEM provisional word reaches shared Rust manual conversion");
+    h.Oracle(shifted ? L"Хорошо" : L"хорошо", 13);
+    Require(keyboard.Chord(h, 'Z'), "OEM reversal restores exact original punctuation and case");
+    h.Oracle(shifted ? L"{jhjij" : L"[jhjij", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    Require(keyboard.Down(h, VK_OEM_3), "PC backtick starts provisional word");
+    keyboard.Type(h, "KRF");
+    Require(keyboard.Chord(h, 'K'), "PC backtick maps through shared Rust");
+    h.Oracle(L"ёлка", 11);
+    Require(keyboard.Chord(h, 'Z'), "PC backtick reversal restores exact original");
+    h.Oracle(L"`krf", 11);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    Require(!keyboard.Down(h, VK_OEM_MINUS) && !h.a.active_composition,
+            "ordinary punctuation finishes and passes unchanged");
+    h.a.text.insert(h.a.caret++, 1, L'-');
+    h.Oracle(L"ghbdtn-", 14);
+  }
+  HKL ru = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04190419));
+  HKL loaded[64]{};
+  int count = GetKeyboardLayoutList(64, loaded);
+  if (std::find(loaded, loaded + count, ru) != loaded + count) {
+    ProfileManager profile;
+    profile.profile.guidProfile = profiles[1].id;
+    profile.profile.langid = profiles[1].language;
+    profile.substitute = ru;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    Require(keyboard.Down(h, VK_OEM_4), "Russian physical bracket key types owned х");
+    Require(keyboard.Chord(h, 'K'), "Russian manual conversion maps х to bracket");
+    h.Oracle(L"[", 8);
+    int writes = h.a.writes;
+    Require(keyboard.Chord(h, 'K') && h.a.writes == writes && h.a.active_composition,
+            "acknowledged manual no-op reserves command and preserves first receipt");
+    Require(keyboard.Chord(h, 'Z'), "reverse after manual no-op retains original receipt");
+    h.Oracle(L"х", 8);
+  }
 }
 void TeardownAndConstructorExceptions() {
   long before_objects = object_count;
@@ -4252,6 +4613,9 @@ int wmain() {
   ReentrantBoundaries();
   puts("RUN keyboard translation");
   Keyboard();
+  puts("RUN actual keydown command sequences");
+  CommandKeySequences();
+  OemCommandSequences();
   puts("RUN teardown and constructor exceptions");
   TeardownAndConstructorExceptions();
   DestroyWindow(controlled_root);

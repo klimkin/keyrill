@@ -1,4 +1,5 @@
 #include "service.h"
+#include "keys.h"
 #include <algorithm>
 #include <cwctype>
 #include <exception>
@@ -38,37 +39,6 @@ bool ProofWindow(HWND window) {
   return base && _wcsicmp(base + 1, L"KeyrillProofEditor.exe") == 0;
 }
 
-bool TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)[256], kr_event &e) {
-  e = {};
-  e.context = KR_CTX_INELIGIBLE;
-  for (const auto &profile : profiles)
-    if (LOWORD(reinterpret_cast<ULONG_PTR>(layout)) == profile.language &&
-        HIWORD(reinterpret_cast<ULONG_PTR>(layout)) == profile.language)
-      e.mode = profile.mode;
-  if (!e.mode || LOWORD(flags) != 1 || (state[VK_CONTROL] & 0x80) || (state[VK_MENU] & 0x80) ||
-      (state[VK_LWIN] & 0x80) || (state[VK_RWIN] & 0x80)) {
-    e.role = KR_FINISH_REQUEST;
-    return false;
-  }
-  if (key == VK_BACK || key == VK_ESCAPE) {
-    e.role = key == VK_BACK ? KR_BACKSPACE : KR_ESCAPE;
-    return true;
-  }
-  wchar_t text[KR_EVENT_CAPACITY]{};
-  int count = ToUnicodeEx(static_cast<UINT>(key), (static_cast<UINT>(flags) >> 16) & 0xff, state,
-                          text, KR_EVENT_CAPACITY, 4, layout);
-  bool letter = (text[0] >= L'a' && text[0] <= L'z') || (text[0] >= L'A' && text[0] <= L'Z') ||
-                (text[0] >= L'\x0410' && text[0] <= L'\x044f') || text[0] == L'\x0401' ||
-                text[0] == L'\x0451';
-  if (count != 1 || (text[0] != L' ' && !letter)) {
-    e.role = KR_FINISH_REQUEST;
-    return false;
-  }
-  e.role = KR_TEXT;
-  e.len = 1;
-  e.units[0] = static_cast<uint16_t>(text[0]);
-  return true;
-}
 static const Profile *ActiveProfile(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode) {
   if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || profile.clsid != service_id ||
       !(profile.dwFlags & TF_IPP_FLAG_ACTIVE))
@@ -500,8 +470,12 @@ private:
       last_action_ = plan.action;
       last_disposition_ = plan.disposition;
       if (plan.action != KR_MARK && plan.action != KR_FINISH) {
-        if (kr_commit(owner_.engine_, plan.plan_id, KR_APPLIED_VERIFIED) != KR_OK)
+        if (!Alive() || kr_commit(owner_.engine_, plan.plan_id, KR_APPLIED_VERIFIED) != KR_OK) {
           owner_.Refuse(Stage::Acknowledge, Cause::Predicate);
+          owner_.Invalidate(true);
+          return;
+        }
+        eaten = plan.disposition == KR_KEY_CONSUMED;
         return;
       }
       wrote_ = false;
@@ -889,7 +863,6 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
     const uint64_t generation = generation_;
     const uint32_t mode = mode_;
     BYTE state[256]{};
-    kr_event event{};
     if (!GetKeyboardState(state)) {
       Refuse(Stage::Keyboard, Cause::Predicate);
       InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
@@ -969,14 +942,17 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
-    TranslateKey(key, flags, layout, state, event);
-    if (!Current(generation) || event.mode != mode) {
+    NativeKey translated = TranslateKey(key, flags, layout, state);
+    const auto *event = std::get_if<kr_event>(&translated);
+    if (!Current(generation) || (event && event->mode != mode)) {
       Refuse(Stage::Mode, !Current(generation) ? Cause::Stale : Cause::Predicate);
       InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
+    if (!event)
+      return S_OK;
     key_admission_ = false;
-    *eaten = HandleEvent(context, event);
+    *eaten = HandleEvent(context, *event);
     if (*eaten)
       diagnostics::Count(diagnostics_, Counter::Consumed);
     return S_OK;

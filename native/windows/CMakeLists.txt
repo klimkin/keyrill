@@ -22,7 +22,7 @@ if(NOT RUST_LIBRARIES MATCHES "/defaultlib:msvcrt")
 endif()
 separate_arguments(RUST_LIBRARIES WINDOWS_COMMAND "${RUST_LIBRARIES}")
 list(FILTER RUST_LIBRARIES EXCLUDE REGEX "^/")
-add_library(keyrill_tsf_core STATIC service.cpp guids.cpp)
+add_library(keyrill_tsf_core STATIC service.cpp keys.cpp guids.cpp)
 target_link_libraries(keyrill_tsf_core PUBLIC "${ROOT}/target/release/keyrill_ffi.lib"
   ${RUST_LIBRARIES} ole32 oleaut32 uuid user32 advapi32)
 add_library(KeyrillTsf SHARED dll.cpp exports.def)

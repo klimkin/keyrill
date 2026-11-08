@@ -1,7 +1,8 @@
 # Windows TSF proof
 
-This is an x64, fixture-only Text Services Framework adapter. It links the existing Rust engine
-through [the C ABI](../include/keyrill.h). It has no replacement backend, hooks, input injection,
+This is an x64 Text Services Framework adapter with fixture automatic correction. It links the
+existing Rust engine through [the C ABI](../include/keyrill.h). It has no replacement backend,
+hooks, input injection,
 clipboard transport, runtime network access, model policy, or personal dictionaries.
 
 The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
@@ -73,6 +74,40 @@ The controlled COM test executable has the same fixture executable name in the s
 `target/windows-check/tests/Release` directory. It supplies fake TSF interfaces to the exact
 `Service::HandleEvent` and `ITfEditSession::DoEditSession` implementation used by the DLL.
 Its client ID and cookie belong only to those doubles. They never establish live routing.
+
+## Manual conversion and reversal
+
+In an admitted owned word, left Ctrl + left Alt + physical K asks the shared Rust session for
+manual conversion. Left Ctrl + left Alt + physical Z reverses the current owned receipt.
+Caps Lock is allowed. Shift, either Windows key, right Ctrl, and right Alt reject these chords.
+AltGr does not invoke a command. The shortcuts are local input-method keys, not global hotkeys.
+Backspace edits owned text only without Shift. Escape restores and finishes an owned receipt,
+or finishes the word unchanged and passes through when no receipt exists.
+
+Ctrl, Alt, Shift, and Windows modifier downs pass after the existing profile and loaded-layout
+checks, without requesting an edit session or finishing the mark. Modifier keyups pass too.
+An unmatched completed shortcut finishes a still-owned word and passes the original key.
+The translator accepts bounded printable UTF-16 from the verified EN or RU substitute layout
+using `ToUnicodeEx` without changing its keyboard state. Rust decides whether punctuation is
+provisional word text or a finish request. PC backtick can therefore start `ёлка` as `` `krf ``,
+and `[jhjij` can convert to `хорошо`. Coalesced repeats remain finish-and-pass requests.
+
+Commands use the same owned composition, exact range/text/caret checks, readback, and Rust
+acknowledgement as fixture correction. A successful acknowledged command can consume its key
+without writing, including manual conversion with no word or reversal with no receipt.
+Admission failure, denied edit sessions, and refusal before a write pass the original key.
+An attempted unknown mark consumes without replay. An unknown finish passes an ordinary next
+key once and retains a reserved command's consumed disposition. Unknown effects never trigger
+a repair or another transport.
+
+Controlled tests drive `OnKeyDown` and `OnKeyUp` through complete modifier sequences using
+thread-local `SetKeyboardState`. They check whole A and B documents, prefix/suffix preservation,
+the caret, composition identity, command expiry, denied and failed requests, extra modifiers,
+Shift transitions, exclusions, reentry, and unknown effects. Actual `ToUnicodeEx` checks cover
+PC OEM keys with Shift and Caps Lock in each already loaded supported layout. These are
+controlled observations, not physical keyboard or live TSF routing evidence. The new manual
+chords still need fresh real-editor acceptance. Runtime policy configuration, the shared model,
+and vocabulary acquisition are not wired into the Windows adapter yet.
 
 ## Editing authority
 
@@ -154,8 +189,8 @@ establish physical TSF routing or document acceptance.
 Translation uses the validated layout with the current Shift and Caps Lock state and
 `ToUnicodeEx`'s no-state-change flag. Synthetic TIP handles are not treated as keyboard layouts.
 Only the stable EN and RU proof profiles are accepted. An unsupported profile or layout
-invalidates authority and passes without a guessed finish. Shortcuts, dead keys, and coalesced
-repeat messages request a verified owned finish before passing through.
+invalidates authority and passes without a guessed finish. Unmatched nonmodifier shortcuts,
+dead keys, and coalesced repeat messages request a verified owned finish before passing through.
 
 Focus loss, source changes, context changes, and teardown invalidate authority. If a mark
 exists, these paths stop the activation without writing it back. A termination callback clears
@@ -498,7 +533,7 @@ The content-free exit code preserves the rejection reason after the window disap
 | 20 | Detached event in the close interval |
 | 21 | Thread-manager deactivation did not return `S_OK` |
 
-The observer must not substitute Alt+F4 for the title-bar click. An Alt key can finish the mark
+The observer must not substitute Alt+F4 for the title-bar click. That shortcut can finish the mark
 before `WM_CLOSE`. The document oracle records the state before close. It cannot verify final
 document text after the editor disappears, key origin, or complete callback drainage.
 
