@@ -385,6 +385,7 @@ struct Document final : ITfContext,
   HRESULT request_result = S_OK;
   HRESULT session_result = S_OK;
   HRESULT write_result = S_OK;
+  HRESULT selection_result = S_OK;
   HRESULT end_result = S_OK;
   bool keep_composition = false;
   bool active_composition = false;
@@ -461,7 +462,8 @@ struct Document final : ITfContext,
     Require(range->span->length == 0, "no temporary selection of document text");
     caret = range->span->start;
     selection_length = 0;
-    return S_OK;
+    Call("SetSelection.after");
+    return selection_result;
   }
   HRESULT STDMETHODCALLTYPE GetActiveView(ITfContextView **out) override {
     Call("GetActiveView");
@@ -1818,6 +1820,59 @@ void CorrectionAndReversal() {
   Require(h.a.max_request_writes <= 1, "at most one text write per ordinary plan");
   Require(!h.a.active_composition, "Escape ends exact composition");
 }
+void ChangingFinishCaret() {
+  using diagnostics::Counter;
+  constexpr auto verified = static_cast<size_t>(Counter::Verified);
+  constexpr auto unknown = static_cast<size_t>(Counter::Unknown);
+  for (int scenario = 0; scenario != 6; ++scenario) {
+    Harness h;
+    h.Type(L"ghbdtn ");
+    const int writes = h.a.writes;
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    h.a.hook = [&](const char *name) {
+      const std::string call(name);
+      if (call == "SetText.after")
+        h.a.caret = h.a.composition->span->start;
+      if (scenario == 2 && call == "SetSelection.after")
+        h.a.caret = 7;
+      if ((scenario == 3 || scenario == 4) && call == "EndComposition.after") {
+        h.a.caret = scenario == 4 ? 14 : 7;
+        h.a.selection_length = scenario == 4 ? 1 : 0;
+      }
+      if (scenario == 5 && call == "SetSelection.after")
+        Require(!h.Key(L'x', false), "reentrant key passes without replay during reversal");
+    };
+    if (scenario == 1)
+      h.a.selection_result = E_FAIL;
+    kr_event escape{KR_ESCAPE, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+    Require(h.service->HandleEvent(&h.a, escape), "changing finish consumes Escape once");
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    Require(h.a.text == L"prefix ghbdtn suffix" && h.b.text == L"prefix suffix" && h.b.caret == 7,
+            "changing finish preserves whole documents and unrelated caret");
+    Require(h.a.writes == writes + 1 && h.a.max_request_writes == 1,
+            "changing finish performs exactly one owned text write");
+    if (scenario == 0) {
+      if (h.a.caret != 14 || h.a.selection_length != 0) {
+        fprintf(stderr, "FAIL: changing finish caret expected=14/0 actual=%ld/%ld\n", h.a.caret,
+                h.a.selection_length);
+        std::exit(1);
+      }
+      Require(!h.a.active_composition && !h.service->stopped() &&
+                  after.counts[verified] == before.counts[verified] + 1 &&
+                  after.counts[unknown] == before.counts[unknown],
+              "restored text and caret permit verified finish");
+    } else {
+      Require(h.service->stopped() && after.counts[verified] == before.counts[verified] &&
+                  after.counts[unknown] == before.counts[unknown] + 1,
+              "unverified reversal caret stops without verified acknowledgement");
+      const auto document = h.a.text;
+      const LONG caret = h.a.caret, selection = h.a.selection_length;
+      Require(!h.Key(L'x', false) && h.a.text == document && h.a.caret == caret &&
+                  h.a.selection_length == selection && h.a.writes == writes + 1,
+              "unknown changing finish makes no later text or selection repair");
+    }
+  }
+}
 void Continuation() {
   Harness h;
   h.Type(L"ghbdtn x");
@@ -2199,6 +2254,8 @@ int wmain() {
   UncertainApplicationInputScope();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
+  puts("RUN changing finish caret");
+  ChangingFinishCaret();
   puts("RUN rapid continuation");
   Continuation();
   puts("RUN denial and expired requests");
