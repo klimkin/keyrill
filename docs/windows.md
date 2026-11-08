@@ -26,7 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1 -Mo
 ```
 
 From Git Bash, `./tools/verify` runs the portable checks and dispatches the Windows build,
-controlled schedules, C11 ABI smoke, and registration-free class-factory smoke to MSVC.
+controlled schedules, C11 ABI smoke, and registration-free COM smoke tests to MSVC.
 `./tools/verify sanitize` dispatches the native AddressSanitizer configuration. This instruments
 the C++ service and controlled tests, not the Rust static library. MSVC does not supply UBSan.
 It is not the macOS ASan/UBSan gate and does not replace physical application testing.
@@ -40,7 +40,19 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 | `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
 | `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
+| `keyrill_activation_smoke.exe` | `CoCreateInstance` with the proof manifest and an adjacent-DLL identity check |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
+
+`KeyrillProofEditor.exe` and `keyrill_activation_smoke.exe` embed the same
+`proof_activation.manifest`. Its COM mapping binds the existing service CLSID to the adjacent
+`KeyrillTsf.dll` through the process activation context. The smoke checks that the manifest maps
+the CLSID from `profiles.h` and that the returned interface belongs to that adjacent DLL. A second
+test runs the same executable without an adjacent DLL and requires COM activation to fail.
+The direct DLL factory smoke remains a separate check.
+
+The manifest changes only activation inside the proof host. Live TSF testing still uses the
+existing registered profile and the source selected by the maintainer. This does not install,
+register, enable, or select a source, and does not prove activation in general applications.
 
 The controlled COM test executable has the same fixture executable name in the separate
 `target/windows-check/tests/Release` directory. It supplies fake TSF interfaces to the exact
