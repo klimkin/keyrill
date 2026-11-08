@@ -3,6 +3,7 @@
 #include "routing.h"
 #include "service_diagnostics.h"
 #include "shutdown_probe.h"
+#include "source_activation_probe.h"
 #include <cstdio>
 #include <string>
 #include <uiautomation.h>
@@ -198,6 +199,46 @@ bool ShutdownMode(HWND root) {
   }
   return true;
 }
+bool ReadSourceResult(HWND root, keyrill::source_proof::Status &status) {
+  using namespace keyrill::source_proof;
+  ComPtr<IUIAutomation> automation;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))))
+    return false;
+  for (int id : {0, mode_id, result_id}) {
+    HWND window = id ? GetDlgItem(root, id) : root;
+    wchar_t type[64]{};
+    if (!window || (id && (!GetClassNameW(window, type, 64) || _wcsicmp(type, L"STATIC"))))
+      return false;
+    ComPtr<IUIAutomationElement> element;
+    if (FAILED(automation->ElementFromHandle(window, &element)))
+      return false;
+    BSTR name = nullptr;
+    const auto result = element->get_CurrentName(&name);
+    const auto value = name ? std::wstring_view(name, SysStringLen(name)) : std::wstring_view{};
+    const bool matches =
+        SUCCEEDED(result) && name &&
+        (id == result_id ? Parse(value, status) : value == (id ? mode_status : title));
+    SysFreeString(name);
+    if (!matches)
+      return false;
+  }
+  return true;
+}
+bool SourceActivated(HWND root) {
+  keyrill::source_proof::Status result, repeated;
+  keyrill::diagnostics::PublicationV2 first, second;
+  if (!ReadSourceResult(root, result) || result.stage != keyrill::source_proof::Stage::Verified ||
+      !ReadServicePublication(root, first) || !Check(GetDlgItem(root, 101), L"ghbdtn", true) ||
+      !Check(GetDlgItem(root, 102), L"", false))
+    return false;
+  Sleep(600);
+  return ReadServicePublication(root, second) &&
+         keyrill::source_proof::Matches(result, first, second) &&
+         Check(GetDlgItem(root, 101), L"ghbdtn", true) &&
+         Check(GetDlgItem(root, 102), L"", false) && ReadSourceResult(root, repeated) &&
+         repeated == result;
+}
 bool ShutdownReady(HWND root) {
   using namespace keyrill::diagnostics;
   PublicationV2 first, second;
@@ -225,7 +266,7 @@ int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
     fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
                      L"correction|reversal|continuation|focus|empty|routing|service|denial|"
-                     L"shutdown-ready\n");
+                     L"shutdown-ready|source-activated\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -250,7 +291,8 @@ int wmain(int argc, wchar_t **argv) {
   bool service = wcscmp(argv[2], L"service") == 0;
   bool denial = wcscmp(argv[2], L"denial") == 0;
   bool shutdown = wcscmp(argv[2], L"shutdown-ready") == 0;
-  if (!expected && !routing && !service && !denial && !shutdown)
+  bool source = wcscmp(argv[2], L"source-activated") == 0;
+  if (!expected && !routing && !service && !denial && !shutdown && !source)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -267,6 +309,13 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
+  if (source) {
+    const bool matched = SourceActivated(search.window);
+    CoUninitialize();
+    puts(matched ? "Fixture native source and no-Space UIA oracle matched. No text recorded."
+                 : "Fixture native source or no-Space UIA oracle mismatch. No text recorded.");
+    return matched ? 0 : 1;
+  }
   if (shutdown) {
     const bool matched = ShutdownReady(search.window);
     CoUninitialize();

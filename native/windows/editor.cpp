@@ -40,6 +40,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   keyrill::routing::Snapshot routing;
   keyrill::diagnostics::Poller service;
   std::optional<keyrill::shutdown::Probe> shutdown;
+  std::optional<keyrill::source_proof::Probe> source;
   if (startup == keyrill::fixture::Mode::ProveOwnedShutdown)
     shutdown.emplace();
   keyrill::editor::WindowContext context{manager.Get(), shutdown ? &*shutdown : nullptr};
@@ -49,6 +50,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   HWND service_status = nullptr;
   HWND denial_status = nullptr;
   HWND shutdown_status = nullptr;
+  HWND source_mode = nullptr;
+  HWND source_status = nullptr;
   const bool deny_locks = startup == keyrill::fixture::Mode::DenyTsfLocks;
   bool attached = false;
   if (window) {
@@ -60,6 +63,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   constexpr UINT_PTR status_timer = 1;
   if (window && attached && keyrill::routing::Format(routing, initial) &&
       SetWindowPos(window, nullptr, 0, 0, 1040, 1060, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+    if (startup == keyrill::fixture::Mode::ProveOwnedEnToRu) {
+      source.emplace(window, *manager.Get(), GetCurrentThreadId());
+      context.source = &*source;
+      if (SetWindowTextW(window, keyrill::source_proof::title)) {
+        source_mode = CreateWindowW(
+            L"STATIC", keyrill::source_proof::mode_status, WS_CHILD | WS_VISIBLE, 16, 552, 990, 24,
+            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::source_proof::mode_id)),
+            instance, nullptr);
+        wchar_t value[keyrill::source_proof::status_capacity]{};
+        if (keyrill::source_proof::Format({}, value))
+          source_status = CreateWindowW(
+              L"STATIC", value, WS_CHILD | WS_VISIBLE, 16, 580, 990, 96, window,
+              reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::source_proof::result_id)),
+              instance, nullptr);
+      }
+    }
     if (deny_locks) {
       HWND field = GetDlgItem(window, 101);
       if (field) {
@@ -78,23 +97,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
           L"STATIC", keyrill::shutdown::mode_status, WS_CHILD | WS_VISIBLE, 16, 552, 990, 24,
           window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::shutdown::mode_id)),
           instance, nullptr);
-    const bool mode_row = deny_locks || shutdown.has_value();
-    status =
-        CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, mode_row ? 580 : 552, 720,
-                      mode_row ? 96 : 120, window, reinterpret_cast<HMENU>(105), instance, nullptr);
+    const bool mode_row = deny_locks || shutdown.has_value() || source.has_value();
+    status = CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16,
+                           source     ? 680
+                           : mode_row ? 580
+                                      : 552,
+                           720, mode_row ? 96 : 120, window, reinterpret_cast<HMENU>(105), instance,
+                           nullptr);
     wchar_t service_initial[keyrill::diagnostics::status_capacity]{};
     if (keyrill::diagnostics::Format(service.value, service_initial))
-      service_status =
-          CreateWindowW(L"STATIC", service_initial, WS_CHILD | WS_VISIBLE, 16, 680, 990, 320,
-                        window, reinterpret_cast<HMENU>(106), instance, nullptr);
+      service_status = CreateWindowW(L"STATIC", service_initial, WS_CHILD | WS_VISIBLE, 16,
+                                     source ? 780 : 680, 990, source ? 220 : 320, window,
+                                     reinterpret_cast<HMENU>(106), instance, nullptr);
   }
   if (!status || !service_status || (deny_locks && !denial_status) ||
-      (shutdown && !shutdown_status) || !SetTimer(window, status_timer, 250, nullptr)) {
+      (shutdown && !shutdown_status) || (source && (!source_mode || !source_status)) ||
+      !SetTimer(window, status_timer, 250, nullptr)) {
     if (window)
       DestroyWindow(window);
     const HRESULT deactivated = manager->Deactivate();
     if (shutdown)
       shutdown->Finish(deactivated);
+    source.reset();
     keys.Reset();
     pump.Reset();
     manager.Reset();
@@ -108,6 +132,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   HRESULT pumped = S_OK;
   while (SUCCEEDED(pumped = pump->GetMessageW(&message, nullptr, 0, 0, &available)) && available) {
     if (message.hwnd == window && message.message == WM_TIMER && message.wParam == status_timer) {
+      if (source) {
+        const auto outcome = source->Tick(GetTickCount64());
+        wchar_t source_published[keyrill::source_proof::status_capacity]{};
+        if (keyrill::source_proof::Format(outcome, source_published))
+          SetWindowTextW(source_status, source_published);
+      }
       keyrill::routing::Increment(routing.publication);
       wchar_t published[keyrill::routing::status_capacity]{};
       if (keyrill::routing::Format(routing, published))
@@ -147,8 +177,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     DispatchMessageW(&message);
   }
   KillTimer(window, status_timer);
-  if (shutdown && !context.destroyed && IsWindow(window))
+  if ((shutdown || source) && !context.destroyed && IsWindow(window))
     DestroyWindow(window);
+  if (source) {
+    source->Close();
+    context.source = nullptr;
+    source.reset();
+  }
   service.Reset();
   const HRESULT deactivated = manager->Deactivate();
   int exit_code = 0;

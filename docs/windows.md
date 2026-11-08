@@ -19,8 +19,9 @@ document-focus invalidation. Clicking B and then A each recorded ExactTerminatio
 owned in the departing field before focus invalidation. The exact correction and final focus
 document/caret oracles passed, with zero Unknown effects. These runs establish the observed
 fixture sequence, not physical keyboard evidence or general application support. The automated
-owned-shutdown and empty-close cases below also passed. Physical shutdown acceptance and
-unretained final destruction remain open.
+owned-shutdown and empty-close cases below also passed. Later physical owned-shutdown and
+fresh empty-close controls passed their bounded assertions. Unretained final destruction and
+the complete first-editor reliability gate remain open.
 
 ## Build and check without installation
 
@@ -442,8 +443,11 @@ ordinary window destruction and thread-manager deactivation. An automated real-e
 mode passed `shutdown-ready` with the exact public partial word, empty B, collapsed end caret,
 and an active owned serial. Clicking the title-bar Close button returned exit 0 through a retained
 process handle. A separate fresh empty editor passed `empty`, rejected `shutdown-ready`, and
-returned exit 16 (`NoOwnedMark`) after the same Close action. These are agent-generated key and
-mouse inputs, not physical keyboard evidence. The physical procedure below remains pending.
+returned exit 16 (`NoOwnedMark`) after the same Close action. Those first runs used agent-generated
+key and mouse inputs. Later physical owned-shutdown and fresh empty-close controls passed the
+same bounded assertions. An earlier ready-then-Close attempt returned 16 with an unclassified
+precondition loss. The attempted Close cancellation actually closed the window, so that attempt
+supplies no cancellation evidence.
 The mode changes no service editing policy, ABI, or journal capacity.
 It cannot be combined with `--deny-tsf-locks`. Unknown, repeated, or combined arguments exit with
 code 2 before COM initialization.
@@ -454,14 +458,17 @@ Run the following procedure in a fresh proof editor.
    **Keyrill TSF owned shutdown fixture**. The immutable `STATIC` control 108 identifies this mode.
 2. Select the existing Keyrill source through the maintainer's input-source UI. Read the actual
    service mode with the `service` inspector case and wait for an Available publication.
-3. With A and B empty, type physical `ghbdtn` in EN or the physical `hello` keys in RU. Do not add
-   Space. Run `KeyrillProofInspect.exe FIXTURE_PID shutdown-ready`.
-4. Require the ready oracle to pass. It checks exactly `ghbdtn` in EN or `руддщ` in RU, empty B,
+3. Before typing, start a separate background observer that retains the process handle and
+   polls `KeyrillProofInspect.exe FIXTURE_PID shutdown-ready`. Keep that observer running without
+   switching away from the editor to read or acknowledge its result.
+4. With A and B empty, type physical `ghbdtn` in EN or the physical `hello` keys in RU. Do not add
+   Space. Keep the editor focused for five seconds so the observer can record the ready oracle.
+   It checks exactly `ghbdtn` in EN or `руддщ` in RU, empty B,
    and A's collapsed end caret, together with the exact shutdown caption and mode marker.
    It selects the literal from the observed service mode and accepts no arbitrary expected text.
-5. Retain a process handle before clicking the real title-bar **Close** button. Wait for that
-   process to exit and read its exit code. Zero passes the bounded shutdown assertion. Any
-   nonzero code fails it. Record which source mode supplied the physical keys.
+5. Click the real title-bar **Close** button before returning to chat or a terminal. Require the
+   observer's recorded ready result and process exit code zero. A missing ready observation or
+   nonzero exit cannot pass. Record which source mode supplied the physical keys.
 6. Repeat in a separate fresh process with empty A and B. Verify the `empty` oracle, retain the
    process handle, and click **Close**. This empty-close control must exit nonzero.
 
@@ -525,6 +532,102 @@ with a hidden test window. The lifetime cases require Service object accounting 
 after the final retained reader releases and run under AddressSanitizer. These checks do not
 replace the fresh physical positive and empty-close runs above.
 
+### Invoke native source selection with a freshly captured owned mark
+
+The host-only `--prove-owned-en-to-ru` experiment is **unrun on the desktop**. It changes no
+Service editing policy, Rust code, ABI, profile registration, or journal capacity. The maintainer
+alone launches this mode because it selects a source. Default verification exercises controlled
+COM doubles and never launches this mode. There are no target arguments, and repeated or
+combined flags exit 2 before COM initialization.
+
+The earlier source UI workflow passed its bounded normal-flow checks. Its journal recorded
+Acquired, EndRequested, FinishVerified, document-focus notifications, and then ProfileChanged.
+The maintainer selected RU, and the document/caret oracle passed after
+agent-generated typing and Space. That sequence completed the mark before profile notification.
+It does not establish the stronger native experiment below.
+
+Run the primary experiment without any post-operation input.
+
+1. The maintainer starts `KeyrillProofEditor.exe --prove-owned-en-to-ru` from the reviewed build.
+   Confirm the **Keyrill TSF owned source fixture** caption. `STATIC` control 109 identifies the
+   immutable mode, and control 110 publishes the native result.
+2. Select the already registered and enabled **Keyrill proof EN** profile. Start with fresh empty
+   A and B. Setup focus changes are allowed before any mark allocation on the bound provider.
+3. Focus A and type exactly `ghbdtn`, without Space. The complete public word starts a fixed
+   two-second countdown. Leave the editor focused and send no more input.
+4. After the countdown, run `KeyrillProofInspect.exe FIXTURE_PID source-activated` from the
+   separate observer without clicking the editor or sending End, Space, or any other key.
+   Require exact A=`ghbdtn`, empty B, and A's collapsed end caret. The inspector also requires
+   the immutable mode, the frozen native Verified result, and advancing actual RU service
+   publications. Native Verified alone does not pass the document oracle.
+5. Record that primary result before any continuation input. A later Space or continuation
+   belongs to a separate case. It must not repair a caret mismatch and then replace the original
+   result. An unsuccessful run is terminal and never rearms.
+
+The probe acquires native profile interfaces on the editor STA, then binds the actual provider
+and reader by canonical identity at an empty, active, unstopped EN snapshot with zero allocations
+and zero Unknown effects. An empty baseline may refresh after setup focus notifications only
+while allocation remains zero on that same provider and activation. Once a mark has been
+allocated, a missed or ended mark cannot return to setup. Only successive observed prefixes of
+the fixed public word can reach the countdown. Focus, lifecycle, and ownership must remain
+continuous after acquisition. All five input counters must remain unchanged after arming.
+
+Readiness validates this fixture's public controls 101 and 102, their owning thread and process,
+ancestry, IDs, RichEdit class, ordinary writable/non-password styles, and focus before bounded
+native text/caret reads. Eligibility is checked again after reading text before querying selection.
+It never reads controls 103 or 104. Native readiness is a helper gate, not an independent
+document oracle or editing authority. The independent UIA client stays out of the editor STA.
+
+The first source mutation requires a latest monotonic observation no more than 250 ms after
+the fixed deadline, including time spent in preparation and the final copy. It does not slide.
+Preparatory native queries and public readiness precede the final actual reader `Copy`.
+That fresh snapshot is the last potentially reentrant native-object or document query before
+one `ChangeCurrentLanguage(RU)` dispatch. Only a non-reentrant `GetTickCount64` observation and
+local cancellation/deadline checks follow it. Scheduling still prevents a hard real-time guarantee.
+It reports the actual Service's current ownership of its last verified native mark. It does not
+enumerate live TSF compositions independently.
+
+After language selection, immediate actual language/profile readbacks and a fresh same-provider
+cut must remain safe. If exact Keyrill RU is already active, the probe skips redundant profile
+activation and requires completed old-mark evidence. Otherwise it may call `ActivateProfile`
+once for fixed Keyrill RU, with a null layout and flags zero, after confirming current language
+RU. Every native query precedes the final reader copy for that second mutation too. Any issued
+call must return `S_OK`. A failed HRESULT or `S_FALSE` remains a failed run even if later state
+looks favorable.
+
+Microsoft documents that zero-flag [ActivateProfile][source-activate] requires the current input
+language to match. [ChangeCurrentLanguage][source-language] selects a language and requires a
+calling-thread manager. Its documentation does not promise a universal thread-only effect.
+The experiment uses no enable, process, session, or deferred-activation flags, and no layout
+fallback. It never calls EndComposition, injects input, pumps extra messages, rolls back,
+retries, or polls a failed mutation into success.
+
+The final native result requires actual exact RU profile/language readback and the same active,
+unstopped RU Service with cleared ownership. The complete first-mutation-to-final interval must
+fit the existing 16-event journal, with immutable retained overlap and nondecreasing counters.
+No new Acquired, Detached, TerminationUnresolved, or Deactivate event is allowed. An exact
+termination of the captured serial, or a new requested-and-verified finish of that serial,
+supplies terminal evidence. Foreign callbacks cannot supply it but may coexist with it.
+Any change to TestEntered, Interested, KeyEntered, Consumed, or HandleEntered rejects the
+source-only claim, including a reentrant key that successfully finishes the captured serial.
+
+The strict v1 native result reports Waiting, Countdown, Running, Verified, or Failed with a
+named reason. Its bounded scalars include the language/activation call counts, failed native
+result, captured activation/serial, evidence sequences, terminal kind, mutation phase, and
+terminal order relative to the first ProfileChanged event when present. A notification is not
+required and cannot substitute for actual profile readback. The completed native report stays
+frozen. The later inspector result is separate. Close cancellation is sticky, and retained COM
+references release before apartment teardown.
+
+Controlled schedules cover source call budgets, exact parameters, conditional omission,
+setup/readiness failures, fresh capture, reentry and cancellation, immutable history boundaries,
+input interference, and actual Service callbacks without added document writes. Native and ASan
+passes establish those controlled properties only. The maintainer-launched experiment and the
+full first-editor reliability gate remain open.
+
+[source-activate]: https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile
+[source-language]: https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-changecurrentlanguage
+
 Controlled schedules cover exact refusal stages and native versus predicate failures, request
 denial versus unentered/completed sessions, busy and incompatible reads, malformed publication,
 provider absence and errors, retained inactive interfaces, independent instances, saturation,
@@ -543,7 +646,7 @@ reviewed build and the separate physical document, composition, continuation, an
 | Focus A to B to A, late old termination | Old authority never revives in doubles | Automated fixture run observed exact termination before each focus invalidation and passed the final whole-document/caret oracle; physical keyboard evidence remains open |
 | Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical excluded-control checks untested |
 | Native Undo after correction and continuation | Not modeled as a TSF guarantee | Whole document, caret, Undo grouping, and subsequent input untested |
-| EN/RU profile and source changes, teardown | Profile-table checks and invalidation pass | RU selection preserved the literal/caret after an earlier verified finish; automated owned shutdown returned 0 and fresh empty close returned 16; physical source-triggered termination and shutdown remain unproved |
+| EN/RU profile and source changes, teardown | Profile-table checks, invalidation, and host-only source-probe schedules pass | Ordinary source UI flow and bounded physical owned-shutdown/empty-close cases passed; native source invocation with fresh owned evidence remains unrun |
 
 Only x64 MSVC build evidence exists. ARM64, generic editors, real Undo, ordinary-user registration
 scope, and physical acceptance remain open. [ADR 007](adr/007-windows-tsf.md) remains proposed.

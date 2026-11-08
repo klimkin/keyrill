@@ -13,6 +13,39 @@
 #include <vector>
 
 using namespace keyrill;
+namespace keyrill::source_proof {
+struct ProbeTestAccess {
+  struct Dependencies {
+    ITfInputProcessorProfiles *languages = nullptr;
+    ITfInputProcessorProfileMgr *profiles = nullptr;
+    detail::PublicWord word;
+    HRESULT acquired = S_OK;
+    std::function<void()> acquire, read;
+    std::function<uint64_t(uint64_t)> clock;
+  };
+  static void Configure(Probe &probe, Dependencies &dependencies) {
+    probe.test_context_ = &dependencies;
+    probe.acquire_ = [](void *context, Probe::Native &native) {
+      auto &d = *static_cast<Dependencies *>(context);
+      if (d.acquire)
+        d.acquire();
+      native.languages = d.languages;
+      native.profiles = d.profiles;
+      return d.acquired;
+    };
+    probe.clock_ = [](void *context, uint64_t entry) {
+      auto &d = *static_cast<Dependencies *>(context);
+      return d.clock ? d.clock(entry) : entry;
+    };
+    probe.read_ = [](void *context, const Probe &) {
+      auto &d = *static_cast<Dependencies *>(context);
+      if (d.read)
+        d.read();
+      return d.word;
+    };
+  }
+};
+} // namespace keyrill::source_proof
 namespace {
 void Require(bool condition, const char *label) {
   if (!condition) {
@@ -32,9 +65,19 @@ void NativeDenialGateSchedules() {
   const wchar_t *shutdown[] = {normal[0], L"--prove-owned-shutdown"};
   const wchar_t *combined[] = {normal[0], denied[1], shutdown[1]};
   const wchar_t *repeated_shutdown[] = {normal[0], shutdown[1], shutdown[1]};
+  const wchar_t *source[] = {normal[0], L"--prove-owned-en-to-ru"};
+  const wchar_t *source_extra[] = {normal[0], source[1], L"ru"};
+  const wchar_t *source_repeat[] = {normal[0], source[1], source[1]};
+  const wchar_t *source_shutdown[] = {normal[0], source[1], shutdown[1]};
+  const wchar_t *source_denial[] = {normal[0], source[1], denied[1]};
   Require(fixture::ParseMode(1, normal) == fixture::Mode::Normal &&
               fixture::ParseMode(2, denied) == fixture::Mode::DenyTsfLocks &&
               fixture::ParseMode(2, shutdown) == fixture::Mode::ProveOwnedShutdown &&
+              fixture::ParseMode(2, source) == fixture::Mode::ProveOwnedEnToRu &&
+              fixture::ParseMode(3, source_extra) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, source_repeat) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, source_shutdown) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, source_denial) == fixture::Mode::Invalid &&
               fixture::ParseMode(2, unknown) == fixture::Mode::Invalid &&
               fixture::ParseMode(3, duplicate) == fixture::Mode::Invalid &&
               fixture::ParseMode(3, extra) == fixture::Mode::Invalid &&
@@ -1557,6 +1600,893 @@ struct DiagnosticProvider final : ITfFunctionProvider,
   STUB(GetType, (GUID *));
   STUB(GetDescription, (BSTR *));
 };
+struct SourceProfiles final : ITfInputProcessorProfiles, ITfInputProcessorProfileMgr {
+  ULONG references = 1;
+  LANGID language = profiles[0].language;
+  TF_INPUTPROCESSORPROFILE active = Profile(0);
+  HRESULT language_result = S_OK, activation_result = S_OK, read_result = S_OK;
+  HRESULT target_result = S_OK, enabled_result = S_OK;
+  BOOL enabled = TRUE;
+  int language_calls = 0, activation_calls = 0;
+  std::function<void(const char *)> hook;
+  static TF_INPUTPROCESSORPROFILE Profile(size_t index) {
+    TF_INPUTPROCESSORPROFILE result{};
+    result.dwProfileType = TF_PROFILETYPE_INPUTPROCESSOR;
+    result.clsid = service_id;
+    result.guidProfile = profiles[index].id;
+    result.langid = profiles[index].language;
+    result.catid = GUID_TFCAT_TIP_KEYBOARD;
+    result.dwFlags = TF_IPP_FLAG_ACTIVE;
+    return result;
+  }
+  void Call(const char *name) {
+    if (hook)
+      hook(name);
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    Call("native.addref");
+    return ++references;
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    Call("native.release");
+    return --references;
+  }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    Call("native.identity");
+    *out = nullptr;
+    if (id == IID_IUnknown || id == IID_ITfInputProcessorProfiles)
+      *out = static_cast<ITfInputProcessorProfiles *>(this);
+    else if (id == IID_ITfInputProcessorProfileMgr)
+      *out = static_cast<ITfInputProcessorProfileMgr *>(this);
+    if (!*out)
+      return E_NOINTERFACE;
+    AddRef();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetCurrentLanguage(LANGID *out) override {
+    Call("language.read");
+    *out = language;
+    return read_result;
+  }
+  HRESULT STDMETHODCALLTYPE GetActiveProfile(REFGUID category,
+                                             TF_INPUTPROCESSORPROFILE *out) override {
+    Require(category == GUID_TFCAT_TIP_KEYBOARD, "source reads only active keyboard profile");
+    Call("profile.read");
+    *out = active;
+    return read_result;
+  }
+  HRESULT STDMETHODCALLTYPE GetProfile(DWORD type, LANGID lang, REFCLSID clsid, REFGUID id,
+                                       HKL layout, TF_INPUTPROCESSORPROFILE *out) override {
+    Fixed(type, lang, clsid, id, layout, 0);
+    Call("target.read");
+    *out = Profile(1);
+    return target_result;
+  }
+  HRESULT STDMETHODCALLTYPE IsEnabledLanguageProfile(REFCLSID clsid, LANGID lang, REFGUID id,
+                                                     BOOL *out) override {
+    Fixed(TF_PROFILETYPE_INPUTPROCESSOR, lang, clsid, id, nullptr, 0);
+    Call("enabled.read");
+    *out = enabled;
+    return enabled_result;
+  }
+  HRESULT STDMETHODCALLTYPE ChangeCurrentLanguage(LANGID lang) override {
+    Require(lang == profiles[1].language && language_calls++ == 0,
+            "source dispatches exactly one fixed RU language selection");
+    language = lang;
+    active = Profile(1);
+    active.clsid = GUID_NULL;
+    active.guidProfile = GUID_NULL;
+    Call("language.change");
+    return language_result;
+  }
+  HRESULT STDMETHODCALLTYPE ActivateProfile(DWORD type, LANGID lang, REFCLSID clsid, REFGUID id,
+                                            HKL layout, DWORD flags) override {
+    Fixed(type, lang, clsid, id, layout, flags);
+    Require(language == profiles[1].language && activation_calls++ == 0,
+            "source profile activation is once and only after RU language readback");
+    active = Profile(1);
+    Call("profile.activate");
+    return activation_result;
+  }
+  static void Fixed(DWORD type, LANGID lang, REFCLSID clsid, REFGUID id, HKL layout, DWORD flags) {
+    Require(type == TF_PROFILETYPE_INPUTPROCESSOR && lang == profiles[1].language &&
+                clsid == service_id && id == profiles[1].id && !layout && flags == 0,
+            "source uses only the fixed RU TIP with null layout and zero flags");
+  }
+  STUB(Register, (REFCLSID));
+  STUB(Unregister, (REFCLSID));
+  STUB(AddLanguageProfile,
+       (REFCLSID, LANGID, REFGUID, const WCHAR *, ULONG, const WCHAR *, ULONG, ULONG));
+  STUB(RemoveLanguageProfile, (REFCLSID, LANGID, REFGUID));
+  STUB(EnumInputProcessorInfo, (IEnumGUID **));
+  STUB(GetDefaultLanguageProfile, (LANGID, REFGUID, CLSID *, GUID *));
+  STUB(SetDefaultLanguageProfile, (LANGID, REFCLSID, REFGUID));
+  STUB(ActivateLanguageProfile, (REFCLSID, LANGID, REFGUID));
+  STUB(GetActiveLanguageProfile, (REFCLSID, LANGID *, GUID *));
+  STUB(GetLanguageProfileDescription, (REFCLSID, LANGID, REFGUID, BSTR *));
+  STUB(GetLanguageList, (LANGID **, ULONG *));
+  STUB(EnumLanguageProfiles, (LANGID, IEnumTfLanguageProfiles **));
+  STUB(EnableLanguageProfile, (REFCLSID, LANGID, REFGUID, BOOL));
+  STUB(EnableLanguageProfileByDefault, (REFCLSID, LANGID, REFGUID, BOOL));
+  STUB(SubstituteKeyboardLayout, (REFCLSID, LANGID, REFGUID, HKL));
+  STUB(DeactivateProfile, (DWORD, LANGID, REFCLSID, REFGUID, HKL, DWORD));
+  STUB(EnumProfiles, (LANGID, IEnumTfInputProcessorProfiles **));
+  STUB(ReleaseInputProcessor, (REFCLSID, DWORD));
+  STUB(RegisterProfile, (REFCLSID, LANGID, REFGUID, const WCHAR *, ULONG, const WCHAR *, ULONG,
+                         ULONG, HKL, DWORD, BOOL, DWORD));
+  STUB(UnregisterProfile, (REFCLSID, LANGID, REFGUID, DWORD));
+};
+struct SourceFixture {
+  DiagnosticProvider provider;
+  SourceProfiles native;
+  Manager manager;
+  diagnostics::LifecycleJournal journal;
+  source_proof::ProbeTestAccess::Dependencies dependencies;
+  source_proof::Probe probe{nullptr, manager, GetCurrentThreadId()};
+  std::vector<std::string> calls;
+  SourceFixture() {
+    provider.snapshot.base.activation = 3;
+    provider.snapshot.base.active = 1;
+    provider.snapshot.base.mode = KR_EN;
+    manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    dependencies.languages = &native;
+    dependencies.profiles = &native;
+    source_proof::ProbeTestAccess::Configure(probe, dependencies);
+    provider.hook = [&](const char *name) { calls.emplace_back(name); };
+    native.hook = [&](const char *name) {
+      calls.emplace_back(name);
+      if (std::string(name) == "profile.activate")
+        Complete();
+    };
+  }
+  ~SourceFixture() {
+    provider.hook = nullptr;
+    native.hook = nullptr;
+    probe.Close();
+    manager.diagnostic_sink.Reset();
+    Require(provider.references == 1 && native.references == 1,
+            "all source capabilities release before controlled apartment teardown");
+  }
+  void Record(diagnostics::LifecycleKind kind, uint32_t subject = 1,
+              diagnostics::LifecycleCause cause = diagnostics::LifecycleCause::None,
+              diagnostics::Unresolved unresolved = diagnostics::Unresolved::None) {
+    journal.Record(kind, subject, cause, unresolved);
+    provider.snapshot.lifecycle = journal.Copy(provider.snapshot.lifecycle.owned_present != 0,
+                                               provider.snapshot.lifecycle.owned_serial);
+  }
+  void Complete(bool profile_event = true) {
+    using namespace diagnostics;
+    journal.Record(LifecycleKind::ExactTermination, 1);
+    if (profile_event)
+      journal.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::ProfileChanged);
+    provider.snapshot.lifecycle = journal.Copy(false, 0);
+    provider.snapshot.base.mode = KR_RU;
+    native.active = SourceProfiles::Profile(1);
+  }
+  void Bind() {
+    Require(probe.Tick(0).stage == source_proof::Stage::Waiting && provider.reads == 1,
+            "fresh empty service binds through actual provider discovery");
+  }
+  void Word(uint32_t length = 6) {
+    if (!provider.snapshot.lifecycle.allocated) {
+      const auto serial = journal.Acquire();
+      provider.snapshot.lifecycle = journal.Copy(true, serial);
+    }
+    dependencies.word.prefix = length;
+    diagnostics::Count(provider.snapshot.base, diagnostics::Counter::HandleEntered);
+  }
+  void Arm() {
+    Bind();
+    Word();
+    Require(probe.Tick(100).stage == source_proof::Stage::Countdown,
+            "only new live complete public word arms the fixed countdown");
+  }
+};
+void SourceProbeSchedules() {
+  using namespace source_proof;
+  using namespace diagnostics;
+  for (bool redundant : {false, true}) {
+    SourceFixture f;
+    Require(f.native.references == 1 && f.provider.reads == 0 && f.manager.provider_queries == 0,
+            "probe construction is passive and makes no COM call");
+    f.Arm();
+    if (redundant)
+      f.native.hook = [&](const char *name) {
+        f.calls.emplace_back(name);
+        if (std::string(name) == "language.change")
+          f.Complete();
+      };
+    Require(f.probe.Tick(2099).stage == source_proof::Stage::Countdown && !f.native.language_calls,
+            "countdown cannot dispatch early");
+    f.calls.clear();
+    const auto result = f.probe.Tick(2100);
+    Require(result.stage == source_proof::Stage::Verified && result.language_calls == 1 &&
+                result.activation_calls == (redundant ? 0u : 1u) && result.serial == 1 &&
+                result.completion == Completion::ExactTermination &&
+                result.phase == (redundant ? Phase::LanguageSelection : Phase::ProfileActivation) &&
+                result.order == Order::BeforeProfile,
+            "one-call and conditional two-call source results retain exact phase and order");
+    for (size_t i = 0; i != f.calls.size(); ++i)
+      if (f.calls[i] == "language.change" || f.calls[i] == "profile.activate")
+        Require(i && f.calls[i - 1] == "copy", "actual Copy is adjacent to every source mutation");
+    f.probe.Close();
+    Require(f.probe.Tick(5000) == result,
+            "completed native historical result stays frozen after Close");
+    wchar_t encoded[source_proof::status_capacity]{};
+    Status decoded;
+    Require(Format(result, encoded) && Parse(encoded, decoded) && decoded == result,
+            "bounded native result round trips without document content");
+    const std::wstring valid = encoded;
+    for (const auto &bad :
+         {valid + L"; extra=1", L"unknown" + valid, valid.substr(0, valid.size() - 1)})
+      Require(!Parse(bad, decoded), "source parser rejects extra, wrong, and truncated fields");
+    for (int scenario = 0; scenario != 10; ++scenario) {
+      auto bad = result;
+      if (scenario == 0)
+        bad.language_calls = 0;
+      if (scenario == 1)
+        bad.activation_calls = 2;
+      if (scenario == 2)
+        bad.serial = 0;
+      if (scenario == 3)
+        bad.failure = Failure::Closed;
+      if (scenario == 4)
+        bad.terminal = bad.before;
+      if (scenario == 5)
+        bad.after = bad.before + 17;
+      if (scenario == 6)
+        bad.completion = Completion::None;
+      if (scenario == 7)
+        bad.order = Order::NoProfileEvent;
+      if (scenario == 8)
+        bad.native_result = static_cast<uint32_t>(E_FAIL);
+      if (scenario == 9)
+        bad.profile = bad.terminal;
+      Require(!Format(bad, encoded), "inconsistent native success cannot be published");
+    }
+    PublicationV2 first;
+    first.publication = 1;
+    first.source = 1;
+    first.availability = Availability::Available;
+    first.continuity = Continuity::Same;
+    first.snapshot = f.provider.snapshot;
+    auto second = first;
+    ++second.publication;
+    Require(Matches(result, first, second),
+            "fresh active RU publication corroborates frozen native result");
+    second.snapshot.base.mode = KR_EN;
+    Require(!Matches(result, first, second), "historical native success cannot certify current EN");
+    second = first;
+    Require(!Matches(result, first, second), "stale publication cannot certify a source oracle");
+  }
+  for (int scenario = 0; scenario != 12; ++scenario) {
+    SourceFixture f;
+    f.Bind();
+    if (scenario == 0) {
+      f.dependencies.word.failure = Failure::FocusChanged;
+      f.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::DocumentFocus);
+      Require(f.probe.Tick(20).stage == source_proof::Stage::Waiting,
+              "pre-word setup focus is allowed at zero allocation");
+      f.dependencies.word.failure = Failure::None;
+      f.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::DocumentFocus);
+      Require(f.probe.Tick(40).stage == source_proof::Stage::Waiting,
+              "empty setup baseline refreshes on the same endpoint");
+      f.Word();
+      Require(f.probe.Tick(100).stage == source_proof::Stage::Countdown &&
+                  f.probe.Tick(2100).stage == source_proof::Stage::Verified,
+              "setup focus does not disqualify the first subsequently acquired word");
+      continue;
+    }
+    f.Word(scenario == 1 ? 1 : 6);
+    if (scenario == 1) {
+      Require(f.probe.Tick(100).stage == source_proof::Stage::Waiting &&
+                  f.probe.Tick(5000).stage == source_proof::Stage::Waiting &&
+                  !f.native.language_calls,
+              "first letter and partial word never start a countdown");
+      f.Word();
+    }
+    if (scenario == 2)
+      f.dependencies.word.failure = Failure::WordChanged;
+    if (scenario == 3)
+      f.dependencies.word.failure = Failure::SetupUnavailable;
+    if (scenario == 4)
+      f.dependencies.word.failure = Failure::FocusChanged;
+    if (scenario == 5) {
+      f.Complete();
+      f.dependencies.word.prefix = 0;
+    }
+    if (scenario == 6)
+      f.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::DocumentFocus);
+    if (scenario == 7)
+      ++f.provider.snapshot.base.activation;
+    if (scenario == 8)
+      Count(f.provider.snapshot.base, Counter::Unknown);
+    if (scenario == 9)
+      f.provider.snapshot.base.saturated = 1;
+    if (scenario == 10)
+      f.provider.result = E_PENDING;
+    if (scenario == 11)
+      f.provider.snapshot.base.mode = KR_RU;
+    const auto status = f.probe.Tick(100);
+    if (scenario == 1) {
+      Require(status.stage == source_proof::Stage::Countdown,
+              "full public word arms after proper prefixes");
+    } else {
+      Require(status.stage == source_proof::Stage::Failed && !f.native.language_calls &&
+                  f.probe.Tick(3000) == status,
+              "bad readiness or ended mark cannot rearm or select a source");
+    }
+  }
+  for (int scenario = 0; scenario != 14; ++scenario) {
+    SourceFixture f;
+    f.Arm();
+    DiagnosticProvider replacement;
+    if (scenario < 5)
+      Count(f.provider.snapshot.base, static_cast<Counter>(scenario));
+    if (scenario == 5)
+      f.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::DocumentFocus);
+    if (scenario == 6)
+      f.native.enabled = FALSE;
+    if (scenario == 7)
+      f.native.target_result = S_FALSE;
+    if (scenario == 8)
+      f.provider.result = E_PENDING;
+    if (scenario == 9)
+      f.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&replacement);
+    if (scenario == 10)
+      f.dependencies.word.prefix = 5;
+    if (scenario == 11)
+      f.provider.hook = [&](const char *name) {
+        if (std::string(name) == "copy")
+          f.Complete();
+      };
+    if (scenario == 12)
+      f.native.hook = [&](const char *name) {
+        if (std::string(name) == "enabled.read")
+          f.Complete();
+      };
+    auto status = f.probe.Tick(scenario == 13 ? 2351 : 2100);
+    Require(status.stage == source_proof::Stage::Failed && !f.native.language_calls &&
+                !f.native.activation_calls,
+            "armed interference, stale capture, missing target, or late deadline refuses before "
+            "mutation");
+    f.provider.hook = nullptr;
+    f.manager.diagnostic_sink.Reset();
+  }
+  for (int scenario = 0; scenario != 15; ++scenario) {
+    SourceFixture f;
+    f.Arm();
+    DiagnosticProvider replacement;
+    f.native.hook = [&](const char *name) {
+      if (std::string(name) == "language.change") {
+        if (scenario == 0)
+          f.native.language_result = E_FAIL;
+        if (scenario == 1)
+          f.native.language_result = S_FALSE;
+        if (scenario == 2)
+          throw 1;
+        if (scenario == 3)
+          f.native.language = profiles[0].language;
+        if (scenario == 4)
+          f.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&replacement);
+        if (scenario == 5)
+          ++f.provider.snapshot.base.activation;
+        if (scenario == 6)
+          f.provider.snapshot.base.active = 0;
+        if (scenario == 7)
+          f.provider.snapshot.base.stopped = 1;
+        if (scenario == 8)
+          f.provider.result = E_PENDING;
+        if (scenario == 9) {
+          f.Complete();
+          Count(f.provider.snapshot.base, Counter::HandleEntered);
+        }
+        if (scenario == 10)
+          f.provider.snapshot.lifecycle = f.journal.Copy(false, 0);
+        if (scenario == 11) {
+          f.native.active = SourceProfiles::Profile(1);
+          f.provider.snapshot.base.mode = KR_RU;
+        }
+        if (scenario == 12)
+          f.Record(LifecycleKind::Detached);
+        if (scenario == 13)
+          f.Record(LifecycleKind::TerminationUnresolved, 1, LifecycleCause::None,
+                   Unresolved::NullArgument);
+        if (scenario == 14)
+          Count(f.provider.snapshot.base, Counter::Unknown);
+      }
+    };
+    const auto status = f.probe.Tick(2100);
+    Require(status.stage == source_proof::Stage::Failed && f.native.language_calls == 1 &&
+                !f.native.activation_calls && f.probe.Tick(9999) == status,
+            "unsafe language cut never activates, repairs, retries, or polls failure into success");
+    f.manager.diagnostic_sink.Reset();
+  }
+  for (int scenario = 0; scenario != 8; ++scenario) {
+    SourceFixture f;
+    f.Arm();
+    f.native.hook = [&](const char *name) {
+      if (std::string(name) != "profile.activate")
+        return;
+      f.Complete();
+      if (scenario == 0)
+        f.native.activation_result = E_FAIL;
+      if (scenario == 1)
+        f.native.activation_result = S_FALSE;
+      if (scenario == 2)
+        f.native.active = SourceProfiles::Profile(0);
+      if (scenario == 3)
+        f.native.active.guidProfile = GUID_NULL;
+      if (scenario == 4)
+        f.native.read_result = S_FALSE;
+      if (scenario == 5)
+        f.provider.snapshot.base.mode = KR_EN;
+      if (scenario == 6)
+        Count(f.provider.snapshot.base, Counter::KeyEntered);
+      if (scenario == 7)
+        f.dependencies.word.failure = Failure::FocusChanged;
+    };
+    const auto status = f.probe.Tick(2100);
+    Require(status.stage == source_proof::Stage::Failed && status.language_calls == 1 &&
+                status.activation_calls == 1 && f.probe.Tick(9999) == status,
+            "bad activation or readback remains failed despite an exact terminal");
+  }
+}
+void SourceReadinessSchedules() {
+  using namespace source_proof;
+  for (int scenario = 0; scenario != 14; ++scenario) {
+    std::wstring a = scenario == 1 ? L"g" : scenario == 2 ? L"" : L"ghbdtn";
+    std::wstring b;
+    if (scenario == 3)
+      a = L"ghbdtx";
+    if (scenario == 4)
+      a = L"ghbdtn ";
+    if (scenario == 5)
+      b = L"x";
+    if (scenario == 6)
+      a += L'\r';
+    LONG caret = static_cast<LONG>(a.size());
+    if (scenario == 7)
+      --caret;
+    int reads = 0, eligibility = 0;
+    bool alive = true;
+    const auto result = source_proof::detail::ReadPublicWord(
+        [&] { return alive; },
+        [&] {
+          ++eligibility;
+          return scenario == 8   ? Failure::SetupUnavailable
+                 : scenario == 9 ? Failure::FocusChanged
+                                 : Failure::None;
+        },
+        [&](int id, UINT message, WPARAM count, LPARAM destination) -> LRESULT {
+          Require(id == 101 || id == 102, "native readiness never reads excluded 103 or 104");
+          ++reads;
+          const auto &text = id == 101 ? a : b;
+          if (scenario == 10)
+            alive = false;
+          if (message == WM_GETTEXTLENGTH)
+            return static_cast<LRESULT>(text.size());
+          if (message == WM_GETTEXT) {
+            Require(count == 8,
+                    "public readiness text buffer is bounded independently of native length");
+            auto *out = reinterpret_cast<wchar_t *>(destination);
+            std::copy(text.begin(), text.end(), out);
+            out[text.size()] = 0;
+            return scenario == 11 ? static_cast<LRESULT>(text.size()) - 1
+                                  : static_cast<LRESULT>(text.size());
+          }
+          Require(message == EM_EXGETSEL && id == 101, "only public A selection is inspected");
+          *reinterpret_cast<CHARRANGE *>(destination) = {caret, scenario == 12 ? caret - 1 : caret};
+          if (scenario == 13)
+            alive = false;
+          return 0;
+        });
+    Require(
+        (result.failure == Failure::None) == (scenario <= 2),
+        "native readiness distinguishes empty, prefix, full word, wrong word, B, and exact caret");
+    if (scenario <= 2)
+      Require(result.prefix == a.size(), "native readiness uses actual UTF-16 length");
+    if (scenario == 8 || scenario == 9)
+      Require(!reads && eligibility == 1,
+              "ineligible or unfocused controls receive zero text queries");
+    if (scenario == 10)
+      Require(reads == 1, "cancellation after a native query prevents every subsequent read");
+  }
+  for (const char *boundary : {"target.read", "enabled.read", "provider"}) {
+    SourceFixture f;
+    f.Arm();
+    const auto counters = f.provider.snapshot.base.counts;
+    auto change = [&] { f.dependencies.word.failure = Failure::WordChanged; };
+    f.native.hook = [&](const char *name) {
+      if (std::string(name) == boundary)
+        change();
+    };
+    f.manager.provider_hook = [&] {
+      if (std::string(boundary) == "provider")
+        change();
+    };
+    const auto result = f.probe.Tick(2100);
+    Require(result.failure == Failure::WordChanged && !f.native.language_calls &&
+                f.provider.snapshot.base.counts == counters,
+            "word or caret changed during preparation is reread after COM without relying on key "
+            "counters");
+  }
+  for (bool last : {false, true}) {
+    SourceFixture f;
+    f.Arm();
+    f.manager.provider_hook = [&] {
+      if (f.native.language_calls && (last ? f.native.activation_calls != 0 : true))
+        f.dependencies.word.failure = Failure::WordChanged;
+    };
+    const auto result = f.probe.Tick(2100);
+    Require(result.failure == Failure::WordChanged && f.native.language_calls == 1 &&
+                f.native.activation_calls == (last ? 1 : 0),
+            "middle and final readiness follow provider queries before their retained copy");
+  }
+  for (int scenario = 0; scenario != 5; ++scenario) {
+    SourceFixture f;
+    if (scenario == 0)
+      f.native.read_result = S_FALSE;
+    if (scenario == 1)
+      f.native.active = SourceProfiles::Profile(1);
+    if (scenario == 2)
+      f.manager.provider_result = TF_E_NOPROVIDER;
+    if (scenario == 3)
+      f.dependencies.word.failure = Failure::FocusChanged;
+    if (scenario == 4)
+      f.dependencies.acquired = E_NOINTERFACE;
+    const auto result = f.probe.Tick(0);
+    Require(result.stage ==
+                    (scenario == 4 ? source_proof::Stage::Failed : source_proof::Stage::Waiting) &&
+                !f.native.language_calls,
+            "incomplete initial setup waits and missing native interfaces fail without selection");
+  }
+}
+void SourceReviewRegressionSchedules() {
+  using namespace source_proof;
+  int failures = 0;
+  auto check = [&](bool passed, const char *label) {
+    printf("REGRESSION %s %s\n", passed ? "PASS" : "FAIL", label);
+    failures += !passed;
+  };
+  for (const char *boundary : {"target.read", "provider", "read", "copy"}) {
+    SourceFixture f;
+    f.Arm();
+    uint64_t elapsed = 0;
+    int clocks = 0;
+    f.dependencies.clock = [&](uint64_t entry) {
+      ++clocks;
+      return entry + elapsed;
+    };
+    auto delay = [&](const char *name) {
+      f.calls.emplace_back(name);
+      if (std::string(name) == boundary)
+        elapsed = 251;
+      if (std::string(name) == "profile.activate")
+        f.Complete();
+    };
+    f.native.hook = delay;
+    f.provider.hook = delay;
+    f.manager.provider_hook = [&] { delay("provider"); };
+    f.dependencies.read = [&] { delay("read"); };
+    const auto result = f.probe.Tick(2100);
+    printf("deadline %s latest=2351 clocks=%d language_calls=%d activation_calls=%d\n", boundary,
+           clocks, f.native.language_calls, f.native.activation_calls);
+    check(result.failure == Failure::Late && clocks == 1 && !f.native.language_calls &&
+              !f.native.activation_calls && f.probe.Tick(4000) == result,
+          "delayed preparation or Copy must expire before first source mutation");
+  }
+  for (int scenario = 0; scenario != 4; ++scenario) {
+    SourceFixture f;
+    f.Arm();
+    int clocks = 0;
+    f.dependencies.clock = [&](uint64_t entry) {
+      ++clocks;
+      if (scenario == 1)
+        return entry - 1;
+      if (scenario == 2)
+        f.probe.Close();
+      if (scenario == 3)
+        Require(f.probe.Tick(entry).stage == Stage::Running && !f.native.language_calls,
+                "clock reentry cannot dispatch another source operation");
+      return scenario == 0 ? uint64_t{2350} : entry;
+    };
+    const auto result = f.probe.Tick(2100);
+    printf("clock scenario=%d clocks=%d language_calls=%d activation_calls=%d\n", scenario, clocks,
+           f.native.language_calls, f.native.activation_calls);
+    if (scenario == 1 || scenario == 2)
+      check(result.failure == (scenario == 1 ? Failure::Late : Failure::Closed) && clocks == 1 &&
+                !f.native.language_calls && !f.native.activation_calls,
+            "backward clock or Close during clock must refuse before source mutation");
+    else
+      check(result.stage == Stage::Verified && clocks == 1 && f.native.language_calls == 1 &&
+                f.native.activation_calls == 1,
+            "last allowed millisecond and nested clock Tick preserve one-shot dispatch");
+  }
+  for (const char *change : {"password", "read-only", "disabled", "focus-lost"}) {
+    SourceFixture f;
+    bool changed = false;
+    int text_queries = 0, selection_queries = 0;
+    const auto result = detail::ReadPublicWord(
+        [] { return true; },
+        [&] {
+          return !changed                              ? Failure::None
+                 : std::string(change) == "focus-lost" ? Failure::FocusChanged
+                                                       : Failure::SetupUnavailable;
+        },
+        [&](int id, UINT message, WPARAM count, LPARAM destination) -> LRESULT {
+          Require(id == 101, "eligibility loss on A must stop before B inspection");
+          if (message == WM_GETTEXTLENGTH) {
+            ++text_queries;
+            return 6;
+          }
+          if (message == WM_GETTEXT) {
+            ++text_queries;
+            Require(count == 8, "regression uses bounded public word read");
+            wcscpy_s(reinterpret_cast<wchar_t *>(destination), count, L"ghbdtn");
+            changed = true;
+            return 6;
+          }
+          Require(message == EM_EXGETSEL, "only selection query can follow public text read");
+          ++selection_queries;
+          *reinterpret_cast<CHARRANGE *>(destination) = {6, 6};
+          return 0;
+        });
+    printf("eligibility %s text_queries=%d selection_queries=%d source_calls=%d\n", change,
+           text_queries, selection_queries, f.native.language_calls + f.native.activation_calls);
+    check(result.failure == (std::string(change) == "focus-lost" ? Failure::FocusChanged
+                                                                 : Failure::SetupUnavailable) &&
+              text_queries == 2 && !selection_queries && !f.native.language_calls &&
+              !f.native.activation_calls,
+          "eligibility changed by text read must prevent selection inspection");
+  }
+  {
+    const HWND ordinary_b = GetDlgItem(controlled_root, 102);
+    Require(ordinary_b != nullptr, "hidden fixture has ordinary B");
+    SetWindowLongPtrW(ordinary_b, GWLP_ID, 202);
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    Require(ready != nullptr, "hidden worker fixture handshake allocated");
+    HWND worker_root = nullptr, worker_b = nullptr;
+    DWORD worker_thread = 0;
+    std::thread worker([&] {
+      worker_thread = GetCurrentThreadId();
+      worker_root = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPED, 0, 0, 10, 10, nullptr,
+                                    nullptr, GetModuleHandleW(nullptr), nullptr);
+      worker_b =
+          CreateWindowExW(WS_EX_NOPARENTNOTIFY, MSFTEDIT_CLASS, L"", WS_CHILD | ES_MULTILINE, 0, 0,
+                          10, 10, worker_root, reinterpret_cast<HMENU>(static_cast<INT_PTR>(102)),
+                          GetModuleHandleW(nullptr), nullptr);
+      MSG message{};
+      PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+      SetEvent(ready);
+      while (GetMessageW(&message, nullptr, 0, 0) > 0)
+        DispatchMessageW(&message);
+      DestroyWindow(worker_root);
+    });
+    Require(WaitForSingleObject(ready, 5000) == WAIT_OBJECT_0 && worker_root && worker_b,
+            "hidden worker RichEdit created without desktop focus");
+    Require(SetParent(worker_b, controlled_root) == worker_root &&
+                GetWindowThreadProcessId(worker_b, nullptr) == worker_thread &&
+                worker_thread != GetCurrentThreadId() &&
+                GetDlgItem(controlled_root, 102) == worker_b,
+            "hidden B has exact parent and ID but a different owning thread");
+    SourceFixture f;
+    int text_queries = 0;
+    const auto result = detail::ReadPublicWord(
+        [] { return true; },
+        [&] { return detail::PublicControls(controlled_root, GetCurrentThreadId()); },
+        [&](int, UINT, WPARAM, LPARAM) -> LRESULT {
+          ++text_queries;
+          return 0;
+        });
+    printf("cross-thread B failure=%u expected=%u text_queries=%d source_calls=%d\n",
+           static_cast<unsigned>(result.failure), static_cast<unsigned>(Failure::SetupUnavailable),
+           text_queries, f.native.language_calls + f.native.activation_calls);
+    check(result.failure == Failure::SetupUnavailable && !text_queries &&
+              !f.native.language_calls && !f.native.activation_calls,
+          "cross-thread ordinary B is unavailable before text or selection inspection");
+    Require(SetParent(worker_b, worker_root) == controlled_root,
+            "hidden worker B returns to its owning thread before teardown");
+    Require(PostThreadMessageW(worker_thread, WM_QUIT, 0, 0) != FALSE,
+            "hidden worker teardown requested without source or desktop action");
+    worker.join();
+    CloseHandle(ready);
+    SetWindowLongPtrW(ordinary_b, GWLP_ID, 102);
+  }
+  Require(!failures, "source review regression schedules have zero failing invariants");
+}
+void SourceHistorySchedules() {
+  using namespace source_proof;
+  using namespace diagnostics;
+  for (int scenario = 0; scenario != 17; ++scenario) {
+    SourceFixture f;
+    f.Arm();
+    const auto before = f.provider.snapshot;
+    auto middle = before;
+    if (scenario == 0 || scenario == 1) {
+      for (int i = 0; i != 8; ++i)
+        f.Record(LifecycleKind::DifferentTermination);
+      middle = f.provider.snapshot;
+      for (int i = 0; i != (scenario == 0 ? 7 : 8); ++i)
+        f.Record(LifecycleKind::DifferentTermination);
+      f.Complete(false);
+    } else if (scenario == 2) {
+      f.Record(LifecycleKind::EndRequested);
+      f.Record(LifecycleKind::FinishVerified);
+      f.provider.snapshot.lifecycle = f.journal.Copy(false, 0);
+      f.provider.snapshot.base.mode = KR_RU;
+    } else if (scenario == 3) {
+      f.Record(LifecycleKind::FinishVerified);
+      f.provider.snapshot.lifecycle = f.journal.Copy(false, 0);
+      f.provider.snapshot.base.mode = KR_RU;
+    } else {
+      f.Complete();
+      if (scenario == 4)
+        f.provider.snapshot.lifecycle.events[0].kind = LifecycleKind::EndRequested;
+      if (scenario == 5)
+        Count(f.provider.snapshot.base, Counter::Unknown);
+      if (scenario == 6)
+        f.provider.snapshot.lifecycle.saturated = 1;
+      if (scenario == 7)
+        f.Record(LifecycleKind::Detached);
+      if (scenario == 8)
+        f.Record(LifecycleKind::TerminationUnresolved, 1, LifecycleCause::None,
+                 Unresolved::IdentityFailure);
+      if (scenario == 9)
+        f.Record(LifecycleKind::LifecycleInvalidation, 0, LifecycleCause::Deactivate);
+      if (scenario == 10) {
+        f.journal.Acquire();
+        f.provider.snapshot.lifecycle = f.journal.Copy(false, 0);
+      }
+      if (scenario >= 11 && scenario <= 15)
+        Count(f.provider.snapshot.base, static_cast<Counter>(scenario - 11));
+      if (scenario == 16)
+        --f.provider.snapshot.base.counts[static_cast<size_t>(Counter::HandleEntered)];
+    }
+    Status result;
+    const auto failure =
+        source_proof::detail::Evaluate(before, middle, f.provider.snapshot, result);
+    Require((failure == Failure::None) == (scenario == 0 || scenario == 2),
+            "complete sixteen-event interval and requested finish pass; unsafe histories cannot");
+    if (scenario == 1)
+      Require(failure == Failure::HistoryLost,
+              "combined seventeen-event interval fails even when both smaller cuts fit");
+    if (scenario == 2)
+      Require(result.completion == Completion::VerifiedFinish,
+              "requested verified finish is classified separately from exact termination");
+  }
+}
+void SourceReentrySchedules() {
+  using namespace source_proof;
+  for (bool close : {false, true}) {
+    for (const char *boundary :
+         {"acquire", "read", "provider", "identity", "function", "copy", "release", "language.read",
+          "profile.read", "target.read", "enabled.read", "language.change", "profile.activate",
+          "native.release"}) {
+      SourceFixture f;
+      f.Arm();
+      bool injected = false;
+      auto inject = [&](const char *name) {
+        if (injected || std::string(name) != boundary)
+          return;
+        injected = true;
+        if (close)
+          f.probe.Close();
+        else if (std::string(name) == "release" || std::string(name) == "native.release")
+          Require(f.probe.Tick(2100).stage == source_proof::Stage::Failed,
+                  "Release observes a terminal failure before references unwind");
+        else
+          Require(f.probe.Tick(2100).stage == source_proof::Stage::Running,
+                  "nested timer sees an in-flight batch and cannot dispatch another operation");
+      };
+      f.dependencies.read = [&] { inject("read"); };
+      f.manager.provider_hook = [&] { inject("provider"); };
+      f.provider.hook = inject;
+      f.native.hook = [&](const char *name) {
+        inject(name);
+        if (std::string(name) == "profile.activate")
+          f.Complete();
+      };
+      if (std::string(boundary) == "acquire") {
+        f.probe.Close();
+        continue;
+      }
+      if (std::string(boundary) == "function")
+        continue;
+      if (std::string(boundary) == "release" || std::string(boundary) == "native.release") {
+        f.native.language_result = E_FAIL;
+        auto status = f.probe.Tick(2100);
+        Require(injected && status.stage == source_proof::Stage::Failed,
+                "release reentry cannot overwrite frozen failure");
+      } else {
+        const auto status = f.probe.Tick(2100);
+        Require(injected && status.stage == (close ? source_proof::Stage::Failed
+                                                   : source_proof::Stage::Verified),
+                "nested Close is sticky and nested Tick cannot duplicate source calls");
+        if (close)
+          Require(status.failure == Failure::Closed,
+                  "outer completion cannot overwrite cancellation");
+      }
+      f.provider.hook = nullptr;
+      f.native.hook = nullptr;
+    }
+  }
+  for (const char *boundary :
+       {"acquire", "read", "provider", "identity", "function", "copy", "release"}) {
+    SourceFixture f;
+    bool injected = false;
+    auto inject = [&](const char *name) {
+      if (!injected && std::string(name) == boundary) {
+        injected = true;
+        f.probe.Close();
+      }
+    };
+    f.dependencies.acquire = [&] { inject("acquire"); };
+    f.dependencies.read = [&] { inject("read"); };
+    f.manager.provider_hook = [&] { inject("provider"); };
+    f.provider.hook = inject;
+    const auto status = f.probe.Tick(0);
+    Require(
+        injected && status.stage == source_proof::Stage::Failed &&
+            status.failure == Failure::Closed && !f.native.language_calls &&
+            f.probe.Tick(3000) == status,
+        "preparation and readiness are guarded before the first external call including Release");
+    f.provider.hook = nullptr;
+  }
+}
+void SourceServiceSchedules() {
+  using namespace source_proof;
+  for (bool input : {false, true}) {
+    const auto objects = object_count;
+    {
+      ProfileManager service_profiles;
+      Harness h(&service_profiles, ProofLayouts);
+      SourceProfiles native;
+      ProbeTestAccess::Dependencies deps;
+      deps.languages = &native;
+      deps.profiles = &native;
+      Probe probe(nullptr, h.manager, GetCurrentThreadId());
+      ProbeTestAccess::Configure(probe, deps);
+      Require(probe.Tick(0).stage == source_proof::Stage::Waiting,
+              "actual service starts from empty allocation-zero evidence");
+      h.Type(L"ghbdtn");
+      deps.word.prefix = 6;
+      Require(probe.Tick(100).stage == source_proof::Stage::Countdown,
+              "actual service owned public word arms probe");
+      const auto writes = h.a.writes, reads = h.a.reads, ends = h.a.ends, starts = h.a.starts;
+      native.hook = [&](const char *name) {
+        if (std::string(name) != "language.change")
+          return;
+        if (input) {
+          const kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+          h.service->HandleEvent(&h.a, finish);
+        } else {
+          h.a.active_composition = false;
+          h.service->OnCompositionTerminated(123, h.a.composition.Get());
+        }
+        native.active = SourceProfiles::Profile(1);
+        h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[1].language, service_id,
+                               GUID_TFCAT_TIP_KEYBOARD, profiles[1].id, nullptr,
+                               TF_IPSINK_FLAG_ACTIVE);
+      };
+      const auto status = probe.Tick(2100);
+      Require(input ? status.failure == Failure::InputInterference
+                    : status.stage == source_proof::Stage::Verified,
+              "actual service exact callback passes while a real reentrant HandleEvent finish is "
+              "interference");
+      Require(h.a.writes == writes && h.a.starts == starts && h.a.ends == ends + (input ? 1 : 0) &&
+                  (input || h.a.reads == reads) && native.language_calls == 1 &&
+                  !native.activation_calls,
+              "probe adds no document writes, composition starts, or forced termination");
+      h.Oracle(L"ghbdtn", 13);
+      probe.Close();
+      Require(native.references == 1,
+              "source COM references drain while the actual service apartment lives");
+    }
+    Require(object_count == objects,
+            "actual service object accounting drains after source experiment");
+  }
+}
 struct ShutdownHistory {
   diagnostics::LifecycleJournal journal;
   diagnostics::SnapshotV2 before;
@@ -3281,6 +4211,13 @@ int wmain() {
   ShutdownServiceSchedules();
   ShutdownReaderLifetimeSchedules();
   ShutdownWindowSchedules();
+  puts("RUN host-only native source proof schedules");
+  SourceProbeSchedules();
+  SourceReadinessSchedules();
+  SourceReviewRegressionSchedules();
+  SourceHistorySchedules();
+  SourceReentrySchedules();
+  SourceServiceSchedules();
   puts("RUN actual service diagnostic refusal schedules");
   DiagnosticRefusalSchedules();
   puts("RUN actual service diagnostic exception schedules");
