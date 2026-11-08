@@ -73,6 +73,12 @@ an item that exists on one OS only ([development](development.md#style)).
   one write, verify it, then `kr_commit` with `KR_APPLIED_VERIFIED`, `KR_REFUSED_BEFORE_WRITE` or
   `KR_ATTEMPTED_UNKNOWN`.
 - **Policy and dictionaries.** `kr_set_automatic_policy` selects off, fixture or model while idle.
+  `kr_prepare_model` warms the existing process-wide model cache on a worker without an engine.
+  `kr_dictionary_parse_utf8` creates an immutable dictionary handle off the input thread;
+  `kr_adopt_dictionaries` borrows a pair on the engine owner and retains independent references.
+  Free handles with `kr_dictionary_free` after their borrows drain, even after adoption. A null
+  language handle means missing; a parsed empty source means ready. Pair adoption rejects any
+  pending proposal and preserves policy, word history and reversal receipts.
   `kr_set_dictionary_utf8` publishes a whole dictionary (at most 1 MiB, NULL+0 is a valid empty
   source); `kr_clear_dictionary` makes a language missing. Reading the files, and deciding when a
   file has settled, is the adapter's job.

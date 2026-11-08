@@ -8,7 +8,8 @@
 //!   [`keyrill_core::session::Session`] each, copy every buffer across the boundary, catch
 //!   panics and poison the handle on one.
 //! - Configuration (`kr_set_automatic_policy`, `kr_set_keyboard`) applies while idle.
-//! - Dictionaries (`kr_set_dictionary_utf8`, `kr_clear_dictionary`,
+//! - Dictionaries (`kr_dictionary_parse_utf8`, `kr_adopt_dictionaries`,
+//!   `kr_set_dictionary_utf8`, `kr_clear_dictionary`,
 //!   `kr_dictionary_skipped_lines`) publish and describe immutable snapshots; reading files
 //!   stays in the adapter.
 //! - The compatibility family (`kr_plan_compatibility_event`, `kr_commit_compatibility`) tracks
@@ -26,6 +27,12 @@ pub mod vocabulary_source;
 pub mod vocabulary_host;
 
 mod compatibility;
+mod dictionary;
+
+pub use dictionary::{
+    Dictionary, kr_adopt_dictionaries, kr_dictionary_free, kr_dictionary_parse_utf8,
+    kr_prepare_model,
+};
 
 #[cfg(all(test, target_os = "macos"))]
 fn descriptor_flags(file: &std::fs::File) -> i32 {
