@@ -6,8 +6,9 @@ first; its state table, safety invariants and rejected mechanisms apply to every
 Don't write a second inference engine, and don't build a cross-platform editing abstraction
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
-Windows has a fixture-only [SDK TSF proof](windows.md), with controlled COM tests but no live
-acceptance yet. No Linux adapter exists. Each platform starts with the same first slice: one real
+Windows has a fixture-only [SDK TSF proof](windows.md), with controlled COM tests and a passed
+first controlled-editor proof. General Windows application support remains unproved. No Linux
+adapter exists. Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
 rapid continuation and a focus change, all checked against the whole document. Use the fixture
 policy (`kr_set_automatic_policy` with `KR_POLICY_FIXTURE`, which corrects only `ghbdtn` and
@@ -107,8 +108,9 @@ These follow from the architecture and apply on every platform:
 
 The fixture-only SDK implementation is in `native/windows/`; its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
-[Windows TSF proof](windows.md). Its focus-loss termination gate remains blocked, and it does
-not admit general editors. TSF remains a proposal ([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
+[Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
+termination on focus loss. The adapter does not admit general editors. TSF remains a proposal
+([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
 contexts and owned compositions fit the contract better than UI Automation reads plus synthetic
 replacement. Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
 native COM shim if it narrows lifetime risk.

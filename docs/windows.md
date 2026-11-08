@@ -4,24 +4,29 @@ This is an x64, fixture-only Text Services Framework adapter. It links the exist
 through [the C ABI](../include/keyrill.h). It has no replacement backend, hooks, input injection,
 clipboard transport, runtime network access, model policy, or personal dictionaries.
 
-The live acceptance gate is **not passed**. The maintainer registered and enabled both proof
-profiles and selected **Keyrill proof EN**. Later fixture runs passed case-level correction,
-continuation, Undo, focus-preservation, exclusion, source, and native lock-denial oracles.
-These supersede the earlier unchanged-text correction attempt. Automated keyboard runs also
-passed correction and continuation. They do not count as physical keyboard evidence.
-A fresh automated Escape reversal exposed a separate end-caret defect. The changing-finish
-caret fix passed its controlled regression and the same automated correction and reversal
-oracles. That case does not establish lifecycle acceptance.
+The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
+maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
+continuation, native Undo, focus preservation, excluded-control checks, native lock denial,
+and bounded owned-shutdown and empty-close assertions. Automated real-editor runs separately
+passed correction, Escape reversal, continuation, and lifecycle assertions. Automated keys do
+not count as physical keyboard evidence.
+
+The earlier unchanged-text correction attempt was superseded by later verified correction.
+An initial caret mismatch and a later automated Escape end-caret defect remain part of the
+history. The changing-finish fix passed its controlled regression and the same automated
+correction and reversal document/caret oracles without a caret repair.
 
 The final lifecycle-journal build has case-level Tab and A-to-B-to-A evidence under automated
 keys and clicks. Tab recorded EndRequested and FinishVerified for the owned serial before
 document-focus invalidation. Clicking B and then A each recorded ExactTermination for the mark
 owned in the departing field before focus invalidation. The exact correction and final focus
 document/caret oracles passed, with zero Unknown effects. These runs establish the observed
-fixture sequence, not physical keyboard evidence or general application support. The automated
-owned-shutdown and empty-close cases below also passed. Later physical owned-shutdown and
-fresh empty-close controls passed their bounded assertions. Unretained final destruction and
-the complete first-editor reliability gate remain open.
+fixture sequence, not physical keyboard evidence or general application support. The native
+EN-to-RU experiment below also passed with fresh owned evidence and an independent no-Space
+document/caret oracle. This completes the controlled-editor proof, not general Windows support.
+Application coverage, shared model and vocabulary integration, settings, and packaging remain
+later work. Unretained final destruction and complete callback drainage are not established by
+the bounded shutdown assertion.
 
 ## Build and check without installation
 
@@ -163,9 +168,10 @@ run does not isolate termination caused by the source-change callback.
 
 ## Maintainer registration and selection
 
-Do not register this draft as a daily input method. First review the DLL and its closed live
-gate. Installation, enablement, source selection, and permission changes belong to the maintainer.
-The build and tests never perform them.
+Do not register this draft as a daily input method. The controlled-editor proof has passed;
+general application reliability is not established. Installation, enablement, source selection,
+and permission changes belong to the maintainer. The default build and controlled tests never
+perform them. The maintainer-launched native source experiment below explicitly selects RU.
 
 Run status before a change. It prints content-free COM and TSF profile facts without mutation.
 Profile presence requires an exact TSF enumeration match and the expected proof description.
@@ -433,8 +439,8 @@ input callbacks and never retries an edit. Output contains only the result, with
 
 Controlled pure schedules cover these acceptance and rejection cases without sleeps. A pass
 establishes this fixture's observed native refusal and literal document state. It does not prove
-key origin, composition, correction, Undo, or other applications. Physical verification of this
-promoted mode remains a separate maintainer gate.
+key origin, composition, correction, Undo, or other applications. A later physical run of this
+promoted mode passed the strict native-denial and document/caret oracle.
 
 ### Observe an owned mark through shutdown
 
@@ -534,9 +540,10 @@ replace the fresh physical positive and empty-close runs above.
 
 ### Invoke native source selection with a freshly captured owned mark
 
-The host-only `--prove-owned-en-to-ru` experiment is **unrun on the desktop**. It changes no
-Service editing policy, Rust code, ABI, profile registration, or journal capacity. The maintainer
-alone launches this mode because it selects a source. Default verification exercises controlled
+The host-only `--prove-owned-en-to-ru` experiment passed its native and independent no-Space
+UIA assertions in the real proof editor. It changes no Service editing policy, Rust code, ABI,
+profile registration, or journal capacity. The maintainer alone launches this mode because it
+selects a source. Default verification exercises controlled
 COM doubles and never launches this mode. There are no target arguments, and repeated or
 combined flags exit 2 before COM initialization.
 
@@ -544,7 +551,16 @@ The earlier source UI workflow passed its bounded normal-flow checks. Its journa
 Acquired, EndRequested, FinishVerified, document-focus notifications, and then ProfileChanged.
 The maintainer selected RU, and the document/caret oracle passed after
 agent-generated typing and Space. That sequence completed the mark before profile notification.
-It does not establish the stronger native experiment below.
+That workflow does not establish the stronger native experiment below.
+
+In the native experiment, the maintainer launched the fixture and selected EN with empty fields.
+Agent-generated keys formed the owned word. One `ChangeCurrentLanguage` call reached the exact
+Keyrill RU profile, so no `ActivateProfile` call was needed. The same service recorded
+ExactTermination for the captured serial before ProfileChanged, with unchanged input counters
+and zero Unknown effects. Before any further input, the independent inspector confirmed the
+unchanged public word, empty B, collapsed end caret, frozen native result, and advancing RU
+publications. A separate later Space case passed without another correction write. The result
+establishes this observed transition, not every activation path or callback order.
 
 Run the primary experiment without any post-operation input.
 
@@ -622,8 +638,8 @@ references release before apartment teardown.
 Controlled schedules cover source call budgets, exact parameters, conditional omission,
 setup/readiness failures, fresh capture, reentry and cancellation, immutable history boundaries,
 input interference, and actual Service callbacks without added document writes. Native and ASan
-passes establish those controlled properties only. The maintainer-launched experiment and the
-full first-editor reliability gate remain open.
+passes establish those controlled properties only. The maintainer-launched desktop experiment
+supplies the separate bounded live evidence described above.
 
 [source-activate]: https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile
 [source-language]: https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-changecurrentlanguage
@@ -632,21 +648,22 @@ Controlled schedules cover exact refusal stages and native versus predicate fail
 denial versus unentered/completed sessions, busy and incompatible reads, malformed publication,
 provider absence and errors, retained inactive interfaces, independent instances, saturation,
 activation continuity, and failed or reentrant registration cleanup. These are controlled COM
-observations. Real installed-service UIA evidence still requires maintainer registration of this
-reviewed build and the separate physical document, composition, continuation, and focus gates.
+observations. Live evidence comes from the registered proof profiles and the separately observed
+physical and automated fixture cases. Controlled schedules do not replace those cases.
 
-| Schedule | Controlled evidence | Physical evidence required |
+| Schedule | Controlled evidence | Live fixture evidence and limits |
 |---|---|---|
-| `ghbdtn` plus Space and Escape | Exact whole documents, caret, owned identity, and disposition pass | Selected EN and loaded DLL observed; physical `ghbdtn` plus Space remains unchanged; correction and composition unproved |
-| Rapid next letter and moved caret | Bounded finish/replan, exact prefix/suffix preservation pass | Repeat physical typing without dropped or duplicated characters |
-| Denied request, failed session result, missing callback, late callback, null composition | Same-service zero-write and pass-through schedules pass | Real editor lock-denial behavior untested |
-| Range, text, caret, active-membership drift; extra foreign composition | Refusal before write passes | Real host notifications and composition identity untested |
-| Reentry at exercised COM boundaries and exceptions | No new write after invalidation, outcome-derived consumption, and no retry pass | Native callback schedules untested |
+| `ghbdtn` plus Space and Escape | Exact whole documents, caret, owned identity, and disposition pass | Physical correction passed; automated correction and Escape reversal passed exact document/caret oracles after the caret fix |
+| Rapid next letter and moved caret | Bounded finish/replan, exact prefix/suffix preservation pass | Physical rapid continuation and automated continuation passed; adversarial caret drift remains controlled evidence |
+| Denied request, failed session result, missing callback, late callback, null composition | Same-service zero-write and pass-through schedules pass | Physical native lock-denial passed with literal text, exact caret, and zero consumption or writes; injected late and null outcomes remain controlled evidence |
+| Range, text, caret, active-membership drift; extra foreign composition | Refusal before write passes | Live owned identity and focus notifications were observed; injected drift and foreign-composition cases remain controlled evidence |
+| Reentry at exercised COM boundaries and exceptions | No new write after invalidation, outcome-derived consumption, and no retry pass | Live focus, source, and teardown callbacks were observed; adversarial reentry and exceptions remain controlled evidence |
 | Unknown MARK and FINISH, reserved Escape | Stop without replay or repair passes | Unknown-effect hosts remain unadmitted |
-| Focus A to B to A, late old termination | Old authority never revives in doubles | Automated fixture run observed exact termination before each focus invalidation and passed the final whole-document/caret oracle; physical keyboard evidence remains open |
-| Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical excluded-control checks untested |
-| Native Undo after correction and continuation | Not modeled as a TSF guarantee | Whole document, caret, Undo grouping, and subsequent input untested |
-| EN/RU profile and source changes, teardown | Profile-table checks, invalidation, and host-only source-probe schedules pass | Ordinary source UI flow and bounded physical owned-shutdown/empty-close cases passed; native source invocation with fresh owned evidence remains unrun |
+| Focus A to B to A, late old termination | Old authority never revives in doubles | Physical focus preservation passed; automated runs recorded exact termination before focus invalidation and passed the final document/caret oracle; late old callbacks remain controlled evidence |
+| Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical password/read-only attempts preserved A and B without additional service handling; excluded contents were not queried; other exclusion paths remain controlled evidence |
+| Native Undo after correction and continuation | Not modeled as a TSF guarantee | Physical and automated Undo cases preserved the corrected word while removing the continuation; no general Undo-grouping guarantee |
+| EN/RU profile and source changes, teardown | Profile-table checks, invalidation, and host-only source-probe schedules pass | Ordinary source UI flow, native EN-to-RU selection from a fresh owned mark, and bounded physical owned-shutdown/empty-close cases passed |
 
-Only x64 MSVC build evidence exists. ARM64, generic editors, real Undo, ordinary-user registration
-scope, and physical acceptance remain open. [ADR 007](adr/007-windows-tsf.md) remains proposed.
+Only x64 MSVC build and controlled-editor evidence exists. ARM64, generic editors,
+ordinary-user registration scope, and general application reliability remain open.
+[ADR 007](adr/007-windows-tsf.md) remains proposed.
