@@ -2,14 +2,6 @@
 #include "service_diagnostics.h"
 
 namespace keyrill::denial {
-enum class Startup { Normal, DenyTsfLocks, Invalid };
-inline Startup ParseStartup(int argc, const wchar_t *const *argv) noexcept {
-  if (argc == 1)
-    return Startup::Normal;
-  if (argc == 2 && wcscmp(argv[1], L"--deny-tsf-locks") == 0)
-    return Startup::DenyTsfLocks;
-  return Startup::Invalid;
-}
 inline constexpr int setup_id = 107;
 inline constexpr wchar_t title[] = L"Keyrill TSF native lock-denial fixture";
 inline constexpr wchar_t setup_status[] = L"Keyrill native denial v1; setup=Confirmed";

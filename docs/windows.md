@@ -13,11 +13,14 @@ A fresh automated Escape reversal exposed a separate end-caret defect. The chang
 caret fix passed its controlled regression and the same automated correction and reversal
 oracles. That case does not establish lifecycle acceptance.
 
-The lifecycle journal below supplies actual service ownership observations. Controlled schedules
-verify its classifications and bounds. The reliability gate stays open until fresh runs of the
-new journal establish the relevant lifecycle sequence alongside document, caret, and key evidence.
-Provider disappearance and ambiguous focus remain evidence gaps. No general application support
-or clean native termination is claimed.
+The final lifecycle-journal build has case-level Tab and A-to-B-to-A evidence under automated
+keys and clicks. Tab recorded EndRequested and FinishVerified for the owned serial before
+document-focus invalidation. Clicking B and then A each recorded ExactTermination for the mark
+owned in the departing field before focus invalidation. The exact correction and final focus
+document/caret oracles passed, with zero Unknown effects. These runs establish the observed
+fixture sequence, not physical keyboard evidence or general application support. The automated
+owned-shutdown and empty-close cases below also passed. Physical shutdown acceptance and
+unretained final destruction remain open.
 
 ## Build and check without installation
 
@@ -148,11 +151,14 @@ Only the stable EN and RU proof profiles are accepted. An unsupported profile or
 invalidates authority and passes without a guessed finish. Shortcuts, dead keys, and coalesced
 repeat messages request a verified owned finish before passing through.
 
-Focus loss, source changes, context changes, and teardown invalidate authority. **The service
-does not yet prove clean termination of a live RichEdit mark on these transitions.** If a mark
+Focus loss, source changes, context changes, and teardown invalidate authority. If a mark
 exists, these paths stop the activation without writing it back. A termination callback clears
 only its exact captured composition identity. Returning A to B to A never restores old editing
-authority. This is containment, not evidence that focus changes preserve input or Undo.
+authority. The final fixture run observed exact native termination on each mouse focus change
+before invalidation, alongside the expected whole documents and caret. This does not admit
+other clients or establish Undo behavior. A later RU source-selection run preserved the public
+literal and caret, but its mark had already reached FinishVerified before profile change. That
+run does not isolate termination caused by the source-change callback.
 
 ## Maintainer registration and selection
 
@@ -397,7 +403,7 @@ or paths. No diagnostic record authorizes a write or repairs an unknown edit.
 
 ### Repeatable native lock denial
 
-The proof editor has one immutable test mode. Start a fresh instance with
+The proof editor selects one immutable startup mode. Start a fresh instance with
 `KeyrillProofEditor.exe --deny-tsf-locks`. Before showing the window, it sets `SES_CTFNOLOCK`
 on its own writable A control and requires the setter result to match the immediate
 `EM_GETEDITSTYLE` readback with that bit set. Uncertain setup exits with code 1 through the
@@ -429,6 +435,96 @@ establishes this fixture's observed native refusal and literal document state. I
 key origin, composition, correction, Undo, or other applications. Physical verification of this
 promoted mode remains a separate maintainer gate.
 
+### Observe an owned mark through shutdown
+
+The host-only `--prove-owned-shutdown` mode retains the actual provider's v2 reader through
+ordinary window destruction and thread-manager deactivation. An automated real-editor run in RU
+mode passed `shutdown-ready` with the exact public partial word, empty B, collapsed end caret,
+and an active owned serial. Clicking the title-bar Close button returned exit 0 through a retained
+process handle. A separate fresh empty editor passed `empty`, rejected `shutdown-ready`, and
+returned exit 16 (`NoOwnedMark`) after the same Close action. These are agent-generated key and
+mouse inputs, not physical keyboard evidence. The physical procedure below remains pending.
+The mode changes no service editing policy, ABI, or journal capacity.
+It cannot be combined with `--deny-tsf-locks`. Unknown, repeated, or combined arguments exit with
+code 2 before COM initialization.
+
+Run the following procedure in a fresh proof editor.
+
+1. Start `KeyrillProofEditor.exe --prove-owned-shutdown`. Confirm the caption
+   **Keyrill TSF owned shutdown fixture**. The immutable `STATIC` control 108 identifies this mode.
+2. Select the existing Keyrill source through the maintainer's input-source UI. Read the actual
+   service mode with the `service` inspector case and wait for an Available publication.
+3. With A and B empty, type physical `ghbdtn` in EN or the physical `hello` keys in RU. Do not add
+   Space. Run `KeyrillProofInspect.exe FIXTURE_PID shutdown-ready`.
+4. Require the ready oracle to pass. It checks exactly `ghbdtn` in EN or `руддщ` in RU, empty B,
+   and A's collapsed end caret, together with the exact shutdown caption and mode marker.
+   It selects the literal from the observed service mode and accepts no arbitrary expected text.
+5. Retain a process handle before clicking the real title-bar **Close** button. Wait for that
+   process to exit and read its exit code. Zero passes the bounded shutdown assertion. Any
+   nonzero code fails it. Record which source mode supplied the physical keys.
+6. Repeat in a separate fresh process with empty A and B. Verify the `empty` oracle, retain the
+   process handle, and click **Close**. This empty-close control must exit nonzero.
+
+The content-free exit code preserves the rejection reason after the window disappears.
+
+| Code | Shutdown result |
+|---|---|
+| 0 | Verified |
+| 1 | Host initialization, setup, or message-pump failure |
+| 2 | Invalid startup arguments |
+| 10 | Missing or repeated close capture |
+| 11 | Provider missing after binding |
+| 12 | Reader busy |
+| 13 | Invalid, failed, stopped, saturated, or contradictory evidence |
+| 14 | Provider or reader identity changed |
+| 15 | Activation changed |
+| 16 | No owned mark at capture |
+| 17 | Complete close interval not retained |
+| 18 | Unknown effect present |
+| 19 | Required new terminal before deactivation absent |
+| 20 | Detached event in the close interval |
+| 21 | Thread-manager deactivation did not return `S_OK` |
+
+The observer must not substitute Alt+F4 for the title-bar click. An Alt key can finish the mark
+before `WM_CLOSE`. The document oracle records the state before close. It cannot verify final
+document text after the editor disappears, key origin, or complete callback drainage.
+
+The outer timer binds canonical identities for the current provider and its returned reader.
+Both must identify the same actual Service. Once bound, missing or changed identity, activation
+change, busy reads, malformed evidence, and saturation reject the run without rearming.
+The host's actual window procedure makes a fresh provider identity check and retained-reader
+copy on `WM_CLOSE`, before `DefWindowProcW` performs normal destruction. This placement covers
+sent close messages dispatched inside the message pump. A timer snapshot never supplies the
+close baseline. Reentrant or duplicate close cannot replace the baseline or clear rejection.
+
+Capture requires an active, unstopped service with zero Unknown count and a currently owned,
+nonzero, unsaturated serial. After ordinary destruction and actual `ITfThreadMgr::Deactivate`
+returning `S_OK`, the probe copies the same retained reader directly. It performs no provider
+lookup after destruction. The endpoint must be inactive with the same activation, unchanged
+allocation, cleared ownership, zero Unknown count, and no saturation. Its stopped flag may be set.
+
+Every event since capture must fit the fixed 16-event journal, and retained overlap must match
+exactly. Counters must not decrease. A new ExactTermination or FinishVerified must name the
+captured serial before the first new Deactivate invalidation. FinishVerified also requires a new
+preceding EndRequested for that serial. No new Acquired, Detached, or TerminationUnresolved event
+is allowed. DifferentTermination and TerminationWithoutOwned do not establish completion, but
+may accompany a valid exact terminal. Old terminal records and detached-only teardown cannot pass.
+The captured ownership fact does not require the older Acquired event to remain in the journal.
+
+The probe releases its retained references while the COM apartment is alive and caches the
+result. Those references deliberately extend Service and Rust engine lifetime. A pass establishes
+termination of the captured owned mark before service deactivation and a valid inactive endpoint.
+It does not establish unretained shutdown behavior, engine destruction before reference release,
+or that all native callbacks have drained. Missing close capture, empty ownership, setup failure,
+message-pump failure, and lost history all remain unsuccessful. The observer never forces a
+composition end, repairs an edit, or retries an unknown operation.
+
+Controlled tests cover the rejection cases, exact and verified-finish schedules on the actual
+Service, both release orders for frozen v1 and v2 readers, and the actual host window procedure
+with a hidden test window. The lifetime cases require Service object accounting to drain only
+after the final retained reader releases and run under AddressSanitizer. These checks do not
+replace the fresh physical positive and empty-close runs above.
+
 Controlled schedules cover exact refusal stages and native versus predicate failures, request
 denial versus unentered/completed sessions, busy and incompatible reads, malformed publication,
 provider absence and errors, retained inactive interfaces, independent instances, saturation,
@@ -444,10 +540,10 @@ reviewed build and the separate physical document, composition, continuation, an
 | Range, text, caret, active-membership drift; extra foreign composition | Refusal before write passes | Real host notifications and composition identity untested |
 | Reentry at exercised COM boundaries and exceptions | No new write after invalidation, outcome-derived consumption, and no retry pass | Native callback schedules untested |
 | Unknown MARK and FINISH, reserved Escape | Stop without replay or repair passes | Unknown-effect hosts remain unadmitted |
-| Focus A to B to A, late old termination | Old authority never revives in doubles | Live mark termination and focus acceptance blocked |
+| Focus A to B to A, late old termination | Old authority never revives in doubles | Automated fixture run observed exact termination before each focus invalidation and passed the final whole-document/caret oracle; physical keyboard evidence remains open |
 | Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical excluded-control checks untested |
 | Native Undo after correction and continuation | Not modeled as a TSF guarantee | Whole document, caret, Undo grouping, and subsequent input untested |
-| EN/RU profile and source changes, teardown | Profile-table checks and invalidation pass | Both profiles present and enabled, EN selected; source transitions and clean teardown untested |
+| EN/RU profile and source changes, teardown | Profile-table checks and invalidation pass | RU selection preserved the literal/caret after an earlier verified finish; automated owned shutdown returned 0 and fresh empty close returned 16; physical source-triggered termination and shutdown remain unproved |
 
 Only x64 MSVC build evidence exists. ARM64, generic editors, real Undo, ordinary-user registration
 scope, and physical acceptance remain open. [ADR 007](adr/007-windows-tsf.md) remains proposed.

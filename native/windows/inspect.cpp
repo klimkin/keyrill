@@ -2,6 +2,7 @@
 #include "profiles.h"
 #include "routing.h"
 #include "service_diagnostics.h"
+#include "shutdown_probe.h"
 #include <cstdio>
 #include <string>
 #include <uiautomation.h>
@@ -173,11 +174,58 @@ bool NativeDenial(HWND root) {
          keyrill::denial::Matches(DenialSetup(root), first, second) &&
          Check(GetDlgItem(root, 101), L"ghbdtn ", true) && Check(GetDlgItem(root, 102), L"", false);
 }
+bool ShutdownMode(HWND root) {
+  HWND status = GetDlgItem(root, keyrill::shutdown::mode_id);
+  wchar_t type[16]{};
+  if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
+    return false;
+  ComPtr<IUIAutomation> automation;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))))
+    return false;
+  for (const auto &entry : {std::pair{root, keyrill::shutdown::title},
+                            std::pair{status, keyrill::shutdown::mode_status}}) {
+    ComPtr<IUIAutomationElement> element;
+    if (FAILED(automation->ElementFromHandle(entry.first, &element)))
+      return false;
+    BSTR name = nullptr;
+    const HRESULT result = element->get_CurrentName(&name);
+    const bool matches =
+        SUCCEEDED(result) && name && std::wstring_view(name, SysStringLen(name)) == entry.second;
+    SysFreeString(name);
+    if (!matches)
+      return false;
+  }
+  return true;
+}
+bool ShutdownReady(HWND root) {
+  using namespace keyrill::diagnostics;
+  PublicationV2 first, second;
+  if (!ShutdownMode(root) || !ReadServicePublication(root, first) ||
+      first.availability != Availability::Available || first.saturated ||
+      keyrill::shutdown::detail::Capturable(first.snapshot) != keyrill::shutdown::Verdict::Verified)
+    return false;
+  const auto mode = first.snapshot.base.mode;
+  const wchar_t *expected = mode == KR_EN   ? L"ghbdtn"
+                            : mode == KR_RU ? L"\x0440\x0443\x0434\x0434\x0449"
+                                            : nullptr;
+  return expected && Check(GetDlgItem(root, 101), expected, true) &&
+         Check(GetDlgItem(root, 102), L"", false) && ReadServicePublication(root, second) &&
+         second.availability == Availability::Available && !second.saturated &&
+         keyrill::shutdown::detail::Capturable(second.snapshot) ==
+             keyrill::shutdown::Verdict::Verified &&
+         second.source == first.source &&
+         second.snapshot.base.activation == first.snapshot.base.activation &&
+         second.snapshot.base.mode == mode &&
+         second.snapshot.lifecycle.owned_serial == first.snapshot.lifecycle.owned_serial &&
+         ShutdownMode(root);
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
     fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
-                     L"correction|reversal|continuation|focus|empty|routing|service|denial\n");
+                     L"correction|reversal|continuation|focus|empty|routing|service|denial|"
+                     L"shutdown-ready\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -201,7 +249,8 @@ int wmain(int argc, wchar_t **argv) {
   bool routing = wcscmp(argv[2], L"routing") == 0;
   bool service = wcscmp(argv[2], L"service") == 0;
   bool denial = wcscmp(argv[2], L"denial") == 0;
-  if (!expected && !routing && !service && !denial)
+  bool shutdown = wcscmp(argv[2], L"shutdown-ready") == 0;
+  if (!expected && !routing && !service && !denial && !shutdown)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -218,6 +267,14 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
+  if (shutdown) {
+    const bool matched = ShutdownReady(search.window);
+    CoUninitialize();
+    puts(matched
+             ? "Fixture owned shutdown ready oracle matched. No text recorded."
+             : "Fixture owned shutdown ready mismatch or unavailable evidence. No text recorded.");
+    return matched ? 0 : 1;
+  }
   if (denial) {
     bool matched = NativeDenial(search.window);
     CoUninitialize();

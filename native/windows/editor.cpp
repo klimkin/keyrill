@@ -1,28 +1,20 @@
 #include "denial_fixture.h"
-#include "fixture.h"
+#include "editor_window.h"
+#include "fixture_mode.h"
 #include "routing.h"
 #include "service_diagnostics.h"
+#include <optional>
 #include <shellapi.h>
 #include <wrl/client.h>
 
-namespace {
-LRESULT CALLBACK Window(HWND window, UINT message, WPARAM w, LPARAM l) {
-  if (message == WM_DESTROY) {
-    keyrill::ResetFixtureInputScopes(window);
-    PostQuitMessage(0);
-    return 0;
-  }
-  return DefWindowProcW(window, message, w, l);
-}
-} // namespace
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   int argc = 0;
   auto argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   if (!argv)
     return 2;
-  const auto startup = keyrill::denial::ParseStartup(argc, argv);
+  const auto startup = keyrill::fixture::ParseMode(argc, argv);
   LocalFree(argv);
-  if (startup == keyrill::denial::Startup::Invalid)
+  if (startup == keyrill::fixture::Mode::Invalid)
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
@@ -47,14 +39,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   }
   keyrill::routing::Snapshot routing;
   keyrill::diagnostics::Poller service;
+  std::optional<keyrill::shutdown::Probe> shutdown;
+  if (startup == keyrill::fixture::Mode::ProveOwnedShutdown)
+    shutdown.emplace();
+  keyrill::editor::WindowContext context{manager.Get(), shutdown ? &*shutdown : nullptr};
   wchar_t initial[keyrill::routing::status_capacity]{};
-  HWND window = keyrill::CreateFixture(instance, Window, false);
+  HWND window = keyrill::CreateFixture(instance, keyrill::editor::Window, false);
   HWND status = nullptr;
   HWND service_status = nullptr;
   HWND denial_status = nullptr;
-  const bool deny_locks = startup == keyrill::denial::Startup::DenyTsfLocks;
+  HWND shutdown_status = nullptr;
+  const bool deny_locks = startup == keyrill::fixture::Mode::DenyTsfLocks;
+  bool attached = false;
+  if (window) {
+    SetLastError(0);
+    attached =
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&context)) != 0 ||
+        GetLastError() == 0;
+  }
   constexpr UINT_PTR status_timer = 1;
-  if (window && keyrill::routing::Format(routing, initial) &&
+  if (window && attached && keyrill::routing::Format(routing, initial) &&
       SetWindowPos(window, nullptr, 0, 0, 1040, 1060, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
     if (deny_locks) {
       HWND field = GetDlgItem(window, 101);
@@ -69,9 +73,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
               instance, nullptr);
       }
     }
-    status = CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, deny_locks ? 580 : 552,
-                           720, deny_locks ? 96 : 120, window, reinterpret_cast<HMENU>(105),
-                           instance, nullptr);
+    if (shutdown && SetWindowTextW(window, keyrill::shutdown::title))
+      shutdown_status = CreateWindowW(
+          L"STATIC", keyrill::shutdown::mode_status, WS_CHILD | WS_VISIBLE, 16, 552, 990, 24,
+          window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::shutdown::mode_id)),
+          instance, nullptr);
+    const bool mode_row = deny_locks || shutdown.has_value();
+    status =
+        CreateWindowW(L"STATIC", initial, WS_CHILD | WS_VISIBLE, 16, mode_row ? 580 : 552, 720,
+                      mode_row ? 96 : 120, window, reinterpret_cast<HMENU>(105), instance, nullptr);
     wchar_t service_initial[keyrill::diagnostics::status_capacity]{};
     if (keyrill::diagnostics::Format(service.value, service_initial))
       service_status =
@@ -79,10 +89,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                         window, reinterpret_cast<HMENU>(106), instance, nullptr);
   }
   if (!status || !service_status || (deny_locks && !denial_status) ||
-      !SetTimer(window, status_timer, 250, nullptr)) {
+      (shutdown && !shutdown_status) || !SetTimer(window, status_timer, 250, nullptr)) {
     if (window)
       DestroyWindow(window);
-    manager->Deactivate();
+    const HRESULT deactivated = manager->Deactivate();
+    if (shutdown)
+      shutdown->Finish(deactivated);
     keys.Reset();
     pump.Reset();
     manager.Reset();
@@ -93,13 +105,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   SetFocus(GetDlgItem(window, 101));
   MSG message{};
   BOOL available = FALSE;
-  while (SUCCEEDED(pump->GetMessageW(&message, nullptr, 0, 0, &available)) && available) {
+  HRESULT pumped = S_OK;
+  while (SUCCEEDED(pumped = pump->GetMessageW(&message, nullptr, 0, 0, &available)) && available) {
     if (message.hwnd == window && message.message == WM_TIMER && message.wParam == status_timer) {
       keyrill::routing::Increment(routing.publication);
       wchar_t published[keyrill::routing::status_capacity]{};
       if (keyrill::routing::Format(routing, published))
         SetWindowTextW(status, published);
       service.Poll(manager.Get());
+      if (shutdown)
+        shutdown->Observe(manager.Get());
       wchar_t service_published[keyrill::diagnostics::status_capacity]{};
       if (keyrill::diagnostics::Format(service.value, service_published))
         SetWindowTextW(service_status, service_published);
@@ -132,11 +147,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     DispatchMessageW(&message);
   }
   KillTimer(window, status_timer);
+  if (shutdown && !context.destroyed && IsWindow(window))
+    DestroyWindow(window);
   service.Reset();
-  manager->Deactivate();
+  const HRESULT deactivated = manager->Deactivate();
+  int exit_code = 0;
+  if (shutdown) {
+    const auto verdict = shutdown->Finish(deactivated);
+    exit_code = pumped == S_OK && !available && message.message == WM_QUIT && context.destroyed
+                    ? keyrill::shutdown::ExitCode(verdict)
+                    : 1;
+  }
   keys.Reset();
   pump.Reset();
   manager.Reset();
   CoUninitialize();
-  return 0;
+  return exit_code;
 }

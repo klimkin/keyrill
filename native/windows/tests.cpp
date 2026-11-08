@@ -1,9 +1,12 @@
 #include "denial_fixture.h"
+#include "editor_window.h"
 #include "fixture.h"
+#include "fixture_mode.h"
 #include "service.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <thread>
@@ -26,12 +29,19 @@ void NativeDenialGateSchedules() {
   const wchar_t *unknown[] = {normal[0], L"--unknown"};
   const wchar_t *duplicate[] = {normal[0], denied[1], denied[1]};
   const wchar_t *extra[] = {normal[0], denied[1], L"extra"};
-  Require(denial::ParseStartup(1, normal) == denial::Startup::Normal &&
-              denial::ParseStartup(2, denied) == denial::Startup::DenyTsfLocks &&
-              denial::ParseStartup(2, unknown) == denial::Startup::Invalid &&
-              denial::ParseStartup(3, duplicate) == denial::Startup::Invalid &&
-              denial::ParseStartup(3, extra) == denial::Startup::Invalid,
-          "startup accepts only no arguments or one denial flag");
+  const wchar_t *shutdown[] = {normal[0], L"--prove-owned-shutdown"};
+  const wchar_t *combined[] = {normal[0], denied[1], shutdown[1]};
+  const wchar_t *repeated_shutdown[] = {normal[0], shutdown[1], shutdown[1]};
+  Require(fixture::ParseMode(1, normal) == fixture::Mode::Normal &&
+              fixture::ParseMode(2, denied) == fixture::Mode::DenyTsfLocks &&
+              fixture::ParseMode(2, shutdown) == fixture::Mode::ProveOwnedShutdown &&
+              fixture::ParseMode(2, unknown) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, duplicate) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, extra) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, combined) == fixture::Mode::Invalid &&
+              fixture::ParseMode(3, repeated_shutdown) == fixture::Mode::Invalid &&
+              fixture::ParseMode(0, nullptr) == fixture::Mode::Invalid,
+          "startup accepts only no arguments or exactly one known fixture mode");
   Require(denial::ParseSetup(denial::setup_status) == denial::Setup::Confirmed &&
               denial::ParseSetup(L"") == denial::Setup::Unknown &&
               denial::ParseSetup(L"Keyrill native denial v2; setup=Confirmed") ==
@@ -713,6 +723,7 @@ struct Manager final : ITfThreadMgr,
   bool provider_null = false;
   std::function<void()> diagnostic_advise_hook;
   std::function<void()> diagnostic_unadvise_hook;
+  std::function<void()> provider_hook;
   ComPtr<IUnknown> diagnostic_sink;
   int diagnostic_advises = 0, diagnostic_unadvises = 0, provider_queries = 0;
   int references = 1;
@@ -802,6 +813,8 @@ struct Manager final : ITfThreadMgr,
   HRESULT STDMETHODCALLTYPE GetFunctionProvider(REFCLSID id, ITfFunctionProvider **out) override {
     Require(id == service_id, "poll asks only for the actual service provider");
     ++provider_queries;
+    if (provider_hook)
+      provider_hook();
     *out = nullptr;
     if (provider_result != S_OK)
       return provider_result;
@@ -1482,9 +1495,22 @@ struct DiagnosticProvider final : ITfFunctionProvider,
   bool throwing = false;
   bool legacy_only = false;
   int legacy_reads = 0;
-  ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
-  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  int reads = 0;
+  IUnknown *foreign_function = nullptr;
+  std::function<void(const char *)> hook;
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    if (hook)
+      hook("addref");
+    return ++references;
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    if (hook)
+      hook("release");
+    return --references;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    if (hook)
+      hook(id == IID_IUnknown ? "identity" : "interface");
     *out = nullptr;
     if (id == IID_IUnknown || id == IID_ITfFunctionProvider)
       *out = static_cast<ITfFunctionProvider *>(this);
@@ -1500,12 +1526,19 @@ struct DiagnosticProvider final : ITfFunctionProvider,
   HRESULT STDMETHODCALLTYPE GetFunction(REFGUID function, REFIID id, IUnknown **out) override {
     Require(function == GUID_NULL && id == diagnostics::snapshot_v2_iid,
             "private readonly snapshot discovery");
+    if (hook)
+      hook("function");
+    if (foreign_function)
+      return foreign_function->QueryInterface(id, reinterpret_cast<void **>(out));
     return QueryInterface(id, reinterpret_cast<void **>(out));
   }
   HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
                                  diagnostics::SnapshotV2 *out) override {
     Require(size == sizeof(*out) && requested_version == diagnostics::version_v2,
             "poll bounded versioned copy");
+    ++reads;
+    if (hook)
+      hook("copy");
     *out = {};
     if (throwing)
       throw 1;
@@ -1524,6 +1557,528 @@ struct DiagnosticProvider final : ITfFunctionProvider,
   STUB(GetType, (GUID *));
   STUB(GetDescription, (BSTR *));
 };
+struct ShutdownHistory {
+  diagnostics::LifecycleJournal journal;
+  diagnostics::SnapshotV2 before;
+  ShutdownHistory() {
+    const auto old = journal.Acquire();
+    journal.Record(diagnostics::LifecycleKind::ExactTermination, old);
+    const auto serial = journal.Acquire();
+    before.base.activation = 3;
+    before.base.active = 1;
+    before.base.mode = KR_EN;
+    diagnostics::Count(before.base, diagnostics::Counter::Verified);
+    diagnostics::Refuse(before.base, diagnostics::Stage::Request, diagnostics::Cause::Native,
+                        E_ACCESSDENIED);
+    before.lifecycle = journal.Copy(true, serial);
+  }
+  diagnostics::SnapshotV2 After() const {
+    auto after = before;
+    after.base.active = 0;
+    after.lifecycle = journal.Copy(false, 0);
+    return after;
+  }
+  void Record(diagnostics::LifecycleKind kind, uint32_t subject = 2,
+              diagnostics::LifecycleCause cause = diagnostics::LifecycleCause::None,
+              diagnostics::Unresolved unresolved = diagnostics::Unresolved::None) {
+    journal.Record(kind, subject, cause, unresolved);
+  }
+  void Deactivate() {
+    Record(diagnostics::LifecycleKind::LifecycleInvalidation, 0,
+           diagnostics::LifecycleCause::Deactivate);
+  }
+};
+void ShutdownPredicateSchedules() {
+  using namespace diagnostics;
+  using shutdown::Verdict;
+  Require(shutdown::ExitCode(Verdict::Verified) == 0,
+          "only verified shutdown has success exit code");
+  std::array<bool, 32> exit_codes{};
+  for (const auto verdict :
+       {Verdict::NotCaptured, Verdict::Missing, Verdict::Busy, Verdict::InvalidEvidence,
+        Verdict::ProviderChanged, Verdict::ActivationChanged, Verdict::NoOwnedMark,
+        Verdict::HistoryLost, Verdict::UnknownEffect, Verdict::NoTerminalEvent, Verdict::Detached,
+        Verdict::DeactivationFailed}) {
+    const auto code = shutdown::ExitCode(verdict);
+    Require(
+        code > 2 && static_cast<size_t>(code) < exit_codes.size() && !exit_codes[code],
+        "each rejection has a distinct bounded exit code separate from host and argument errors");
+    exit_codes[code] = true;
+  }
+  Verdict (*volatile evaluate)(const SnapshotV2 &, const SnapshotV2 &) noexcept =
+      shutdown::detail::Evaluate;
+  ShutdownHistory history;
+  history.Record(LifecycleKind::ExactTermination);
+  history.Deactivate();
+  const auto before = history.before;
+  const auto after = history.After();
+  Require(evaluate(before, after) == Verdict::Verified,
+          "new exact terminal before deactivation passes");
+  for (int scenario = 0; scenario != 25; ++scenario) {
+    auto a = before, b = after;
+    if (scenario == 0)
+      a.base.active = 0;
+    if (scenario == 1)
+      a.base.stopped = 1;
+    if (scenario == 2)
+      a.lifecycle.owned_present = a.lifecycle.owned_serial = 0;
+    if (scenario == 3)
+      a.lifecycle.owned_serial = 0;
+    if (scenario == 4)
+      b.base.active = 1;
+    if (scenario == 5) {
+      b.lifecycle.owned_present = 1;
+      b.lifecycle.owned_serial = 2;
+    }
+    if (scenario == 6)
+      ++b.base.activation;
+    if (scenario == 7)
+      b.base.counts[static_cast<size_t>(Counter::Unknown)] = 1;
+    if (scenario == 8)
+      a.base.counts[static_cast<size_t>(Counter::Unknown)] = 1;
+    if (scenario == 9)
+      b.base.counts[static_cast<size_t>(Counter::Verified)] = 0;
+    if (scenario == 10) {
+      b.base.refusals = {};
+      b.base.first = b.base.latest = {};
+    }
+    if (scenario == 11)
+      ++b.lifecycle.allocated;
+    if (scenario == 12)
+      b.lifecycle.events[3].kind = LifecycleKind::Acquired;
+    if (scenario == 13)
+      b.lifecycle.events[3].kind = LifecycleKind::Detached;
+    if (scenario == 14) {
+      b.lifecycle.events[3].kind = LifecycleKind::TerminationUnresolved;
+      b.lifecycle.events[3].unresolved = Unresolved::IdentityFailure;
+    }
+    if (scenario == 15)
+      b.lifecycle.events[3].subject = 1;
+    if (scenario == 16)
+      b.lifecycle.events[3].kind = LifecycleKind::EndRequested;
+    if (scenario == 17)
+      b.lifecycle.events[3].kind = LifecycleKind::FinishVerified;
+    if (scenario == 18)
+      b.lifecycle.events[3].kind = LifecycleKind::DifferentTermination;
+    if (scenario == 19) {
+      b.lifecycle.events[3].kind = LifecycleKind::TerminationWithoutOwned;
+      b.lifecycle.events[3].subject = 0;
+    }
+    if (scenario == 20)
+      b.lifecycle.events[4].cause = LifecycleCause::DocumentUninit;
+    if (scenario == 21)
+      b.lifecycle.events[0].kind = LifecycleKind::EndRequested;
+    if (scenario == 22)
+      b.lifecycle.saturated = 1;
+    if (scenario == 23)
+      a.base.saturated = 1;
+    if (scenario == 24)
+      --b.lifecycle.events[4].sequence;
+    Require(evaluate(a, b) != Verdict::Verified,
+            "malformed unsafe stale or contradictory shutdown evidence cannot pass");
+  }
+  for (auto kind : {LifecycleKind::ExactTermination, LifecycleKind::FinishVerified}) {
+    ShutdownHistory late;
+    late.Deactivate();
+    late.Record(LifecycleKind::EndRequested);
+    late.Record(kind);
+    Require(evaluate(late.before, late.After()) != Verdict::Verified,
+            "terminal after first deactivation is too late");
+  }
+  {
+    ShutdownHistory finish;
+    finish.Record(LifecycleKind::EndRequested);
+    finish.Record(LifecycleKind::FinishVerified);
+    finish.Deactivate();
+    auto endpoint = finish.After();
+    endpoint.base.stopped = 1;
+    Require(evaluate(finish.before, endpoint) == Verdict::Verified,
+            "new end request and verified finish pass with a stopped inactive endpoint");
+    finish.Record(LifecycleKind::Detached);
+    Require(evaluate(finish.before, finish.After()) != Verdict::Verified,
+            "even detach after a proven terminal contradicts this bounded assertion");
+  }
+  for (auto kind : {LifecycleKind::DifferentTermination, LifecycleKind::TerminationWithoutOwned}) {
+    ShutdownHistory unrelated;
+    unrelated.Record(kind, kind == LifecycleKind::TerminationWithoutOwned ? 0 : 2);
+    unrelated.Record(LifecycleKind::ExactTermination);
+    unrelated.Deactivate();
+    Require(evaluate(unrelated.before, unrelated.After()) == Verdict::Verified,
+            "unrelated termination may precede a genuine exact terminal");
+  }
+  {
+    ShutdownHistory stale;
+    stale.Record(LifecycleKind::EndRequested);
+    stale.before.lifecycle = stale.journal.Copy(true, 2);
+    stale.Record(LifecycleKind::FinishVerified);
+    stale.Deactivate();
+    Require(evaluate(stale.before, stale.After()) != Verdict::Verified,
+            "pre-capture end request cannot support a new verified finish");
+  }
+  {
+    ShutdownHistory stale;
+    stale.Record(LifecycleKind::ExactTermination);
+    stale.before.lifecycle = stale.journal.Copy(true, 2);
+    stale.Deactivate();
+    Require(evaluate(stale.before, stale.After()) != Verdict::Verified,
+            "stored pre-capture exact terminal cannot establish a fresh terminal");
+    auto backwards = stale.After();
+    backwards.lifecycle = before.lifecycle;
+    backwards.lifecycle.owned_present = backwards.lifecycle.owned_serial = 0;
+    Require(evaluate(stale.before, backwards) != Verdict::Verified,
+            "backwards lifecycle sequence cannot establish an interval");
+  }
+  for (size_t count : {lifecycle_capacity, lifecycle_capacity + 1}) {
+    ShutdownHistory bounded;
+    for (size_t i = 0; i != lifecycle_capacity; ++i)
+      bounded.Record(LifecycleKind::DifferentTermination);
+    bounded.before.lifecycle = bounded.journal.Copy(true, 2);
+    bounded.Record(LifecycleKind::ExactTermination);
+    for (size_t i = 2; i != count; ++i)
+      bounded.Record(LifecycleKind::TerminationWithoutOwned, 0);
+    bounded.Deactivate();
+    Require((evaluate(bounded.before, bounded.After()) == Verdict::Verified) ==
+                (count == lifecycle_capacity),
+            "full retained interval passes without old acquisition but one lost event fails");
+  }
+  for (bool serial : {false, true}) {
+    auto saturated = before;
+    if (serial) {
+      saturated.lifecycle.owned_serial = saturated.lifecycle.allocated = UINT32_MAX;
+      saturated.lifecycle.saturated = 1;
+    } else {
+      saturated.base.activation = UINT32_MAX;
+      saturated.base.saturated = 1;
+    }
+    Require(evaluate(saturated, after) != Verdict::Verified,
+            "saturated activation and ownership labels cannot certify close");
+  }
+}
+void ShutdownProbeSchedules() {
+  using namespace diagnostics;
+  using shutdown::Verdict;
+  ShutdownHistory history;
+  history.Record(LifecycleKind::ExactTermination);
+  history.Deactivate();
+  for (int scenario = 0; scenario != 21; ++scenario) {
+    DiagnosticProvider provider, other;
+    Harness h;
+    h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    provider.snapshot = other.snapshot = history.before;
+    shutdown::Probe probe;
+    if (scenario == 1)
+      probe.CaptureClose(&h.manager);
+    if (scenario == 2)
+      provider.legacy_only = true;
+    if (scenario == 3)
+      provider.foreign_function = static_cast<ITfFunctionProvider *>(&other);
+    if (scenario == 4)
+      h.manager.provider_result = TF_E_NOPROVIDER;
+    probe.Observe(&h.manager);
+    h.manager.provider_result = S_OK;
+    if (scenario == 4)
+      probe.Observe(&h.manager);
+    if (scenario == 5)
+      h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&other);
+    if (scenario == 6)
+      ++provider.snapshot.base.activation;
+    if (scenario == 7)
+      provider.result = E_PENDING;
+    if (scenario == 8)
+      provider.result = RPC_E_WRONG_THREAD;
+    if (scenario == 9)
+      provider.throwing = true;
+    if (scenario == 10)
+      provider.snapshot.lifecycle.owned_present = provider.snapshot.lifecycle.owned_serial = 0;
+    if (scenario == 11)
+      h.manager.provider_result = TF_E_NOPROVIDER;
+    if (scenario == 12) {
+      h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&other);
+      probe.Observe(&h.manager);
+      h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    }
+    if (scenario == 13) {
+      ++provider.snapshot.base.activation;
+      probe.Observe(&h.manager);
+      --provider.snapshot.base.activation;
+    }
+    if (scenario == 14) {
+      provider.result = E_PENDING;
+      probe.Observe(&h.manager);
+      provider.result = S_OK;
+    }
+    if (scenario != 15)
+      probe.CaptureClose(&h.manager);
+    if (scenario == 16)
+      probe.CaptureClose(&h.manager);
+    const auto queries = h.manager.provider_queries;
+    h.manager.provider_result = E_FAIL;
+    provider.snapshot = history.After();
+    provider.throwing = false;
+    provider.result = scenario == 17 ? E_PENDING : scenario == 18 ? RPC_E_WRONG_THREAD : S_OK;
+    if (scenario == 19)
+      provider.snapshot.base.active = 1;
+    const auto verdict = probe.Finish(scenario == 20 ? E_FAIL : S_OK);
+    Require((verdict == Verdict::Verified) == (scenario == 0 || scenario == 4),
+            "probe requires a fresh same-provider owned capture and a usable retained endpoint");
+    const auto reads = provider.reads;
+    Require(probe.Finish(S_OK) == verdict && provider.reads == reads &&
+                h.manager.provider_queries == queries,
+            "finish caches its result and never rediscovers the removed provider");
+    probe.Observe(&h.manager);
+    probe.CaptureClose(&h.manager);
+    Require(probe.Finish(S_OK) == verdict,
+            "completed verdict cannot rearm through observation or close");
+    h.manager.diagnostic_sink.Reset();
+    Require(provider.references == 1 && other.references == 1,
+            "every success and rejected path releases retained COM references at Finish");
+  }
+  for (const char *boundary :
+       {"provider", "identity", "interface", "function", "copy", "addref", "release"}) {
+    for (int phase = 0; phase != 4; ++phase) {
+      DiagnosticProvider provider;
+      Harness h;
+      h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+      provider.snapshot = history.before;
+      shutdown::Probe probe;
+      if (phase != 0)
+        probe.Observe(&h.manager);
+      if (phase == 3)
+        probe.CaptureClose(&h.manager);
+      bool nested = false;
+      auto reenter = [&](const char *name) {
+        if (!nested && std::string(name) == boundary) {
+          nested = true;
+          probe.CaptureClose(&h.manager);
+          probe.Observe(&h.manager);
+        }
+      };
+      provider.hook = reenter;
+      h.manager.provider_hook = [&] { reenter("provider"); };
+      if (phase == 0 || phase == 1)
+        probe.Observe(&h.manager);
+      if (phase == 2)
+        probe.CaptureClose(&h.manager);
+      if (phase == 3)
+        provider.snapshot = history.After();
+      const auto verdict = probe.Finish(S_OK);
+      if (nested)
+        Require(verdict != Verdict::Verified,
+                "nested close at any COM phase remains rejected after the outer call returns");
+      provider.hook = nullptr;
+      h.manager.provider_hook = nullptr;
+    }
+  }
+  for (const auto &boundary :
+       {std::pair{"identity", 2}, std::pair{"interface", 2}, std::pair{"interface", 3}}) {
+    DiagnosticProvider provider;
+    Harness h;
+    h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    provider.snapshot = history.before;
+    shutdown::Probe probe;
+    int calls = 0;
+    provider.hook = [&](const char *name) {
+      if (std::string(name) == boundary.first && ++calls == boundary.second)
+        probe.CaptureClose(&h.manager);
+    };
+    probe.Observe(&h.manager);
+    provider.hook = nullptr;
+    probe.CaptureClose(&h.manager);
+    provider.snapshot = history.After();
+    Require(calls >= boundary.second && probe.Finish(S_OK) != Verdict::Verified,
+            "nested close during each initial reader query cannot be overwritten by binding");
+  }
+  {
+    DiagnosticProvider provider;
+    Harness h;
+    h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    provider.snapshot = history.before;
+    shutdown::Probe probe;
+    probe.Observe(&h.manager);
+    provider.hook = [&](const char *) { probe.Observe(&h.manager); };
+    probe.CaptureClose(&h.manager);
+    provider.snapshot = history.After();
+    Require(probe.Finish(S_OK) == Verdict::Verified,
+            "nested timer observation cannot overwrite capture or retained endpoint");
+    provider.hook = nullptr;
+  }
+}
+void ShutdownServiceSchedules() {
+  using namespace diagnostics;
+  using shutdown::Verdict;
+  for (int scenario = 0; scenario != 4; ++scenario) {
+    Harness h;
+    h.Type(L"ghbdtn");
+    shutdown::Probe probe;
+    const auto reads = h.a.reads, writes = h.a.writes, starts = h.a.starts, ends = h.a.ends;
+    probe.Observe(&h.manager);
+    probe.CaptureClose(&h.manager);
+    Require(h.a.reads == reads && h.a.writes == writes && h.a.starts == starts && h.a.ends == ends,
+            "actual service capture performs no document inspection or editing calls");
+    const auto queries = h.manager.provider_queries;
+    if (scenario == 0 || scenario == 1) {
+      if (scenario == 1)
+        h.service->OnSetFocus(FALSE);
+      h.a.active_composition = false;
+      Require(h.service->OnCompositionTerminated(123, h.a.composition.Get()) == S_OK,
+              "actual native exact termination callback");
+    }
+    if (scenario == 2) {
+      kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+      Require(!h.service->HandleEvent(&h.a, finish) && !h.a.active_composition,
+              "ordinary service finish passes its lifecycle trigger");
+    }
+    const auto deactivated = h.service->Deactivate();
+    Require((probe.Finish(deactivated) == Verdict::Verified) == (scenario != 3),
+            "real service exact and verified finish pass while detached-only shutdown fails");
+    Require(h.manager.provider_queries == queries && h.a.writes == writes && h.a.starts == starts &&
+                h.a.ends == ends + (scenario == 2 ? 1 : 0),
+            "shutdown observation adds no provider rediscovery, write, start, or forced end");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    Harness h;
+    shutdown::Probe probe;
+    probe.Observe(&h.manager);
+    probe.CaptureClose(&h.manager);
+    Require(probe.Finish(h.service->Deactivate()) == Verdict::NoOwnedMark,
+            "empty real service close cannot certify an owned shutdown");
+  }
+  for (bool endpoint : {false, true}) {
+    Harness h;
+    h.Type(L"g");
+    shutdown::Probe probe;
+    probe.Observe(&h.manager);
+    if (endpoint)
+      probe.CaptureClose(&h.manager);
+    bool observed = false;
+    h.a.hook = [&](const char *name) {
+      if (observed || std::string(name) != "GetSelection")
+        return;
+      observed = true;
+      if (endpoint)
+        Require(probe.Finish(S_OK) == Verdict::Busy,
+                "actual busy service cannot publish a shutdown endpoint");
+      else
+        probe.CaptureClose(&h.manager);
+    };
+    h.Key(L'h');
+    h.a.hook = nullptr;
+    Require(observed && probe.Finish(h.service->Deactivate()) == Verdict::Busy,
+            "actual busy capture or endpoint is permanently rejected");
+  }
+}
+struct FrozenSnapshotV1 {
+  uint32_t words[55]{};
+};
+static_assert(sizeof(FrozenSnapshotV1) == 220);
+struct FrozenReaderV1 : IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t version,
+                                         FrozenSnapshotV1 *output) = 0;
+};
+void ShutdownReaderLifetimeSchedules() {
+  using namespace diagnostics;
+  constexpr GUID frozen_iid = {
+      0xf75f909b, 0x293a, 0x4a7b, {0xa1, 0x72, 0xf5, 0xa0, 0x61, 0x88, 0x03, 0x52}};
+  for (bool old_first : {false, true}) {
+    const auto objects = object_count;
+    ComPtr<FrozenReaderV1> old;
+    ComPtr<SnapshotReaderV2> current;
+    {
+      Harness h;
+      h.Type(L"g");
+      Require(h.service->QueryInterface(frozen_iid,
+                                        reinterpret_cast<void **>(old.GetAddressOf())) == S_OK &&
+                  h.service->QueryInterface(
+                      snapshot_v2_iid, reinterpret_cast<void **>(current.GetAddressOf())) == S_OK,
+              "both frozen v1 and current v2 readers retain the actual Service");
+      SnapshotV2 active;
+      FrozenSnapshotV1 legacy;
+      Require(old->Copy(220, 1, &legacy) == S_OK &&
+                  current->Copy(sizeof(active), version_v2, &active) == S_OK &&
+                  std::memcmp(&legacy, &active.base, 220) == 0,
+              "independent frozen v1 payload matches the active v2 prefix");
+      h.a.active_composition = false;
+      h.service->OnCompositionTerminated(123, h.a.composition.Get());
+    }
+    Require(object_count == objects + 1,
+            "retained readers extend Service and engine lifetime beyond ordinary owner release");
+    struct {
+      uint32_t before = 17;
+      FrozenSnapshotV1 value;
+      uint32_t after = 23;
+    } legacy;
+    SnapshotV2 inactive;
+    Require(old->Copy(220, 1, &legacy.value) == S_OK &&
+                current->Copy(sizeof(inactive), version_v2, &inactive) == S_OK &&
+                !inactive.base.active && !inactive.lifecycle.owned_present &&
+                std::memcmp(&legacy.value, &inactive.base, 220) == 0 && legacy.before == 17 &&
+                legacy.after == 23 && Valid(inactive),
+            "both retained readers safely copy the inactive actual Service with frozen bounds");
+    if (old_first) {
+      old.Reset();
+      Require(object_count == objects + 1 &&
+                  current->Copy(sizeof(inactive), version_v2, &inactive) == S_OK,
+              "v2 remains usable after v1 release");
+      current.Reset();
+    } else {
+      current.Reset();
+      Require(object_count == objects + 1 && old->Copy(220, 1, &legacy.value) == S_OK,
+              "v1 remains usable after v2 release");
+      old.Reset();
+    }
+    Require(object_count == objects, "actual Service accounting drains only after the last reader");
+  }
+}
+void ShutdownWindowSchedules() {
+  WNDCLASSW type{};
+  type.hInstance = GetModuleHandleW(nullptr);
+  type.lpfnWndProc = editor::Window;
+  type.lpszClassName = L"KeyrillControlledShutdownWindow";
+  Require(RegisterClassW(&type) != 0, "separate hidden host-window test class");
+  for (int scenario = 0; scenario != 3; ++scenario) {
+    DiagnosticProvider provider;
+    Harness h;
+    ShutdownHistory history;
+    provider.snapshot = history.before;
+    h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
+    shutdown::Probe probe;
+    editor::WindowContext context{&h.manager, &probe};
+    HWND window = CreateWindowW(type.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100,
+                                nullptr, nullptr, type.hInstance, nullptr);
+    Require(window != nullptr, "hidden test window exists");
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&context));
+    probe.Observe(&h.manager);
+    bool captured_live = false;
+    provider.hook = [&](const char *name) {
+      if (std::string(name) == "copy")
+        captured_live = IsWindow(window) && !context.destroyed;
+    };
+    if (scenario == 2)
+      provider.snapshot.lifecycle.owned_present = provider.snapshot.lifecycle.owned_serial = 0;
+    if (scenario == 1)
+      DestroyWindow(window);
+    else
+      SendMessageW(window, WM_CLOSE, 0, 0);
+    provider.hook = nullptr;
+    Require(!IsWindow(window) && context.destroyed && captured_live == (scenario != 1),
+            "real WndProc captures sent WM_CLOSE before normal destruction, never direct destroy");
+    history.Record(diagnostics::LifecycleKind::ExactTermination);
+    history.Deactivate();
+    provider.snapshot = history.After();
+    Require((probe.Finish(S_OK) == shutdown::Verdict::Verified) == (scenario == 0),
+            "host close requires fresh owned capture while direct or empty destruction fails");
+    MSG quit{};
+    while (PeekMessageW(&quit, nullptr, 0, 0, PM_REMOVE)) {
+      if (quit.message == WM_QUIT)
+        break;
+      TranslateMessage(&quit);
+      DispatchMessageW(&quit);
+    }
+    Require(quit.message == WM_QUIT, "ordinary host destruction posts the existing quit message");
+  }
+  Require(UnregisterClassW(type.lpszClassName, type.hInstance), "hidden test class released");
+}
 void DiagnosticPublicationSchedules() {
   using namespace diagnostics;
   DiagnosticProvider provider;
@@ -2720,6 +3275,12 @@ int wmain() {
   DiagnosticCodecSchedules();
   LifecycleCodecSchedules();
   LifecycleServiceSchedules();
+  puts("RUN retained owned shutdown proof schedules");
+  ShutdownPredicateSchedules();
+  ShutdownProbeSchedules();
+  ShutdownServiceSchedules();
+  ShutdownReaderLifetimeSchedules();
+  ShutdownWindowSchedules();
   puts("RUN actual service diagnostic refusal schedules");
   DiagnosticRefusalSchedules();
   puts("RUN actual service diagnostic exception schedules");
