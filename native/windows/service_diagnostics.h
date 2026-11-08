@@ -1,4 +1,5 @@
 #pragma once
+#include "lifecycle_diagnostics.h"
 #include "profiles.h"
 #include "routing.h"
 #include <type_traits>
@@ -110,6 +111,8 @@ struct Snapshot {
   bool operator==(const Snapshot &) const = default;
 };
 static_assert(std::is_trivially_copyable_v<Snapshot>);
+static_assert(sizeof(Snapshot) == 220);
+static_assert(offsetof(Snapshot, counts) == 36 && offsetof(Snapshot, first) == 188);
 inline void Increment(uint32_t &value, uint32_t &saturated) noexcept {
   if (value == UINT32_MAX)
     saturated = 1;
@@ -160,38 +163,79 @@ struct SnapshotReader : IUnknown {
   virtual HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
                                          Snapshot *output) = 0;
 };
-enum class Availability : uint32_t { Missing, Error, Inactive, Busy, Available, Count };
-inline constexpr const wchar_t *availability_labels[] = {L"Missing", L"Error", L"Inactive", L"Busy",
-                                                         L"Available"};
+inline constexpr uint32_t version_v2 = 2;
+inline constexpr GUID snapshot_v2_iid = {
+    0x4f89429e, 0xa955, 0x4885, {0xbb, 0x33, 0xc7, 0x8a, 0xd1, 0x98, 0x24, 0x81}};
+struct SnapshotV2 {
+  Snapshot base;
+  LifecycleSnapshot lifecycle;
+  bool operator==(const SnapshotV2 &) const = default;
+};
+static_assert(std::is_trivially_copyable_v<SnapshotV2>);
+struct SnapshotReaderV2 : IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
+                                         SnapshotV2 *output) = 0;
+};
+inline const Snapshot &Base(const Snapshot &s) noexcept { return s; }
+inline Snapshot &Base(Snapshot &s) noexcept { return s; }
+inline const Snapshot &Base(const SnapshotV2 &s) noexcept { return s.base; }
+inline Snapshot &Base(SnapshotV2 &s) noexcept { return s.base; }
+inline bool Valid(const SnapshotV2 &s) noexcept { return Valid(s.base) && Valid(s.lifecycle); }
+inline bool Saturated(const Snapshot &s) noexcept { return s.saturated != 0; }
+inline bool Saturated(const SnapshotV2 &s) noexcept {
+  return s.base.saturated || s.lifecycle.saturated;
+}
+enum class Availability : uint32_t {
+  Missing,
+  Error,
+  Inactive,
+  Busy,
+  Available,
+  UnsupportedVersion,
+  Count
+};
+inline constexpr const wchar_t *availability_labels[] = {
+    L"Missing", L"Error", L"Inactive", L"Busy", L"Available", L"UnsupportedVersion"};
 enum class Continuity : uint32_t { None, Reset, Same, Indeterminate, Count };
 inline constexpr const wchar_t *continuity_labels[] = {L"None", L"Reset", L"Same",
                                                        L"Indeterminate"};
-struct Publication {
+template <typename S> struct BasicPublication {
   uint32_t publication = 0;
   uint32_t saturated = 0;
   uint32_t source = 0;
   Availability availability = Availability::Missing;
   Continuity continuity = Continuity::None;
   uint32_t result = 0;
-  Snapshot snapshot;
+  S snapshot;
 };
-inline bool Valid(const Publication &value) noexcept {
+using Publication = BasicPublication<Snapshot>;
+using PublicationV2 = BasicPublication<SnapshotV2>;
+template <typename S> inline bool Valid(const BasicPublication<S> &value) noexcept {
+  if constexpr (std::is_same_v<S, Snapshot>) {
+    if (value.availability >= Availability::UnsupportedVersion)
+      return false;
+  } else if (value.availability == Availability::UnsupportedVersion &&
+             value.result != static_cast<uint32_t>(E_NOINTERFACE)) {
+    return false;
+  }
   if (value.availability >= Availability::Count || value.continuity >= Continuity::Count ||
       value.saturated > 1 ||
       ((value.publication == UINT32_MAX || value.source == UINT32_MAX) && !value.saturated) ||
       !Valid(value.snapshot))
     return false;
   if (value.availability == Availability::Available)
-    return value.snapshot.active && value.result == 0 && value.source &&
+    return Base(value.snapshot).active && value.result == 0 && value.source &&
            value.continuity != Continuity::None &&
-           ((value.saturated || value.snapshot.saturated) ==
+           ((value.saturated || Saturated(value.snapshot)) ==
             (value.continuity == Continuity::Indeterminate));
   if (value.availability == Availability::Inactive)
-    return !value.snapshot.active && value.result == 0 && value.continuity == Continuity::None;
-  Snapshot empty;
+    return !Base(value.snapshot).active && value.result == 0 &&
+           value.continuity == Continuity::None;
+  S empty;
   return value.continuity == Continuity::None && value.snapshot == empty;
 }
-inline bool Format(const Publication &value, wchar_t (&output)[status_capacity]) noexcept {
+template <typename S>
+inline bool Format(const BasicPublication<S> &value, wchar_t (&output)[status_capacity]) noexcept {
   output[0] = 0;
   if (!Valid(value))
     return false;
@@ -204,13 +248,14 @@ inline bool Format(const Publication &value, wchar_t (&output)[status_capacity])
     used += size;
     return true;
   };
-  int size = swprintf_s(output, L"Keyrill service v1; state=%ls; continuity=%ls",
+  int size = swprintf_s(output, L"Keyrill service v%u; state=%ls; continuity=%ls",
+                        std::is_same_v<S, Snapshot> ? version : version_v2,
                         availability_labels[static_cast<size_t>(value.availability)],
                         continuity_labels[static_cast<size_t>(value.continuity)]);
   if (size < 0)
     return false;
   used = size;
-  const auto &s = value.snapshot;
+  const auto &s = Base(value.snapshot);
   if (!add(L"publication", value.publication) || !add(L"host_saturated", value.saturated) ||
       !add(L"source", value.source) || !add(L"result", value.result) ||
       !add(L"activation", s.activation) || !add(L"active", s.active) ||
@@ -234,6 +279,22 @@ inline bool Format(const Publication &value, wchar_t (&output)[status_capacity])
       return false;
     used += size;
   }
+  if constexpr (std::is_same_v<S, SnapshotV2>) {
+    const auto &l = value.snapshot.lifecycle;
+    if (!add(L"event_sequence", l.sequence) || !add(L"mark_allocated", l.allocated) ||
+        !add(L"lifecycle_saturated", l.saturated) || !add(L"event_count", l.count) ||
+        !add(L"owned_present", l.owned_present) || !add(L"owned_serial", l.owned_serial))
+      return false;
+    for (const auto &e : l.events) {
+      size = swprintf_s(output + used, status_capacity - used, L"; event=%lu/%lu/%lu/%lu/%lu",
+                        static_cast<unsigned long>(e.sequence), static_cast<unsigned long>(e.kind),
+                        static_cast<unsigned long>(e.subject), static_cast<unsigned long>(e.cause),
+                        static_cast<unsigned long>(e.unresolved));
+      if (size < 0)
+        return false;
+      used += size;
+    }
+  }
   return true;
 }
 template <typename Enum, size_t N>
@@ -250,11 +311,13 @@ inline bool Label(std::wstring_view &input, const wchar_t *const (&labels)[N],
   }
   return false;
 }
-inline bool Parse(std::wstring_view input, Publication &output) noexcept {
+template <typename S>
+inline bool Parse(std::wstring_view input, BasicPublication<S> &output) noexcept {
   if (input.empty() || input.size() >= status_capacity)
     return false;
-  Publication parsed;
-  if (!routing::Take(input, L"Keyrill service v1; state=") ||
+  BasicPublication<S> parsed;
+  if (!routing::Take(input, std::is_same_v<S, Snapshot> ? L"Keyrill service v1; state="
+                                                        : L"Keyrill service v2; state=") ||
       !Label(input, availability_labels, parsed.availability) ||
       !routing::Take(input, L"; continuity=") ||
       !Label(input, continuity_labels, parsed.continuity))
@@ -263,7 +326,7 @@ inline bool Parse(std::wstring_view input, Publication &output) noexcept {
     return routing::Take(input, L"; ") && routing::Take(input, label) &&
            routing::Take(input, L"=") && routing::Number(input, value);
   };
-  auto &s = parsed.snapshot;
+  auto &s = Base(parsed.snapshot);
   if (!number(L"publication", parsed.publication) || !number(L"host_saturated", parsed.saturated) ||
       !number(L"source", parsed.source) || !number(L"result", parsed.result) ||
       !number(L"activation", s.activation) || !number(L"active", s.active) ||
@@ -285,15 +348,54 @@ inline bool Parse(std::wstring_view input, Publication &output) noexcept {
         !routing::Take(input, L"/") || !Label(input, cause_labels, refusal->cause) ||
         !routing::Take(input, L"/") || !routing::Number(input, refusal->result))
       return false;
+  if constexpr (std::is_same_v<S, SnapshotV2>) {
+    auto &l = parsed.snapshot.lifecycle;
+    if (!number(L"event_sequence", l.sequence) || !number(L"mark_allocated", l.allocated) ||
+        !number(L"lifecycle_saturated", l.saturated) || !number(L"event_count", l.count) ||
+        !number(L"owned_present", l.owned_present) || !number(L"owned_serial", l.owned_serial))
+      return false;
+    for (auto &e : l.events) {
+      uint32_t kind = 0, cause = 0, unresolved = 0;
+      if (!number(L"event", e.sequence) || !routing::Take(input, L"/") ||
+          !routing::Number(input, kind) || !routing::Take(input, L"/") ||
+          !routing::Number(input, e.subject) || !routing::Take(input, L"/") ||
+          !routing::Number(input, cause) || !routing::Take(input, L"/") ||
+          !routing::Number(input, unresolved))
+        return false;
+      e.kind = static_cast<LifecycleKind>(kind);
+      e.cause = static_cast<LifecycleCause>(cause);
+      e.unresolved = static_cast<Unresolved>(unresolved);
+    }
+  }
   if (!input.empty() || !Valid(parsed))
     return false;
   output = parsed;
   return true;
 }
 
+inline bool Comparable(const PublicationV2 &before, const PublicationV2 &after) noexcept {
+  if (!Valid(before) || !Valid(after) || before.availability != Availability::Available ||
+      after.availability != Availability::Available || !before.publication ||
+      after.publication <= before.publication || before.source != after.source ||
+      !before.snapshot.base.activation ||
+      before.snapshot.base.activation != after.snapshot.base.activation ||
+      after.continuity != Continuity::Same || before.saturated || after.saturated ||
+      Saturated(before.snapshot) || Saturated(after.snapshot))
+    return false;
+  const auto &a = before.snapshot.lifecycle;
+  const auto &b = after.snapshot.lifecycle;
+  if (b.sequence < a.sequence || b.allocated < a.allocated || b.sequence - a.sequence > b.count)
+    return false;
+  const auto oldest = b.sequence - b.count;
+  for (size_t i = 0; i != a.count; ++i)
+    if (a.events[i].sequence > oldest && a.events[i] != b.events[a.events[i].sequence - oldest - 1])
+      return false;
+  return true;
+}
+
 class Poller {
 public:
-  Publication value;
+  PublicationV2 value;
   void Reset() noexcept {
     identity_.Reset();
     activation_ = 0;
@@ -318,38 +420,42 @@ public:
       ComPtr<IUnknown> identity;
       result = provider.As(&identity);
       ComPtr<IUnknown> function;
+      const bool requested_reader = result == S_OK;
       if (result == S_OK)
-        result = provider->GetFunction(GUID_NULL, snapshot_iid, &function);
-      ComPtr<SnapshotReader> reader;
+        result = provider->GetFunction(GUID_NULL, snapshot_v2_iid, &function);
+      ComPtr<SnapshotReaderV2> reader;
       if (result == S_OK && function)
-        result = function->QueryInterface(snapshot_iid,
+        result = function->QueryInterface(snapshot_v2_iid,
                                           reinterpret_cast<void **>(reader.GetAddressOf()));
-      Snapshot snapshot;
+      const bool unsupported = requested_reader && result == E_NOINTERFACE;
+      SnapshotV2 snapshot;
       if (result == S_OK && reader)
-        result = reader->Copy(sizeof(snapshot), version, &snapshot);
+        result = reader->Copy(sizeof(snapshot), version_v2, &snapshot);
       value.result = static_cast<uint32_t>(result);
       if (result != S_OK || !identity || !reader || !Valid(snapshot)) {
-        value.availability = result == E_PENDING ? Availability::Busy : Availability::Error;
+        value.availability = result == E_PENDING ? Availability::Busy
+                             : unsupported       ? Availability::UnsupportedVersion
+                                                 : Availability::Error;
         Reset();
         return;
       }
       value.result = 0;
       value.snapshot = snapshot;
-      if (!snapshot.active) {
+      if (!snapshot.base.active) {
         value.availability = Availability::Inactive;
         Reset();
         return;
       }
-      bool same =
-          connected_ && identity_.Get() == identity.Get() && activation_ == snapshot.activation;
+      bool same = connected_ && identity_.Get() == identity.Get() &&
+                  activation_ == snapshot.base.activation;
       if (!same)
         Increment(value.source, value.saturated);
       value.availability = Availability::Available;
-      value.continuity = value.saturated || snapshot.saturated ? Continuity::Indeterminate
-                         : same                                ? Continuity::Same
-                                                               : Continuity::Reset;
+      value.continuity = value.saturated || Saturated(snapshot) ? Continuity::Indeterminate
+                         : same                                 ? Continuity::Same
+                                                                : Continuity::Reset;
       identity_ = identity;
-      activation_ = snapshot.activation;
+      activation_ = snapshot.base.activation;
       connected_ = true;
     } catch (...) {
       value.snapshot = {};

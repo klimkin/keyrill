@@ -112,7 +112,7 @@ bool Routing(HWND root) {
   wprintf(L"%ls\n", known);
   return true;
 }
-bool ReadServicePublication(HWND root, keyrill::diagnostics::Publication &publication) {
+bool ReadServicePublication(HWND root, keyrill::diagnostics::PublicationV2 &publication) {
   HWND status = GetDlgItem(root, 106);
   wchar_t type[16]{};
   if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC"))
@@ -133,7 +133,7 @@ bool ReadServicePublication(HWND root, keyrill::diagnostics::Publication &public
   return parsed;
 }
 bool ServiceStatus(HWND root) {
-  keyrill::diagnostics::Publication publication;
+  keyrill::diagnostics::PublicationV2 publication;
   if (!ReadServicePublication(root, publication))
     return false;
   wchar_t known[keyrill::diagnostics::status_capacity]{};
@@ -164,7 +164,7 @@ keyrill::denial::Setup DenialSetup(HWND root) {
 bool NativeDenial(HWND root) {
   if (DenialSetup(root) != keyrill::denial::Setup::Confirmed)
     return false;
-  keyrill::diagnostics::Publication first, second;
+  keyrill::diagnostics::PublicationV2 first, second;
   if (!ReadServicePublication(root, first) || !Check(GetDlgItem(root, 101), L"ghbdtn ", true) ||
       !Check(GetDlgItem(root, 102), L"", false))
     return false;

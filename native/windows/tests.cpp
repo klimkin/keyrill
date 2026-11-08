@@ -19,7 +19,7 @@ void Require(bool condition, const char *label) {
 }
 void NativeDenialGateSchedules() {
   using namespace diagnostics;
-  bool (*volatile matches)(denial::Setup, const Publication &, const Publication &) noexcept =
+  bool (*volatile matches)(denial::Setup, const PublicationV2 &, const PublicationV2 &) noexcept =
       denial::Matches;
   const wchar_t *normal[] = {L"KeyrillProofEditor.exe"};
   const wchar_t *denied[] = {normal[0], L"--deny-tsf-locks"};
@@ -37,12 +37,12 @@ void NativeDenialGateSchedules() {
               denial::ParseSetup(L"Keyrill native denial v2; setup=Confirmed") ==
                   denial::Setup::Unknown,
           "denial setup requires the exact known confirmation");
-  Publication first;
+  PublicationV2 first;
   first.publication = 10;
   first.source = 2;
   first.availability = Availability::Available;
   first.continuity = Continuity::Same;
-  auto &s = first.snapshot;
+  auto &s = first.snapshot.base;
   s.activation = 3;
   s.active = 1;
   s.mode = KR_EN;
@@ -51,12 +51,12 @@ void NativeDenialGateSchedules() {
   s.session_result = static_cast<uint32_t>(TF_E_SYNCHRONOUS);
   s.counts[static_cast<size_t>(Counter::Requested)] = 8;
   Refuse(s, Stage::Session, Cause::Native, TF_E_SYNCHRONOUS);
-  Publication second = first;
+  PublicationV2 second = first;
   ++second.publication;
   Require(matches(denial::Setup::Confirmed, first, second),
           "fresh matching native session denial with zero effects is accepted");
   auto request_first = first;
-  auto &r = request_first.snapshot;
+  auto &r = request_first.snapshot.base;
   r.request_result = static_cast<uint32_t>(E_ACCESSDENIED);
   r.session_present = r.session_result = 0;
   r.refusals = {};
@@ -68,7 +68,7 @@ void NativeDenialGateSchedules() {
           "fresh matching failed native request with zero effects is accepted");
   Require(!matches(denial::Setup::Unknown, first, second),
           "normal or unconfirmed host cannot establish denial");
-  auto reject = [&](const Publication &changed, const char *label) {
+  auto reject = [&](const PublicationV2 &changed, const char *label) {
     Require(!matches(denial::Setup::Confirmed, first, changed), label);
   };
   auto changed = second;
@@ -77,11 +77,11 @@ void NativeDenialGateSchedules() {
   changed.snapshot = {};
   reject(changed, "provider absence cannot establish denial");
   changed = second;
-  changed.snapshot.counts[static_cast<size_t>(Counter::Requested)] = 0;
+  changed.snapshot.base.counts[static_cast<size_t>(Counter::Requested)] = 0;
   reject(changed, "no edit requests cannot establish denial");
   for (uint32_t mode : {0u, static_cast<uint32_t>(KR_RU)}) {
     changed = second;
-    changed.snapshot.mode = mode;
+    changed.snapshot.base.mode = mode;
     reject(changed, "wrong or unknown source mode cannot establish EN denial");
   }
   reject(first, "unchanged publication cannot establish freshness");
@@ -89,21 +89,21 @@ void NativeDenialGateSchedules() {
   changed.publication = first.publication - 1;
   reject(changed, "older publication cannot establish freshness");
   changed = second;
-  changed.snapshot.session_result = S_OK;
+  changed.snapshot.base.session_result = S_OK;
   reject(changed, "successful session cannot establish native denial");
   changed = second;
-  changed.snapshot.request_result = S_FALSE;
+  changed.snapshot.base.request_result = S_FALSE;
   reject(changed, "non-S_OK success request cannot certify session denial");
   changed = second;
-  changed.snapshot.session_present = changed.snapshot.session_result = 0;
+  changed.snapshot.base.session_present = changed.snapshot.base.session_result = 0;
   reject(changed, "absent session result cannot certify denial");
   for (auto effect : {Counter::SessionEntered, Counter::SessionCompleted, Counter::Attempted,
                       Counter::Verified, Counter::Unknown, Counter::Consumed}) {
     changed = second;
-    changed.snapshot.counts[static_cast<size_t>(effect)] = 1;
+    changed.snapshot.base.counts[static_cast<size_t>(effect)] = 1;
     reject(changed, "callback entry or document or key effect cannot establish zero-effect denial");
     auto dirty_first = first;
-    dirty_first.snapshot.counts[static_cast<size_t>(effect)] = 1;
+    dirty_first.snapshot.base.counts[static_cast<size_t>(effect)] = 1;
     Require(!matches(denial::Setup::Confirmed, dirty_first, second),
             "earlier sample effects cannot disappear into a clean sample");
   }
@@ -112,23 +112,23 @@ void NativeDenialGateSchedules() {
     if (identity == 0)
       ++changed.source;
     else if (identity == 1)
-      ++changed.snapshot.activation;
+      ++changed.snapshot.base.activation;
     else
       changed.continuity = Continuity::Reset;
     reject(changed, "foreign or reset publication identity cannot establish continuity");
   }
   changed = second;
-  changed.snapshot.latest.result = static_cast<uint32_t>(E_FAIL);
+  changed.snapshot.base.latest.result = static_cast<uint32_t>(E_FAIL);
   reject(changed, "unmatched native refusal cannot establish request outcome");
   changed = second;
-  changed.snapshot.latest.cause = Cause::Predicate;
-  changed.snapshot.latest.result = 0;
+  changed.snapshot.base.latest.cause = Cause::Predicate;
+  changed.snapshot.base.latest.result = 0;
   reject(changed, "predicate refusal cannot establish native denial");
   changed = second;
-  changed.snapshot.stopped = 1;
+  changed.snapshot.base.stopped = 1;
   reject(changed, "stopped service cannot establish live denial");
   changed = second;
-  changed.saturated = changed.snapshot.saturated = 1;
+  changed.saturated = changed.snapshot.base.saturated = 1;
   changed.continuity = Continuity::Indeterminate;
   reject(changed, "saturated observations cannot establish fresh denial");
   changed = second;
@@ -348,7 +348,19 @@ struct Composition final : ITfComposition, ITfCompositionView {
   Document &document;
   std::shared_ptr<Span> span;
   Composition(Document &d, std::shared_ptr<Span> s) : document(d), span(std::move(s)) {}
-  REFCOUNT;
+  ULONG references = 1;
+  HRESULT identity_result = S_OK;
+  bool throw_after_identity = false;
+  std::function<void()> release_hook;
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+  ULONG STDMETHODCALLTYPE Release() override {
+    if (release_hook)
+      release_hook();
+    const auto count = --references;
+    if (!count)
+      delete this;
+    return count;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override;
   HRESULT STDMETHODCALLTYPE GetRange(ITfRange **) override;
   HRESULT STDMETHODCALLTYPE EndComposition(TfEditCookie) override;
@@ -395,9 +407,11 @@ struct Document final : ITfContext,
   ComPtr<Composition> composition;
   ComPtr<ITfEditSession> retained_request;
   std::map<std::string, int> calls;
+  std::vector<std::string> trace;
   std::function<void(const char *)> hook;
   void Call(const char *name) {
     ++calls[name];
+    trace.emplace_back(name);
     if (hook)
       hook(name);
   }
@@ -654,6 +668,8 @@ HRESULT Range::Clone(ITfRange **out) {
 HRESULT Composition::QueryInterface(REFIID id, void **out) {
   document.Call("composition.QI");
   *out = nullptr;
+  if (FAILED(identity_result))
+    return identity_result;
   if (id == IID_IUnknown || id == IID_ITfComposition)
     *out = static_cast<ITfComposition *>(this);
   else if (id == IID_ITfCompositionView)
@@ -661,6 +677,8 @@ HRESULT Composition::QueryInterface(REFIID id, void **out) {
   if (!*out)
     return E_NOINTERFACE;
   AddRef();
+  if (throw_after_identity)
+    throw 1;
   return S_OK;
 }
 HRESULT Composition::GetRange(ITfRange **out) {
@@ -1455,17 +1473,23 @@ void DiagnosticExceptionSchedules() {
             "unknown exception stops further writes");
   }
 }
-struct DiagnosticProvider final : ITfFunctionProvider, diagnostics::SnapshotReader {
+struct DiagnosticProvider final : ITfFunctionProvider,
+                                  diagnostics::SnapshotReaderV2,
+                                  diagnostics::SnapshotReader {
   ULONG references = 1;
-  diagnostics::Snapshot snapshot;
+  diagnostics::SnapshotV2 snapshot;
   HRESULT result = S_OK;
   bool throwing = false;
+  bool legacy_only = false;
+  int legacy_reads = 0;
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
   ULONG STDMETHODCALLTYPE Release() override { return --references; }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
     *out = nullptr;
     if (id == IID_IUnknown || id == IID_ITfFunctionProvider)
       *out = static_cast<ITfFunctionProvider *>(this);
+    else if (id == diagnostics::snapshot_v2_iid && !legacy_only)
+      *out = static_cast<diagnostics::SnapshotReaderV2 *>(this);
     else if (id == diagnostics::snapshot_iid)
       *out = static_cast<diagnostics::SnapshotReader *>(this);
     if (!*out)
@@ -1474,13 +1498,13 @@ struct DiagnosticProvider final : ITfFunctionProvider, diagnostics::SnapshotRead
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE GetFunction(REFGUID function, REFIID id, IUnknown **out) override {
-    Require(function == GUID_NULL && id == diagnostics::snapshot_iid,
+    Require(function == GUID_NULL && id == diagnostics::snapshot_v2_iid,
             "private readonly snapshot discovery");
     return QueryInterface(id, reinterpret_cast<void **>(out));
   }
   HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
-                                 diagnostics::Snapshot *out) override {
-    Require(size == sizeof(*out) && requested_version == diagnostics::version,
+                                 diagnostics::SnapshotV2 *out) override {
+    Require(size == sizeof(*out) && requested_version == diagnostics::version_v2,
             "poll bounded versioned copy");
     *out = {};
     if (throwing)
@@ -1488,6 +1512,14 @@ struct DiagnosticProvider final : ITfFunctionProvider, diagnostics::SnapshotRead
     if (result == S_OK)
       *out = snapshot;
     return result;
+  }
+  HRESULT STDMETHODCALLTYPE Copy(uint32_t size, uint32_t requested_version,
+                                 diagnostics::Snapshot *out) override {
+    ++legacy_reads;
+    if (size != sizeof(*out) || requested_version != diagnostics::version)
+      return E_INVALIDARG;
+    *out = snapshot.base;
+    return S_OK;
   }
   STUB(GetType, (GUID *));
   STUB(GetDescription, (BSTR *));
@@ -1499,7 +1531,7 @@ void DiagnosticPublicationSchedules() {
   Poller poller;
   poller.Poll(&h.manager);
   h.manager.diagnostic_sink = static_cast<ITfFunctionProvider *>(&provider);
-  provider.snapshot.active = provider.snapshot.activation = 1;
+  provider.snapshot.base.active = provider.snapshot.base.activation = 1;
   poller.Poll(&h.manager);
   Require(poller.value.availability == Availability::Available && poller.value.source == 2 &&
               poller.value.continuity == Continuity::Reset,
@@ -1507,25 +1539,34 @@ void DiagnosticPublicationSchedules() {
   for (int scenario = 0; scenario != 4; ++scenario) {
     provider.result = scenario == 0 ? E_ACCESSDENIED : scenario == 1 ? S_FALSE : S_OK;
     provider.throwing = scenario == 2;
-    provider.snapshot.active = scenario == 3 ? 2 : 1;
+    provider.snapshot.base.active = scenario == 3 ? 2 : 1;
     poller.Poll(&h.manager);
     Require(poller.value.availability == Availability::Error &&
-                poller.value.snapshot == Snapshot{} && poller.value.continuity == Continuity::None,
+                poller.value.snapshot == SnapshotV2{} &&
+                poller.value.continuity == Continuity::None,
             "failed throwing incomplete or malformed reads replace cached success");
   }
   provider.throwing = false;
-  provider.snapshot.active = 0;
+  provider.snapshot.base.active = 1;
+  provider.legacy_only = true;
   poller.Poll(&h.manager);
-  Require(poller.value.availability == Availability::Inactive && !poller.value.snapshot.active,
+  Require(poller.value.availability == Availability::UnsupportedVersion &&
+              poller.value.snapshot == SnapshotV2{} && Valid(poller.value) &&
+              provider.legacy_reads == 0,
+          "old provider never becomes a synthetic empty lifecycle publication");
+  provider.legacy_only = false;
+  provider.snapshot.base.active = 0;
+  poller.Poll(&h.manager);
+  Require(poller.value.availability == Availability::Inactive && !poller.value.snapshot.base.active,
           "inactive publication replaces cached active snapshot");
-  provider.snapshot.active = 1;
+  provider.snapshot.base.active = 1;
   poller.Poll(&h.manager);
   Require(poller.value.continuity == Continuity::Reset,
           "availability recovery begins a new interval");
   poller.Poll(&h.manager);
   Require(poller.value.continuity == Continuity::Same,
           "second available sample can share baseline");
-  ++provider.snapshot.activation;
+  ++provider.snapshot.base.activation;
   poller.Poll(&h.manager);
   Require(poller.value.continuity == Continuity::Reset,
           "same identity new activation resets interval");
@@ -1533,13 +1574,13 @@ void DiagnosticPublicationSchedules() {
   poller.Poll(&h.manager);
   Require(poller.value.availability == Availability::Error &&
               poller.value.result == static_cast<uint32_t>(E_FAIL) &&
-              poller.value.snapshot == Snapshot{},
+              poller.value.snapshot == SnapshotV2{},
           "failed provider discovery is an error rather than absence");
   h.manager.provider_result = S_OK;
   h.manager.provider_null = true;
   poller.Poll(&h.manager);
   Require(poller.value.availability == Availability::Error && poller.value.result == 0 &&
-              poller.value.snapshot == Snapshot{},
+              poller.value.snapshot == SnapshotV2{},
           "successful null provider is a predicate error");
   h.manager.provider_null = false;
   poller.value.publication = UINT32_MAX - 1;
@@ -1563,35 +1604,35 @@ void DiagnosticLifetimeSchedules() {
     Require(poller.value.availability == Availability::Available &&
                 poller.value.continuity == Continuity::Reset && poller.value.source == 1,
             "actual registered provider begins a new interval");
-    const auto activation = poller.value.snapshot.activation;
+    const auto activation = poller.value.snapshot.base.activation;
     h.service->OnSetFocus(FALSE);
     h.service->OnActivated(0, 0, service_id, GUID_NULL, profiles[0].id, nullptr,
                            TF_IPSINK_FLAG_ACTIVE);
     poller.Poll(&h.manager);
     Require(poller.value.availability == Availability::Available &&
                 poller.value.continuity == Continuity::Same && poller.value.source == 1 &&
-                poller.value.snapshot.activation == activation,
+                poller.value.snapshot.base.activation == activation,
             "editing generations do not break service activation continuity");
     BOOL interest = FALSE;
     h.service->OnTestKeyDown(&h.a, 0, 0, &interest);
     Require(interest, "actual service test interest observed");
-    ComPtr<diagnostics::SnapshotReader> retained;
+    ComPtr<diagnostics::SnapshotReaderV2> retained;
     Require(h.manager.diagnostic_sink->QueryInterface(
-                diagnostics::snapshot_iid, reinterpret_cast<void **>(retained.GetAddressOf())) ==
+                diagnostics::snapshot_v2_iid, reinterpret_cast<void **>(retained.GetAddressOf())) ==
                 S_OK,
             "retained diagnostic interface");
     bool busy = false;
     h.a.hook = [&](const char *name) {
       if (!busy && std::string(name) == "GetSelection") {
         busy = true;
-        diagnostics::Snapshot rejected;
-        rejected.active = 1;
-        Require(retained->Copy(sizeof(rejected), diagnostics::version, &rejected) == E_PENDING &&
-                    rejected == diagnostics::Snapshot{},
+        diagnostics::SnapshotV2 rejected;
+        rejected.base.active = 1;
+        Require(retained->Copy(sizeof(rejected), diagnostics::version_v2, &rejected) == E_PENDING &&
+                    rejected == diagnostics::SnapshotV2{},
                 "busy snapshot output is cleared");
         poller.Poll(&h.manager);
         Require(poller.value.availability == Availability::Busy &&
-                    poller.value.snapshot == diagnostics::Snapshot{},
+                    poller.value.snapshot == diagnostics::SnapshotV2{},
                 "busy publication replaces cached success");
       }
     };
@@ -1603,40 +1644,41 @@ void DiagnosticLifetimeSchedules() {
     h.manager.provider_result = TF_E_NOPROVIDER;
     poller.Poll(&h.manager);
     Require(poller.value.availability == Availability::Missing &&
-                poller.value.snapshot == diagnostics::Snapshot{},
+                poller.value.snapshot == diagnostics::SnapshotV2{},
             "provider absence replaces cached success");
     h.manager.provider_result = S_OK;
     h.service->Deactivate();
-    diagnostics::Snapshot inactive;
-    Require(retained->Copy(sizeof(inactive), diagnostics::version, &inactive) == S_OK &&
-                !inactive.active && inactive.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
+    diagnostics::SnapshotV2 inactive;
+    Require(retained->Copy(sizeof(inactive), diagnostics::version_v2, &inactive) == S_OK &&
+                !inactive.base.active &&
+                inactive.base.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
             "retained interface reports inactive with lifetime history");
     Require(SUCCEEDED(h.service->Activate(&h.manager, 42)), "same service reactivation");
     poller.Poll(&h.manager);
     Require(poller.value.availability == Availability::Available &&
-                poller.value.snapshot.activation == activation + 1 &&
+                poller.value.snapshot.base.activation == activation + 1 &&
                 poller.value.continuity == Continuity::Reset &&
-                poller.value.snapshot.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
+                poller.value.snapshot.base.counts[static_cast<size_t>(Counter::TestEntered)] == 1,
             "new activation resets baseline and preserves lifetime counters");
     poller.Reset();
   }
   {
     Harness h;
-    diagnostics::Snapshot output;
-    output.active = 1;
-    Require(h.service->Copy(sizeof(output), diagnostics::version + 1, &output) == E_INVALIDARG &&
-                output == diagnostics::Snapshot{},
+    diagnostics::SnapshotV2 output;
+    output.base.active = 1;
+    Require(h.service->Copy(sizeof(output), diagnostics::version_v2 + 1, &output) == E_INVALIDARG &&
+                output == diagnostics::SnapshotV2{},
             "incompatible version clears output");
-    output.active = 1;
-    Require(h.service->Copy(sizeof(output) - 1, diagnostics::version, &output) == E_INVALIDARG &&
-                output.active == 0,
+    output.base.active = 1;
+    Require(h.service->Copy(sizeof(output) - 1, diagnostics::version_v2, &output) == E_INVALIDARG &&
+                output.base.active == 0,
             "incompatible size clears supplied prefix");
     HRESULT wrong_thread = S_OK;
-    output.active = 1;
+    output.base.active = 1;
     std::thread thread(
-        [&] { wrong_thread = h.service->Copy(sizeof(output), diagnostics::version, &output); });
+        [&] { wrong_thread = h.service->Copy(sizeof(output), diagnostics::version_v2, &output); });
     thread.join();
-    Require(wrong_thread == RPC_E_WRONG_THREAD && output == diagnostics::Snapshot{},
+    Require(wrong_thread == RPC_E_WRONG_THREAD && output == diagnostics::SnapshotV2{},
             "wrong thread cannot read mutable service state");
     ComPtr<Service> other;
     other.Attach(new Service);
@@ -1731,6 +1773,444 @@ void DiagnosticCodecSchedules() {
   Require(Format(publication, text) && Parse(text, parsed), "saturation remains explicit in codec");
   publication.snapshot.saturated = 0;
   Require(!Format(publication, text), "codec rejects hidden saturation");
+}
+
+diagnostics::SnapshotV2 LifecycleSnapshotOf(Service &service) {
+  diagnostics::SnapshotV2 snapshot;
+  Require(service.Copy(sizeof(snapshot), diagnostics::version_v2, &snapshot) == S_OK &&
+              diagnostics::Valid(snapshot),
+          "valid service lifecycle snapshot");
+  Require(snapshot.base == DiagnosticSnapshot(service), "v2 projects the frozen v1 payload");
+  return snapshot;
+}
+const diagnostics::LifecycleEvent &Last(const diagnostics::SnapshotV2 &s) {
+  Require(s.lifecycle.count != 0, "lifecycle event exists");
+  return s.lifecycle.events[s.lifecycle.count - 1];
+}
+void LifecycleCodecSchedules() {
+  using namespace diagnostics;
+  LifecycleJournal journal;
+  const auto first_serial = journal.Acquire();
+  journal.Record(LifecycleKind::EndRequested, first_serial);
+  journal.Record(LifecycleKind::FinishVerified, first_serial);
+  const auto second_serial = journal.Acquire();
+  Require(first_serial == 1 && second_serial == 2, "ownership serials are distinct and nonzero");
+  PublicationV2 first;
+  first.publication = first.source = first.snapshot.base.active = first.snapshot.base.activation =
+      1;
+  first.availability = Availability::Available;
+  first.continuity = Continuity::Same;
+  first.snapshot.lifecycle = journal.Copy(true, second_serial);
+  auto second = first;
+  ++second.publication;
+  Require(Comparable(first, second), "fresh empty lifecycle interval remains comparable");
+  auto changed_history = second;
+  changed_history.snapshot.lifecycle.events[0].kind = LifecycleKind::EndRequested;
+  Require(Valid(changed_history) && !Comparable(first, changed_history),
+          "same sequence cannot rewrite retained historical events");
+  for (size_t i = 0; i != lifecycle_capacity; ++i)
+    journal.Record(LifecycleKind::LifecycleInvalidation, second_serial,
+                   LifecycleCause::DocumentFocus);
+  second.snapshot.lifecycle = journal.Copy(true, second_serial);
+  Require(Comparable(first, second), "exact retained window is complete");
+  journal.Record(LifecycleKind::LifecycleInvalidation, second_serial, LifecycleCause::ContextPop);
+  second.snapshot.lifecycle = journal.Copy(true, second_serial);
+  Require(Valid(second) && !Comparable(first, second),
+          "window overrun refuses interval assertions");
+  wchar_t output[status_capacity]{};
+  PublicationV2 parsed;
+  Require(Format(second, output) && Parse(output, parsed) && parsed.snapshot == second.snapshot,
+          "v2 ordered window round trips strictly");
+  const std::wstring good(output);
+  Publication legacy;
+  Require(!Parse(good, legacy), "old inspector rejects new wire version");
+  wchar_t old_text[status_capacity]{};
+  Require(Format(legacy, old_text) && !Parse(old_text, parsed),
+          "new inspector rejects old wire version");
+  for (int scenario = 0; scenario != 9; ++scenario) {
+    auto bad = second;
+    auto &l = bad.snapshot.lifecycle;
+    if (scenario == 0)
+      l.events[1].sequence = l.events[0].sequence;
+    if (scenario == 1)
+      std::swap(l.events[0], l.events[1]);
+    if (scenario == 2)
+      l.events[0].kind = LifecycleKind::Count;
+    if (scenario == 3)
+      l.events[0].cause = LifecycleCause::None;
+    if (scenario == 4)
+      l.events[0].unresolved = Unresolved::Exception;
+    if (scenario == 5)
+      l.events[0].subject = l.allocated + 1;
+    if (scenario == 6)
+      l.owned_serial = 0;
+    if (scenario == 7)
+      l.count = lifecycle_capacity + 1;
+    if (scenario == 8)
+      l.owned_present = 0;
+    Require(!Valid(bad) && !Format(bad, output), "invalid tagged lifecycle record is rejected");
+  }
+  for (auto replacement :
+       {std::pair{L"event_count=16", L"event_count=17"},
+        std::pair{L"owned_serial=2", L"owned_serial=0"}, std::pair{L"v2;", L"v3;"},
+        std::pair{L"event=6/8/2/2/0", L"event=6/99/2/2/0"}}) {
+    auto bad = good;
+    const auto at = bad.find(replacement.first);
+    Require(at != std::wstring::npos, "malformed lifecycle field present");
+    bad.replace(at, wcslen(replacement.first), replacement.second);
+    const auto untouched = parsed;
+    Require(!Parse(bad, parsed) && parsed.snapshot == untouched.snapshot,
+            "malformed wire cannot publish partial data");
+  }
+  Require(!Parse(good + L"; event=0/0/0/0/0", parsed) &&
+              !Parse(good.substr(0, good.size() - 1), parsed) &&
+              !Parse(std::wstring(status_capacity, L'x'), parsed),
+          "oversized extra and truncated lifecycle records are rejected");
+  auto sparse = first;
+  sparse.snapshot.lifecycle.events[4].subject = 1;
+  Require(!Valid(sparse), "unused event tail must be exactly zero");
+  auto zero_subject = first;
+  zero_subject.snapshot.lifecycle.events[0].subject = 0;
+  Require(!Valid(zero_subject), "owned transitions require an allocated subject");
+  auto changed = first;
+  Require(!Comparable(first, changed), "same publication is stale");
+  ++changed.publication;
+  ++changed.source;
+  Require(!Comparable(first, changed), "new provider source needs a baseline");
+  changed = first;
+  ++changed.publication;
+  ++changed.snapshot.base.activation;
+  Require(!Comparable(first, changed), "new activation needs a baseline");
+  LifecycleJournal exhausted(0, UINT32_MAX - 1);
+  Require(exhausted.Acquire() == UINT32_MAX && exhausted.Acquire() == 0,
+          "mark allocator saturates without reusing an identity");
+  const auto exhausted_state = exhausted.Copy(true, 0);
+  Require(Valid(exhausted_state) && exhausted_state.owned_present && exhausted_state.saturated,
+          "exhausted identity still reports owned presence");
+  LifecycleJournal sequence_exhausted(UINT32_MAX - 1);
+  sequence_exhausted.Record(LifecycleKind::TerminationWithoutOwned, 0);
+  const auto frozen = sequence_exhausted.Copy(false, 0);
+  sequence_exhausted.Record(LifecycleKind::TerminationWithoutOwned, 0);
+  Require(sequence_exhausted.Copy(false, 0) == frozen && frozen.saturated,
+          "event sequence saturation freezes the history without wrapping");
+  auto maximum = second;
+  maximum.publication = maximum.source = maximum.snapshot.base.activation = UINT32_MAX;
+  maximum.saturated = maximum.snapshot.base.saturated = maximum.snapshot.lifecycle.saturated = 1;
+  maximum.continuity = Continuity::Indeterminate;
+  maximum.snapshot.base.counts.fill(UINT32_MAX);
+  maximum.snapshot.base.refusals.fill(UINT32_MAX);
+  maximum.snapshot.base.first =
+      maximum.snapshot.base.latest = {1, Stage::Acknowledge, Cause::Native, UINT32_MAX};
+  maximum.snapshot.base.request_present = maximum.snapshot.base.session_present = 1;
+  maximum.snapshot.base.request_result = maximum.snapshot.base.session_result = UINT32_MAX;
+  auto &l = maximum.snapshot.lifecycle;
+  l.sequence = l.allocated = l.owned_serial = UINT32_MAX;
+  for (size_t i = 0; i != lifecycle_capacity; ++i)
+    l.events[i] = {UINT32_MAX - static_cast<uint32_t>(lifecycle_capacity) + 1 +
+                       static_cast<uint32_t>(i),
+                   LifecycleKind::TerminationUnresolved, UINT32_MAX, LifecycleCause::None,
+                   Unresolved::Exception};
+  struct {
+    uint32_t before = 0xaabbccdd;
+    wchar_t text[status_capacity]{};
+    uint32_t after = 0xddccbbaa;
+  } guarded;
+  Require(Format(maximum, guarded.text) && Parse(guarded.text, parsed) &&
+              parsed.snapshot == maximum.snapshot && guarded.before == 0xaabbccdd &&
+              guarded.after == 0xddccbbaa,
+          "maximum scalar publication fits its bounded formatter and preserves canaries");
+}
+struct TerminationAlias final : ITfComposition {
+  ITfComposition &canonical;
+  explicit TerminationAlias(ITfComposition &value) : canonical(value) {}
+  ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    return canonical.QueryInterface(id, out);
+  }
+  STUB(GetRange, (ITfRange **));
+  STUB(EndComposition, (TfEditCookie));
+  STUB(ShiftStart, (TfEditCookie, ITfRange *));
+  STUB(ShiftEnd, (TfEditCookie, ITfRange *));
+};
+void LifecycleServiceSchedules() {
+  using namespace diagnostics;
+  {
+    Harness h;
+    h.Type(L"g");
+    const auto before = LifecycleSnapshotOf(*h.service.Get());
+    const auto calls = h.a.calls;
+    HRESULT result = S_OK;
+    std::thread foreign(
+        [&] { result = h.service->OnCompositionTerminated(123, h.a.composition.Get()); });
+    foreign.join();
+    Require(result == RPC_E_WRONG_THREAD && LifecycleSnapshotOf(*h.service.Get()) == before &&
+                h.a.calls == calls,
+            "wrong-thread termination neither samples native identity nor touches STA state");
+  }
+  for (bool alias : {false, true}) {
+    Harness h;
+    h.Type(L"g");
+    const auto before = LifecycleSnapshotOf(*h.service.Get());
+    Require(before.lifecycle.owned_present && Last(before).kind == LifecycleKind::Acquired,
+            "actual acquisition publishes current serial");
+    TerminationAlias other(*h.a.composition.Get());
+    h.a.trace.clear();
+    h.a.active_composition = false;
+    Require(h.service->OnCompositionTerminated(123, alias ? static_cast<ITfComposition *>(&other)
+                                                          : h.a.composition.Get()) == S_OK,
+            "canonical termination succeeds through either interface pointer");
+    const auto after = LifecycleSnapshotOf(*h.service.Get());
+    Require(!after.lifecycle.owned_present && Last(after).kind == LifecycleKind::ExactTermination &&
+                Last(after).subject == before.lifecycle.owned_serial &&
+                h.a.trace == std::vector<std::string>{"composition.QI"},
+            "identity checked termination performs only the existing native query");
+    h.Oracle(L"g", 8);
+  }
+  {
+    Harness h;
+    h.Type(L"g");
+    ComPtr<Composition> old = h.a.composition;
+    h.a.active_composition = false;
+    h.service->OnCompositionTerminated(123, old.Get());
+    h.a.caret = 7;
+    h.Type(L"x");
+    const auto current = LifecycleSnapshotOf(*h.service.Get()).lifecycle.owned_serial;
+    h.a.trace.clear();
+    h.service->OnCompositionTerminated(123, old.Get());
+    const auto after = LifecycleSnapshotOf(*h.service.Get());
+    Require(Last(after).kind == LifecycleKind::DifferentTermination &&
+                Last(after).subject == current && after.lifecycle.owned_serial == current &&
+                h.a.trace == std::vector<std::string>{"composition.QI"},
+            "late callback records protection of current ownership with no extra query");
+    Require(h.Key(L'y'), "late callback preserves new mark continuation");
+    h.Oracle(L"xyg", 9);
+  }
+  std::vector<std::string> continuation_trace;
+  for (bool reentry : {false, true}) {
+    Harness h;
+    h.Type(L"ghbdtn ");
+    const auto before = LifecycleSnapshotOf(*h.service.Get());
+    ComPtr<Composition> old = h.a.composition;
+    const auto writes = h.a.writes;
+    const auto starts = h.a.starts;
+    const auto ends = h.a.ends;
+    bool injected = false;
+    h.a.hook = [&](const char *name) {
+      if (std::string(name) != "composition.QI" || injected)
+        return;
+      injected = true;
+      Require(h.Key(L'x'), "identity query continuation consumes its key");
+    };
+    h.a.trace.clear();
+    if (reentry) {
+      Require(h.service->OnCompositionTerminated(123, old.Get()) == S_OK && injected,
+              "identity query can finish and replace ownership without lifecycle invalidation");
+    } else {
+      h.a.hook = nullptr;
+      Require(h.Key(L'x'), "ordinary continuation consumes its key");
+      continuation_trace = h.a.trace;
+      continuation_trace.insert(continuation_trace.begin(), "composition.QI");
+    }
+    h.a.hook = nullptr;
+    const auto after = LifecycleSnapshotOf(*h.service.Get());
+    Require(after.lifecycle.owned_present &&
+                after.lifecycle.owned_serial == before.lifecycle.owned_serial + 1 &&
+                !after.base.stopped && h.a.composition.Get() != old.Get() &&
+                h.a.active_composition && h.a.writes == writes + 1 && h.a.starts == starts + 1 &&
+                h.a.ends == ends + 1 && h.a.max_request_writes == 1,
+            "identity query replacement preserves new ownership and ordinary continuation effects");
+    if (reentry) {
+      Require(h.a.trace == continuation_trace,
+              "replacement termination adds only its original native identity query");
+      Require(Last(after).kind == LifecycleKind::TerminationUnresolved &&
+                  Last(after).unresolved == Unresolved::Stale &&
+                  Last(after).subject == before.lifecycle.owned_serial,
+              "replacement termination records TerminationUnresolved/Stale for captured serial");
+    }
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 x", 15);
+    Require(h.Key(L'y'), "replacement ownership permits the next key");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 xy", 16);
+  }
+  for (int scenario = 0; scenario != 5; ++scenario) {
+    Harness h;
+    h.Type(L"g");
+    const auto serial = LifecycleSnapshotOf(*h.service.Get()).lifecycle.owned_serial;
+    bool injected = false;
+    bool release_seen = false;
+    h.a.composition->release_hook = [&] {
+      SnapshotV2 busy;
+      Require(h.service->Copy(sizeof(busy), version_v2, &busy) == E_PENDING && busy == SnapshotV2{},
+              "termination guard covers identity release and exception unwinding");
+      release_seen = true;
+    };
+    h.a.hook = [&](const char *name) {
+      if (std::string(name) != "composition.QI" || injected)
+        return;
+      injected = true;
+      SnapshotV2 busy;
+      Require(h.service->Copy(sizeof(busy), version_v2, &busy) == E_PENDING,
+              "identity query cannot publish partial lifecycle state");
+      if (scenario == 0)
+        h.service->OnSetFocus(FALSE);
+      if (scenario == 1)
+        h.service->OnCompositionTerminated(123, h.a.composition.Get());
+    };
+    if (scenario == 2)
+      h.a.composition->identity_result = E_FAIL;
+    if (scenario == 3)
+      h.a.composition->throw_after_identity = true;
+    h.a.trace.clear();
+    Require(
+        h.service->OnCompositionTerminated(123, scenario == 4 ? nullptr : h.a.composition.Get()) ==
+            (scenario == 3 ? E_FAIL : S_OK),
+        "termination classification preserves HRESULT");
+    h.a.composition->release_hook = nullptr;
+    h.a.composition->throw_after_identity = false;
+    h.a.hook = nullptr;
+    const auto after = LifecycleSnapshotOf(*h.service.Get());
+    Require(Last(after).kind == LifecycleKind::TerminationUnresolved &&
+                Last(after).subject == serial &&
+                Last(after).unresolved == (scenario == 2   ? Unresolved::IdentityFailure
+                                           : scenario == 3 ? Unresolved::Exception
+                                           : scenario == 4 ? Unresolved::NullArgument
+                                                           : Unresolved::Stale),
+            "failed stale null and throwing identity queries stay unresolved");
+    Require(h.a.trace == (scenario == 4 ? std::vector<std::string>{}
+                          : scenario == 1
+                              ? std::vector<std::string>{"composition.QI", "composition.QI"}
+                              : std::vector<std::string>{"composition.QI"}),
+            "unresolved schedules have exactly their preexisting native calls");
+    Require((scenario == 0 || scenario == 3) == h.service->stopped(),
+            "termination preserves sticky stop decisions");
+    Require((scenario == 2 || scenario == 4) || release_seen,
+            "identity release boundary exercised");
+    h.Oracle(L"g", 8);
+  }
+  {
+    Harness h;
+    h.service->OnCompositionTerminated(123, nullptr);
+    Require(Last(LifecycleSnapshotOf(*h.service.Get())).unresolved == Unresolved::NullArgument,
+            "null callback without ownership is explicit");
+    ComPtr<Composition> unowned;
+    unowned.Attach(new Composition(h.a, std::make_shared<Span>(Span{7, 0})));
+    h.a.trace.clear();
+    h.service->OnCompositionTerminated(123, unowned.Get());
+    Require(Last(LifecycleSnapshotOf(*h.service.Get())).kind ==
+                    LifecycleKind::TerminationWithoutOwned &&
+                h.a.trace.empty(),
+            "unowned callback performs no identity query");
+  }
+  for (bool reentry : {false, true}) {
+    Harness h;
+    h.Type(L"ghbdtn ");
+    const auto before = LifecycleSnapshotOf(*h.service.Get());
+    h.a.hook = [&](const char *name) {
+      if (reentry && std::string(name) == "EndComposition")
+        h.service->OnCompositionTerminated(123, h.a.composition.Get());
+    };
+    const bool eaten = h.Key(L'x', false);
+    h.a.hook = nullptr;
+    const auto after = LifecycleSnapshotOf(*h.service.Get());
+    std::vector<LifecycleKind> kinds;
+    for (size_t i = before.lifecycle.count; i < after.lifecycle.count; ++i)
+      kinds.push_back(after.lifecycle.events[i].kind);
+    Require(kinds == (reentry ? std::vector<LifecycleKind>{LifecycleKind::EndRequested,
+                                                           LifecycleKind::ExactTermination}
+                              : std::vector<LifecycleKind>{LifecycleKind::EndRequested,
+                                                           LifecycleKind::FinishVerified,
+                                                           LifecycleKind::Acquired}),
+            "finish is verified only after original final Alive and ordinary continuation acquires "
+            "a distinct serial");
+    Require(eaten == !reentry && h.a.ends == 1 && h.a.max_request_writes == 1,
+            "ordinary end reentry preserves key disposition and one write bound");
+    h.Oracle(reentry ? L"\x043f\x0440\x0438\x0432\x0435\x0442 "
+                     : L"\x043f\x0440\x0438\x0432\x0435\x0442 x",
+             reentry ? 14 : 15);
+  }
+  {
+    Harness h;
+    h.Type(L"g");
+    const auto serial = LifecycleSnapshotOf(*h.service.Get()).lifecycle.owned_serial;
+    h.service->OnSetFocus(FALSE);
+    h.service->OnPopContext(&h.a);
+    const auto invalidated = LifecycleSnapshotOf(*h.service.Get());
+    Require(invalidated.lifecycle.owned_serial == serial && invalidated.base.stopped &&
+                Last(invalidated).cause == LifecycleCause::ContextPop &&
+                invalidated.lifecycle.events[invalidated.lifecycle.count - 2].cause ==
+                    LifecycleCause::ForegroundLost,
+            "repeated lifecycle invalidation retains ownership and records each cause");
+    h.service->OnCompositionTerminated(123, h.a.composition.Get());
+    Require(LifecycleSnapshotOf(*h.service.Get()).base.stopped,
+            "exact termination never clears sticky stop");
+    h.Oracle(L"g", 8);
+  }
+  {
+    Harness h;
+    h.Type(L"g");
+    bool busy_seen = false;
+    h.manager.diagnostic_unadvise_hook = [&] {
+      SnapshotV2 busy;
+      busy_seen = h.service->Copy(sizeof(busy), version_v2, &busy) == E_PENDING;
+    };
+    h.service->Deactivate();
+    h.manager.diagnostic_unadvise_hook = nullptr;
+    const auto detached = LifecycleSnapshotOf(*h.service.Get());
+    Require(busy_seen && !detached.lifecycle.owned_present &&
+                Last(detached).kind == LifecycleKind::Detached &&
+                detached.lifecycle.events[detached.lifecycle.count - 2].cause ==
+                    LifecycleCause::Deactivate,
+            "local detach is distinct from termination and teardown cannot publish partial state");
+    h.Oracle(L"g", 8);
+  }
+  {
+    Harness h;
+    h.Type(L"g");
+    struct {
+      uint32_t before = 17;
+      Snapshot value;
+      uint32_t after = 23;
+    } legacy;
+    ComPtr<SnapshotReader> reader;
+    Require(h.service->QueryInterface(snapshot_iid,
+                                      reinterpret_cast<void **>(reader.GetAddressOf())) == S_OK &&
+                reader->Copy(sizeof(legacy.value), version, &legacy.value) == S_OK &&
+                legacy.value == LifecycleSnapshotOf(*h.service.Get()).base && legacy.before == 17 &&
+                legacy.after == 23,
+            "new DLL preserves old reader exact size and surrounding canaries");
+    Require(reader->Copy(sizeof(legacy.value) + 4, version, &legacy.value) == E_INVALIDARG &&
+                legacy.after == 23,
+            "legacy reader never clears beyond its frozen payload");
+    struct {
+      uint32_t before = 17;
+      SnapshotV2 value;
+      uint32_t after = 23;
+    } current;
+    Require(h.service->Copy(sizeof(current.value) + 4, version_v2, &current.value) ==
+                    E_INVALIDARG &&
+                current.after == 23,
+            "v2 rejected oversize never overwrites its payload boundary");
+  }
+  std::vector<std::string> trace;
+  for (bool observe : {false, true}) {
+    Harness h;
+    h.a.trace.clear();
+    h.a.hook = [&](const char *) {
+      if (observe) {
+        SnapshotV2 busy;
+        Require(h.service->Copy(sizeof(busy), version_v2, &busy) == E_PENDING,
+                "every actual edit boundary rejects diagnostic reads");
+      }
+    };
+    h.Type(L"ghbdtn x");
+    h.a.hook = nullptr;
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 x", 15);
+    if (!observe)
+      trace = h.a.trace;
+    else
+      Require(trace == h.a.trace,
+              "v2 reads preserve the complete ordered actual service COM trace");
+  }
 }
 void ApplicationInputScope(InputScope scope) {
   Harness h;
@@ -2238,6 +2718,8 @@ int wmain() {
   DedicatedLayoutReentry();
   puts("RUN actual service diagnostic codec");
   DiagnosticCodecSchedules();
+  LifecycleCodecSchedules();
+  LifecycleServiceSchedules();
   puts("RUN actual service diagnostic refusal schedules");
   DiagnosticRefusalSchedules();
   puts("RUN actual service diagnostic exception schedules");

@@ -4,14 +4,20 @@ This is an x64, fixture-only Text Services Framework adapter. It links the exist
 through [the C ABI](../include/keyrill.h). It has no replacement backend, hooks, input injection,
 clipboard transport, runtime network access, model policy, or personal dictionaries.
 
-The live acceptance gate is **not passed**. After an earlier failed attempt, the maintainer
-registered both profiles successfully. Fresh read-only checks report both present and enabled.
-The maintainer selected **Keyrill proof EN**, and a fresh editor module snapshot contained
-`KeyrillTsf.dll`. Physical `ghbdtn` plus Space remained unchanged. The correction oracle failed
-and the reversal oracle passed, establishing unchanged fixture text and an end caret with B empty.
-This does not establish service activation, callback entry, composition ownership, or correction.
-All four named text and caret oracles pass against the real UIA provider with literal fixture
-data. Controlled COM schedules and observer calibration do not establish live correction.
+The live acceptance gate is **not passed**. The maintainer registered and enabled both proof
+profiles and selected **Keyrill proof EN**. Later fixture runs passed case-level correction,
+continuation, Undo, focus-preservation, exclusion, source, and native lock-denial oracles.
+These supersede the earlier unchanged-text correction attempt. Automated keyboard runs also
+passed correction and continuation. They do not count as physical keyboard evidence.
+A fresh automated Escape reversal exposed a separate end-caret defect. The changing-finish
+caret fix passed its controlled regression and the same automated correction and reversal
+oracles. That case does not establish lifecycle acceptance.
+
+The lifecycle journal below supplies actual service ownership observations. Controlled schedules
+verify its classifications and bounds. The reliability gate stays open until fresh runs of the
+new journal establish the relevant lifecycle sequence alongside document, caret, and key evidence.
+Provider disappearance and ambiguous focus remain evidence gaps. No general application support
+or clean native termination is claimed.
 
 ## Build and check without installation
 
@@ -248,7 +254,7 @@ Name starts with `Keyrill host routing v1`. The editor STA records completed DOW
 routing outcomes in memory. A 250 ms timer publishes them only from the outer message loop,
 after routing returns. Nested window-procedure timer dispatch does no diagnostic work.
 Control 105 reports only host routing. Control 106 separately reports the actual service when
-the reviewed diagnostic DLL is registered and loaded.
+the reviewed diagnostic DLL is loaded through the registered profile and proof manifest.
 
 ```powershell
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID routing
@@ -289,8 +295,10 @@ The diagnostic editor polls its current thread manager with `GetFunctionProvider
 from the same outer-loop timer. It never constructs a service to obtain diagnostics. The service
 registers its `ITfFunctionProvider` through `ITfSourceSingle` only in `KeyrillProofEditor.exe`.
 Registration is best effort and does not change activation success or editing eligibility.
-The private interface copies a fixed native scalar snapshot with an exact size and version.
-It exports no document data, identifiers, offsets, keys, text, pointer values, or cookies.
+The v2 private interface copies one fixed native scalar snapshot with an exact size and version.
+It contains the frozen v1 payload and a bounded lifecycle journal. The v1 reader keeps its
+original IID, layout, and copy contract so an old editor can still read a new DLL.
+It exports no document data, native identifiers, offsets, keys, text, pointer values, or cookies.
 
 ```powershell
 & "$bin/KeyrillProofInspect.exe" FIXTURE_PID service
@@ -304,7 +312,8 @@ publication is printed as such. It does not establish service callbacks or physi
 `state=Available` means the current poll copied valid data from the registered provider.
 `Missing` means TSF returned `TF_E_NOPROVIDER`. Other discovery failures, a successful null
 provider, failed or malformed reads, and exceptions report `Error`. An active callback reports
-`Busy` with no snapshot. A retained interface after deactivation reports `Inactive`. Each poll
+`Busy` with no snapshot. A provider without the v2 interface reports `UnsupportedVersion`,
+never an available empty lifecycle journal. A retained interface after deactivation reports `Inactive`. Each poll
 replaces the preceding publication, including successful data. There is no cached success.
 The service's existing editing `busy_` flag and a scalar callback-depth guard prevent incomplete
 reads. The depth guard affects only diagnostic availability and performs no native query.
@@ -336,6 +345,55 @@ All recording inside key and edit callbacks changes fixed scalar fields only. It
 queries, allocation, formatting, document writes, or key-disposition decisions. Teardown detaches
 diagnostic ownership before cleanup. Failed, throwing, or reentrant partial registration gets
 one captured-source cleanup attempt without retrying an unknown operation.
+
+### Observe owned-composition lifecycle
+
+Control 106 publishes `Keyrill service v2` through the same poller, source identity, activation,
+and timer as the refusal counters. The new inspector rejects v1 publications. Each lifecycle
+record has `sequence/kind/subject/cause/unresolved` scalar fields. The fixed window contains
+16 records in sequence order, followed by exactly zero unused entries. `event_count` identifies
+the used entries, and `event_sequence` identifies the latest recorded event.
+
+`owned_present` and `owned_serial` derive from the service's current `owned_` object.
+`mark_allocated` is a local monotonic ownership label, never a native address or document ID.
+A serial labels the ownership established by the service's existing canonical identity query.
+It does not independently prove that TSF still exposes a live composition.
+
+| Kind | Value | Observation |
+|---|---|---|
+| Acquired | 1 | Existing native creation and canonical identity checks installed ownership |
+| EndRequested | 2 | The existing ordinary `EndComposition` call is about to run |
+| FinishVerified | 3 | Existing post-end checks, local ownership reset, and final generation check succeeded |
+| ExactTermination | 4 | The callback matched the existing canonical owned identity |
+| DifferentTermination | 5 | The callback differed from the current owned identity, whose serial is the subject |
+| TerminationWithoutOwned | 6 | A non-null callback arrived without local ownership, with no identity query |
+| TerminationUnresolved | 7 | Null argument, failed identity query, stale state, or exception prevented classification |
+| LifecycleInvalidation | 8 | The existing lifecycle path invalidated authority, retaining ownership if present |
+| Detached | 9 | Teardown moved ownership out of the service, without claiming native termination |
+
+The cause field is nonzero only for LifecycleInvalidation. Values 1 through 8 mean foreground
+loss, document focus, document uninitialization, context push, context pop, profile change,
+key admission, and deactivation. The unresolved field is nonzero only for TerminationUnresolved.
+Values 1 through 4 mean null argument, failed identity query, stale generation or ownership,
+and exception. Other event fields that do not apply are zero.
+
+Compare two Available v2 publications only when publication advances, source and activation
+match, the later continuity is Same, and no host, legacy, or lifecycle saturation is present.
+Every sequence after the baseline must remain in the later window. Window overrun makes that
+interval indeterminate. Sequence and mark allocation saturate without wrapping or changing
+editing. If mark allocation is exhausted, ownership can remain present with unusable serial zero.
+
+For a fresh eligible letter, observe Acquired and the same current owned serial. For ordinary
+continuation after a retained boundary, observe EndRequested, FinishVerified, then Acquired with
+a new serial. For focus, source, and teardown cases, report the actual ordered events without
+assuming which callback Windows must deliver. An exact callback establishes its identity check.
+An invalidation with a retained serial establishes local retention. A missing event proves neither
+native cleanup nor a termination defect. Always run the separate whole-document and caret oracle.
+
+The journal adds no native observation calls. Diagnostic callback guards remain active through
+native releases, exception handling, and teardown. They affect read availability only. The bounded
+journal stays in memory and never contains text, offsets, keys, pointers, application identifiers,
+or paths. No diagnostic record authorizes a write or repairs an unknown edit.
 
 ### Repeatable native lock denial
 

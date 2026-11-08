@@ -397,6 +397,7 @@ private:
       owned->start = caret;
       if (!Alive())
         return false;
+      owned->diagnostic_serial = owner_.lifecycle_.Acquire();
       owner_.owned_ = std::move(owned);
       range.Reset();
       if (!Alive() || !OwnedRange(cookie, expected, true, range))
@@ -443,6 +444,8 @@ private:
         return false;
       diagnostics::Count(owner_.diagnostics_, Counter::Attempted);
       wrote_ = true;
+      const auto serial = owner_.owned_ ? owner_.owned_->diagnostic_serial : 0;
+      owner_.lifecycle_.Record(diagnostics::LifecycleKind::EndRequested, serial);
       if (!Good(composition->EndComposition(cookie)))
         return false;
       LONG finished_start = 0, finished_length = 0;
@@ -461,6 +464,7 @@ private:
       owner_.owned_.reset();
       if (!Alive())
         return false;
+      owner_.lifecycle_.Record(diagnostics::LifecycleKind::FinishVerified, serial);
     }
     return true;
   }
@@ -581,6 +585,8 @@ HRESULT Service::QueryInterface(REFIID id, void **out) {
     *out = static_cast<ITfFunctionProvider *>(this);
   else if (id == diagnostics::snapshot_iid)
     *out = static_cast<diagnostics::SnapshotReader *>(this);
+  else if (id == diagnostics::snapshot_v2_iid)
+    *out = static_cast<diagnostics::SnapshotReaderV2 *>(this);
   if (!*out)
     return E_NOINTERFACE;
   AddRef();
@@ -609,9 +615,14 @@ HRESULT Service::GetFunction(REFGUID function, REFIID interface_id, IUnknown **o
   if (!output)
     return E_POINTER;
   *output = nullptr;
-  if (function != GUID_NULL || interface_id != diagnostics::snapshot_iid)
+  if (function != GUID_NULL)
     return E_NOINTERFACE;
-  *output = static_cast<diagnostics::SnapshotReader *>(this);
+  if (interface_id == diagnostics::snapshot_iid)
+    *output = static_cast<diagnostics::SnapshotReader *>(this);
+  else if (interface_id == diagnostics::snapshot_v2_iid)
+    *output = static_cast<diagnostics::SnapshotReaderV2 *>(this);
+  else
+    return E_NOINTERFACE;
   AddRef();
   return S_OK;
 }
@@ -629,6 +640,20 @@ HRESULT Service::Copy(uint32_t size, uint32_t requested_version, diagnostics::Sn
   output->active = active_;
   output->stopped = stopped_;
   output->mode = mode_;
+  return S_OK;
+}
+HRESULT Service::Copy(uint32_t size, uint32_t requested_version, diagnostics::SnapshotV2 *output) {
+  if (!output)
+    return E_POINTER;
+  ZeroMemory(output, (std::min)(static_cast<size_t>(size), sizeof(*output)));
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  if (size != sizeof(*output) || requested_version != diagnostics::version_v2)
+    return E_INVALIDARG;
+  const auto result = Copy(sizeof(output->base), diagnostics::version, &output->base);
+  if (result != S_OK)
+    return result;
+  output->lifecycle = lifecycle_.Copy(owned_ != nullptr, owned_ ? owned_->diagnostic_serial : 0);
   return S_OK;
 }
 void Service::UnregisterDiagnostics(ITfSourceSingle *source, TfClientId client) noexcept {
@@ -733,12 +758,17 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
   Deactivate();
   return E_FAIL;
 }
-void Service::InvalidateForLifecycle() { Invalidate(owned_ != nullptr); }
+void Service::InvalidateForLifecycle(diagnostics::LifecycleCause cause) {
+  lifecycle_.Record(diagnostics::LifecycleKind::LifecycleInvalidation,
+                    owned_ ? owned_->diagnostic_serial : 0, cause);
+  Invalidate(owned_ != nullptr);
+}
 HRESULT Service::Deactivate() {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
   ComPtr<Service> self(this);
-  InvalidateForLifecycle();
+  DiagnosticCallback callback(*this);
+  InvalidateForLifecycle(diagnostics::LifecycleCause::Deactivate);
   active_ = false;
   auto diagnostic_source = std::move(diagnostic_source_);
   const auto diagnostic_client = diagnostic_client_;
@@ -747,6 +777,8 @@ HRESULT Service::Deactivate() {
   auto source = std::move(source_);
   auto manager = std::move(manager_);
   auto profiles_manager = std::move(profiles_manager_);
+  if (owned_)
+    lifecycle_.Record(diagnostics::LifecycleKind::Detached, owned_->diagnostic_serial);
   auto owned = std::move(owned_);
   const auto client = client_;
   const auto thread_cookie = thread_cookie_;
@@ -839,10 +871,10 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
     return E_POINTER;
   *eaten = FALSE;
   ComPtr<Service> self(this);
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  DiagnosticCallback callback(*this);
   try {
-    if (GetCurrentThreadId() != thread_)
-      return RPC_E_WRONG_THREAD;
-    DiagnosticCallback callback(*this);
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
     if (busy_ || key_admission_) {
       Refuse(Stage::Key, Cause::Reentry);
@@ -860,7 +892,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
     kr_event event{};
     if (!GetKeyboardState(state)) {
       Refuse(Stage::Keyboard, Cause::Predicate);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     TF_INPUTPROCESSORPROFILE profile{};
@@ -876,7 +908,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
              : !manager             ? Cause::Missing
                                     : Cause::Stale,
              profile_result != S_OK ? profile_result : S_OK);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     if (!ActiveProfile(profile, mode)) {
@@ -885,7 +917,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
                     : !(profile.dwFlags & TF_IPP_FLAG_ACTIVE)              ? Cause::NotActive
                                                                            : Cause::WrongProfile;
       Refuse(Stage::Layout, cause);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     ComPtr<ITfInputProcessorProfileSubstituteLayout> substitute;
@@ -896,7 +928,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
              : !Current(generation) ? Cause::Stale
                                     : Cause::Missing,
              result != S_OK ? result : S_OK);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     HKL actual = nullptr;
@@ -908,39 +940,39 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
              : !Current(generation) ? Cause::Stale
                                     : Cause::Missing,
              result != S_OK ? result : S_OK);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     HKL layout = ProfileLayout(profile, mode, actual);
     if (!layout || !layouts_) {
       Refuse(Stage::Layout, !layout ? Cause::Substitute : Cause::Missing);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     HKL loaded[64]{};
     int count = layouts_(0, nullptr);
     if (!Current(generation) || count <= 0 || count > 64) {
       Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     int filled = layouts_(64, loaded);
     if (!Current(generation) || filled != count) {
       Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     int after = layouts_(0, nullptr);
     if (!Current(generation) || after != count ||
         std::find(loaded, loaded + count, layout) == loaded + count) {
       Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     TranslateKey(key, flags, layout, state, event);
     if (!Current(generation) || event.mode != mode) {
       Refuse(Stage::Mode, !Current(generation) ? Cause::Stale : Cause::Predicate);
-      InvalidateForLifecycle();
+      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
     key_admission_ = false;
@@ -983,48 +1015,77 @@ HRESULT Service::OnPreservedKey(ITfContext *, REFGUID, BOOL *eaten) {
 }
 HRESULT Service::OnSetFocus(BOOL foreground) {
   if (!foreground)
-    InvalidateForLifecycle();
+    InvalidateForLifecycle(diagnostics::LifecycleCause::ForegroundLost);
   return S_OK;
 }
 HRESULT Service::OnInitDocumentMgr(ITfDocumentMgr *) { return S_OK; }
 HRESULT Service::OnUninitDocumentMgr(ITfDocumentMgr *) {
-  InvalidateForLifecycle();
+  InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentUninit);
   return S_OK;
 }
 HRESULT Service::OnSetFocus(ITfDocumentMgr *, ITfDocumentMgr *) {
-  InvalidateForLifecycle();
+  InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentFocus);
   return S_OK;
 }
 HRESULT Service::OnPushContext(ITfContext *) {
-  InvalidateForLifecycle();
+  InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPush);
   return S_OK;
 }
 HRESULT Service::OnPopContext(ITfContext *) {
-  InvalidateForLifecycle();
+  InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPop);
   return S_OK;
 }
-HRESULT Service::OnCompositionTerminated(TfEditCookie, ITfComposition *composition) try {
+HRESULT Service::OnCompositionTerminated(TfEditCookie, ITfComposition *composition) {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
-  if (!composition || !owned_)
+  DiagnosticCallback callback(*this);
+  const auto serial = owned_ ? owned_->diagnostic_serial : 0;
+  try {
+    if (!composition || !owned_) {
+      lifecycle_.Record(composition ? diagnostics::LifecycleKind::TerminationWithoutOwned
+                                    : diagnostics::LifecycleKind::TerminationUnresolved,
+                        serial, diagnostics::LifecycleCause::None,
+                        composition ? diagnostics::Unresolved::None
+                                    : diagnostics::Unresolved::NullArgument);
+      return S_OK;
+    }
+    uint64_t generation = generation_;
+    ComPtr<IUnknown> identity;
+    HRESULT result = composition->QueryInterface(IID_PPV_ARGS(&identity));
+    if (generation != generation_ || FAILED(result) || !owned_) {
+      lifecycle_.Record(diagnostics::LifecycleKind::TerminationUnresolved, serial,
+                        diagnostics::LifecycleCause::None,
+                        FAILED(result) ? diagnostics::Unresolved::IdentityFailure
+                                       : diagnostics::Unresolved::Stale);
+      return S_OK;
+    }
+    const bool same_ownership = serial == owned_->diagnostic_serial;
+    if (identity.Get() == owned_->composition_id.Get()) {
+      lifecycle_.Record(same_ownership ? diagnostics::LifecycleKind::ExactTermination
+                                       : diagnostics::LifecycleKind::TerminationUnresolved,
+                        serial, diagnostics::LifecycleCause::None,
+                        same_ownership ? diagnostics::Unresolved::None
+                                       : diagnostics::Unresolved::Stale);
+      Invalidate(false);
+      owned_.reset();
+    } else {
+      lifecycle_.Record(same_ownership ? diagnostics::LifecycleKind::DifferentTermination
+                                       : diagnostics::LifecycleKind::TerminationUnresolved,
+                        serial, diagnostics::LifecycleCause::None,
+                        same_ownership ? diagnostics::Unresolved::None
+                                       : diagnostics::Unresolved::Stale);
+    }
     return S_OK;
-  uint64_t generation = generation_;
-  ComPtr<IUnknown> identity;
-  HRESULT result = composition->QueryInterface(IID_PPV_ARGS(&identity));
-  if (generation != generation_ || FAILED(result) || !owned_)
-    return S_OK;
-  if (identity.Get() == owned_->composition_id.Get()) {
-    Invalidate(false);
-    owned_.reset();
+  } catch (...) {
+    lifecycle_.Record(diagnostics::LifecycleKind::TerminationUnresolved, serial,
+                      diagnostics::LifecycleCause::None, diagnostics::Unresolved::Exception);
+    Invalidate(true);
+    return E_FAIL;
   }
-  return S_OK;
-} catch (...) {
-  Invalidate(true);
-  return E_FAIL;
 }
 HRESULT Service::OnActivated(DWORD, LANGID, REFCLSID clsid, REFGUID, REFGUID profile, HKL,
                              DWORD flags) {
-  InvalidateForLifecycle();
+  InvalidateForLifecycle(diagnostics::LifecycleCause::ProfileChanged);
   mode_ = 0;
   if (clsid == service_id && (flags & TF_IPSINK_FLAG_ACTIVE))
     for (const auto &entry : profiles)

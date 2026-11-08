@@ -16,7 +16,8 @@ class Service final : public ITfTextInputProcessorEx,
                       public ITfCompositionSink,
                       public ITfInputProcessorProfileActivationSink,
                       public ITfFunctionProvider,
-                      public diagnostics::SnapshotReader {
+                      public diagnostics::SnapshotReader,
+                      public diagnostics::SnapshotReaderV2 {
 public:
   explicit Service(ITfInputProcessorProfileMgr *profile_api = nullptr,
                    decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList);
@@ -30,6 +31,7 @@ public:
   HRESULT STDMETHODCALLTYPE GetDescription(BSTR *) override;
   HRESULT STDMETHODCALLTYPE GetFunction(REFGUID, REFIID, IUnknown **) override;
   HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, diagnostics::Snapshot *) override;
+  HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, diagnostics::SnapshotV2 *) override;
   HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *) override;
@@ -61,11 +63,12 @@ private:
     ComPtr<IUnknown> context_id;
     ComPtr<ITfComposition> composition;
     ComPtr<IUnknown> composition_id;
+    uint32_t diagnostic_serial = 0;
     LONG start = 0;
     std::wstring verified;
   };
   void Invalidate(bool stop);
-  void InvalidateForLifecycle();
+  void InvalidateForLifecycle(diagnostics::LifecycleCause cause);
   bool Current(uint64_t generation) const;
   void RegisterDiagnostics() noexcept;
   void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
@@ -93,6 +96,7 @@ private:
   DWORD profile_cookie_ = TF_INVALID_COOKIE;
   uint32_t diagnostic_depth_ = 0;
   diagnostics::Snapshot diagnostics_;
+  diagnostics::LifecycleJournal lifecycle_;
   ComPtr<ITfSourceSingle> diagnostic_source_;
   TfClientId diagnostic_client_ = TF_CLIENTID_NULL;
 };

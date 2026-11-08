@@ -17,19 +17,19 @@ enum class Setup { Unknown, Confirmed };
 inline Setup ParseSetup(std::wstring_view input) noexcept {
   return input == setup_status ? Setup::Confirmed : Setup::Unknown;
 }
-inline bool Matches(Setup setup, const diagnostics::Publication &first,
-                    const diagnostics::Publication &second) noexcept {
+inline bool Matches(Setup setup, const diagnostics::PublicationV2 &first,
+                    const diagnostics::PublicationV2 &second) noexcept {
   using namespace diagnostics;
   if (setup != Setup::Confirmed || !Valid(first) || !Valid(second) || !first.publication ||
       second.publication <= first.publication || first.source != second.source ||
-      first.snapshot.activation != second.snapshot.activation ||
+      first.snapshot.base.activation != second.snapshot.base.activation ||
       second.continuity != Continuity::Same)
     return false;
   for (const auto *publication : {&first, &second}) {
-    const auto &s = publication->snapshot;
+    const auto &s = publication->snapshot.base;
     if (publication->availability != Availability::Available || publication->saturated ||
-        s.saturated || !s.activation || !s.active || s.stopped || s.mode != KR_EN ||
-        !s.counts[static_cast<size_t>(Counter::Requested)] || !s.request_present)
+        Saturated(publication->snapshot) || !s.activation || !s.active || s.stopped ||
+        s.mode != KR_EN || !s.counts[static_cast<size_t>(Counter::Requested)] || !s.request_present)
       return false;
     for (auto counter : {Counter::SessionEntered, Counter::SessionCompleted, Counter::Attempted,
                          Counter::Verified, Counter::Unknown, Counter::Consumed})
