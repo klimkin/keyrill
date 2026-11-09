@@ -6,9 +6,11 @@ first; its state table, safety invariants and rejected mechanisms apply to every
 Don't write a second inference engine, and don't build a cross-platform editing abstraction
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
-Windows has a fixture-only [SDK TSF proof](windows.md), with controlled COM tests and a passed
-first controlled-editor proof. General Windows application support remains unproved. No Linux
-adapter exists. Each platform starts with the same first slice: one real
+Windows has an [SDK TSF proof](windows.md) with a passed first controlled-editor proof,
+owned manual conversion and reversal, and shared Rust model and vocabulary integration.
+Automated real-editor checks cover both model directions and vocabulary reload behavior.
+General Windows application support remains unproved. No Linux adapter exists.
+Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
 rapid continuation and a focus change, all checked against the whole document. Use the fixture
 policy (`kr_set_automatic_policy` with `KR_POLICY_FIXTURE`, which corrects only `ghbdtn` and

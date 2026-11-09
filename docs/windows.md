@@ -26,9 +26,10 @@ document/caret oracles passed, with zero Unknown effects. These runs establish t
 fixture sequence, not physical keyboard evidence or general application support. The native
 EN-to-RU experiment below also passed with fresh owned evidence and an independent no-Space
 document/caret oracle. This completes the controlled-editor proof, not general Windows support.
-Application coverage, live acceptance of model and vocabulary integration, settings, and packaging
-remain later work. Unretained final destruction and complete callback drainage are not established by
-the bounded shutdown assertion.
+Manual commands, shared model correction in both directions, and vocabulary reloads also passed
+automated real-editor acceptance as described below. Application coverage, settings, and packaging
+remain later work. Unretained final destruction and complete callback drainage are not established
+by the bounded shutdown assertion.
 
 ## Build and check without installation
 
@@ -106,8 +107,8 @@ thread-local `SetKeyboardState`. They check whole A and B documents, prefix/suff
 the caret, composition identity, command expiry, denied and failed requests, extra modifiers,
 Shift transitions, exclusions, reentry, and unknown effects. Actual `ToUnicodeEx` checks cover
 PC OEM keys with Shift and Caps Lock in each already loaded supported layout. These are
-controlled observations, not physical keyboard or live TSF routing evidence. The new manual
-chords still need fresh real-editor acceptance.
+controlled observations, not physical keyboard or live TSF routing evidence. Separate automated
+real-editor runs passed the manual commands and PC printable-key cases described below.
 
 ## Shared model and personal vocabulary
 
@@ -144,9 +145,37 @@ service with a known EN or RU mode. Document-and-caret oracles include `manual`,
 They read only A and B.
 These tools provide test evidence; UI Automation grants no editing authority to the adapter.
 
-The runtime is under controlled verification. Fresh live model, vocabulary, and manual-command
-acceptance remains required. This does not expand application admission or provide settings UI
-or packaging.
+### Controlled-editor behavior acceptance
+
+Automated key events through the live TSF proof editor passed the following exact UIA checks.
+Each check compared all of A, required empty B, and required a collapsed caret at A's end.
+The running editor loaded the frozen adjacent DLL whose hash matched the tested build.
+
+| Input or change | Verified result in A |
+|---|---|
+| EN `ghbdtn`, then left Ctrl + left Alt + K | `привет` without Space |
+| Left Ctrl + left Alt + Z on that owned receipt | `ghbdtn` without Space |
+| EN `cgbcjr` then Space under model policy | `список ` |
+| Settled EN vocabulary reload, then reversal of that receipt | `cgbcjr ` in the same owned composition |
+| EN vocabulary protects `cgbcjr`, then a newly typed word | `cgbcjr ` |
+| Malformed vocabulary reload, then a newly typed word | `cgbcjr ` with the last good protection retained |
+| Restore empty vocabulary, then a newly typed word | `список ` |
+| RU vocabulary forbids `список`, then EN `cgbcjr` and Space | `cgbcjr ` |
+| EN `[jhjij`, then manual conversion | `хорошо` |
+| EN PC `` `krf ``, then manual conversion | `ёлка` |
+| RU `цщкдв` then Space under model policy | `world ` |
+| Reversal of that RU receipt | `цщкдв ` in the same owned composition |
+
+Both model directions used ready dictionary snapshots and the shared model, with no runtime
+errors. Each manual command and reversal added one verified write. Vocabulary publication
+preserved the existing mark and receipt without a document write. All recorded cases had zero
+unknown edit effects. Tests used only public synthetic vocabulary in private fixture files.
+
+These runs used agent-generated keys. They add real TSF routing and document evidence without
+adding physical keyboard evidence. Admission still covers only the proof editor. General
+application support, settings UI, and packaging remain unproved. Controlled worker tests and
+actual DLL lifetime checks passed under Windows AddressSanitizer. Pending I/O completion in
+those tests was simulated, so they do not establish actual kernel-pending I/O behavior.
 
 ## Editing authority
 
