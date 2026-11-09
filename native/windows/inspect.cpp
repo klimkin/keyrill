@@ -1,6 +1,7 @@
 #include "denial_fixture.h"
 #include "profiles.h"
 #include "routing.h"
+#include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
 #include "shutdown_probe.h"
 #include "source_activation_probe.h"
@@ -225,6 +226,39 @@ bool ReadSourceResult(HWND root, keyrill::source_proof::Status &status) {
   }
   return true;
 }
+bool RuntimeStatus(HWND root, bool require_ready) {
+  HWND status = GetDlgItem(root, keyrill::runtime::status_id);
+  wchar_t type[16]{};
+  ComPtr<IUIAutomation> automation;
+  ComPtr<IUIAutomationElement> element;
+  if (!status || !GetClassNameW(status, type, 16) || _wcsicmp(type, L"STATIC") ||
+      FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&automation))) ||
+      FAILED(automation->ElementFromHandle(status, &element)))
+    return false;
+  BSTR name = nullptr;
+  const HRESULT result = element->get_CurrentName(&name);
+  keyrill::runtime::Snapshot value;
+  const bool parsed = result == S_OK && name &&
+                      keyrill::runtime::Parse(std::wstring_view(name, SysStringLen(name)), value);
+  if (parsed && !require_ready)
+    wprintf(L"%ls\n", name);
+  SysFreeString(name);
+  if (!parsed || !require_ready)
+    return parsed;
+  const auto ready = [](keyrill::vocabulary::Status source) {
+    return source == keyrill::vocabulary::Status::Ready ||
+           source == keyrill::vocabulary::Status::Retained;
+  };
+  keyrill::diagnostics::PublicationV2 service;
+  return value.requested == KR_POLICY_MODEL && value.effective == KR_POLICY_MODEL &&
+         value.model_ready && ready(value.sources[0]) && ready(value.sources[1]) &&
+         ReadServicePublication(root, service) &&
+         service.availability == keyrill::diagnostics::Availability::Available &&
+         !service.saturated && !service.snapshot.base.saturated && service.snapshot.base.active &&
+         (service.snapshot.base.mode == KR_EN || service.snapshot.base.mode == KR_RU) &&
+         !service.snapshot.base.stopped && service.snapshot.base.activation == value.activation;
+}
 bool SourceActivated(HWND root) {
   keyrill::source_proof::Status result, repeated;
   keyrill::diagnostics::PublicationV2 first, second;
@@ -264,9 +298,12 @@ bool ShutdownReady(HWND root) {
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc != 3) {
-    fwprintf(stderr, L"Usage: KeyrillProofInspect FIXTURE_PID "
-                     L"correction|reversal|continuation|focus|empty|routing|service|denial|"
-                     L"shutdown-ready|source-activated\n");
+    fwprintf(stderr,
+             L"Usage: KeyrillProofInspect FIXTURE_PID "
+             L"correction|reversal|continuation|focus|empty|routing|service|denial|"
+             L"shutdown-ready|source-activated|runtime|model-ready|manual|manual-reversed|"
+             L"manual-provisional|manual-pc|model|model-ru|model-reversed|model-ru-reversed|"
+             L"vocabulary\n");
     return 2;
   }
   wchar_t *end = nullptr;
@@ -287,12 +324,31 @@ int wmain(int argc, wchar_t **argv) {
   }
   if (wcscmp(argv[2], L"empty") == 0)
     expected = L"";
+  if (wcscmp(argv[2], L"manual") == 0)
+    expected = L"привет";
+  if (wcscmp(argv[2], L"manual-reversed") == 0)
+    expected = L"ghbdtn";
+  if (wcscmp(argv[2], L"manual-provisional") == 0)
+    expected = L"хорошо";
+  if (wcscmp(argv[2], L"manual-pc") == 0)
+    expected = L"ёлка";
+  if (wcscmp(argv[2], L"model") == 0)
+    expected = L"список ";
+  if (wcscmp(argv[2], L"model-ru") == 0)
+    expected = L"world ";
+  if (wcscmp(argv[2], L"model-reversed") == 0 || wcscmp(argv[2], L"vocabulary") == 0)
+    expected = L"cgbcjr ";
+  if (wcscmp(argv[2], L"model-ru-reversed") == 0)
+    expected = L"цщкдв ";
+  const bool runtime = wcscmp(argv[2], L"runtime") == 0;
+  const bool model_ready = wcscmp(argv[2], L"model-ready") == 0;
   bool routing = wcscmp(argv[2], L"routing") == 0;
   bool service = wcscmp(argv[2], L"service") == 0;
   bool denial = wcscmp(argv[2], L"denial") == 0;
   bool shutdown = wcscmp(argv[2], L"shutdown-ready") == 0;
   bool source = wcscmp(argv[2], L"source-activated") == 0;
-  if (!expected && !routing && !service && !denial && !shutdown && !source)
+  if (!expected && !routing && !service && !denial && !shutdown && !source && !runtime &&
+      !model_ready)
     return 2;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
   wchar_t path[32768]{};
@@ -309,6 +365,14 @@ int wmain(int argc, wchar_t **argv) {
     return 2;
   if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     return 1;
+  if (runtime || model_ready) {
+    const bool matched = RuntimeStatus(search.window, model_ready);
+    CoUninitialize();
+    if (model_ready || !matched)
+      puts(matched ? "Fixture model and vocabulary are ready. No text recorded."
+                   : "Fixture runtime evidence unavailable or not ready. No text recorded.");
+    return matched ? 0 : 1;
+  }
   if (source) {
     const bool matched = SourceActivated(search.window);
     CoUninitialize();

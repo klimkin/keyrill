@@ -1,5 +1,6 @@
 #pragma once
 #include "profiles.h"
+#include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
 #include <cstdint>
 #include <memory>
@@ -17,10 +18,12 @@ class Service final : public ITfTextInputProcessorEx,
                       public ITfInputProcessorProfileActivationSink,
                       public ITfFunctionProvider,
                       public diagnostics::SnapshotReader,
-                      public diagnostics::SnapshotReaderV2 {
+                      public diagnostics::SnapshotReaderV2,
+                      public runtime::Reader {
 public:
   explicit Service(ITfInputProcessorProfileMgr *profile_api = nullptr,
-                   decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList);
+                   decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList,
+                   vocabulary::ModuleOwner module_owner = vocabulary::ModuleOwner::Dll);
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override;
   ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;
@@ -32,6 +35,7 @@ public:
   HRESULT STDMETHODCALLTYPE GetFunction(REFGUID, REFIID, IUnknown **) override;
   HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, diagnostics::Snapshot *) override;
   HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, diagnostics::SnapshotV2 *) override;
+  HRESULT STDMETHODCALLTYPE Copy(uint32_t, uint32_t, runtime::Snapshot *) override;
   HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *) override;
   HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *) override;
@@ -49,6 +53,7 @@ public:
 
   bool HandleEvent(ITfContext *context, const kr_event &event);
   bool stopped() const { return stopped_; }
+  void Maintain() noexcept;
 
 private:
   friend class EditSession;
@@ -69,6 +74,9 @@ private:
   };
   void Invalidate(bool stop);
   void InvalidateForLifecycle(diagnostics::LifecycleCause cause);
+  bool StartMaintenance();
+  void StopMaintenance() noexcept;
+  static LRESULT CALLBACK MaintenanceWindow(HWND, UINT, WPARAM, LPARAM);
   bool Current(uint64_t generation) const;
   void RegisterDiagnostics() noexcept;
   void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
@@ -78,7 +86,9 @@ private:
   ULONG references_ = 1;
   DWORD thread_ = GetCurrentThreadId();
   uint64_t generation_ = 1;
-  bool active_ = false;
+  enum class Activation { Inactive, Active, Deactivating };
+  Activation activation_ = Activation::Inactive;
+  bool Active() const { return activation_ == Activation::Active; }
   bool busy_ = false;
   bool key_admission_ = false;
   bool stopped_ = false;
@@ -99,5 +109,12 @@ private:
   diagnostics::LifecycleJournal lifecycle_;
   ComPtr<ITfSourceSingle> diagnostic_source_;
   TfClientId diagnostic_client_ = TF_CLIENTID_NULL;
+  const vocabulary::ModuleOwner module_owner_;
+  std::optional<vocabulary::Config> accepted_config_;
+  vocabulary::Worker vocabulary_;
+  std::optional<vocabulary::Ready> pending_ready_;
+  runtime::Snapshot runtime_;
+  HWND maintenance_window_ = nullptr;
+  HINSTANCE maintenance_module_ = nullptr;
 };
 } // namespace keyrill

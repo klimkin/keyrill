@@ -63,5 +63,8 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID id, void **out) {
   return result;
 }
 STDAPI DllCanUnloadNow() {
-  return InterlockedCompareExchange(&keyrill::object_count, 0, 0) == 0 ? S_OK : S_FALSE;
+  return InterlockedCompareExchange(&keyrill::object_count, 0, 0) == 0 &&
+                 InterlockedCompareExchange(&keyrill::vocabulary::worker_count, 0, 0) == 0
+             ? S_OK
+             : S_FALSE;
 }

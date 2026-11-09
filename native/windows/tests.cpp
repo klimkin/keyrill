@@ -5,13 +5,16 @@
 #include "keys.h"
 #include "service.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <thread>
 #include <vector>
+#include <winioctl.h>
 
 using namespace keyrill;
 namespace keyrill::source_proof {
@@ -995,7 +998,7 @@ struct Harness {
     ::SetActiveWindow(root);
     ::SetFocus(a.window);
     Require(::GetFocus() == a.window, "fixture native focus established");
-    service.Attach(new Service(profile_api, layouts));
+    service.Attach(new Service(profile_api, layouts, vocabulary::ModuleOwner::Process));
     Require(SUCCEEDED(service->Activate(&manager, 42)), "controlled COM service activation");
   }
   ~Harness() {
@@ -4544,14 +4547,30 @@ void TeardownAndConstructorExceptions() {
     }
   }
 }
+#include "runtime_schedules.h"
 } // namespace
-int wmain() {
+int wmain(int argc, wchar_t **argv) {
   setvbuf(stdout, nullptr, _IONBF, 0);
   setvbuf(stderr, nullptr, _IONBF, 0);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   puts("RUN native denial fixture gates");
   NativeDenialGateSchedules();
   Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialized");
+  if (argc == 2 && wcscmp(argv[1], L"--runtime-files") == 0) {
+    RuntimeFileSchedules();
+    CoUninitialize();
+    return 0;
+  }
+  if (argc == 3 && wcscmp(argv[1], L"--runtime-dll") == 0) {
+    RuntimeDllSchedules(argv[2]);
+    CoUninitialize();
+    puts("Actual DLL runtime and unload schedules passed.");
+    return 0;
+  }
+  Require(argc == 1, "known test mode");
+  RuntimeEnvironment fixture_policy(L"KEYRILL_WINDOWS_POLICY", nullptr);
+  RuntimeEnvironment fixture_en(L"KEYRILL_WINDOWS_EN_DICTIONARY", nullptr);
+  RuntimeEnvironment fixture_ru(L"KEYRILL_WINDOWS_RU_DICTIONARY", nullptr);
   puts("RUN fixture input scope lifecycle");
   FixtureLifecycle();
   controlled_root = CreateFixture(GetModuleHandleW(nullptr), FixtureProc, false);
@@ -4618,6 +4637,10 @@ int wmain() {
   OemCommandSequences();
   puts("RUN teardown and constructor exceptions");
   TeardownAndConstructorExceptions();
+  puts("RUN real vocabulary filesystem schedules");
+  RuntimeFileSchedules();
+  puts("RUN actual service model and vocabulary schedules");
+  RuntimeServiceSchedules();
   DestroyWindow(controlled_root);
   CoUninitialize();
   puts("Controlled same-service COM schedules passed. No registration or physical TSF routing "

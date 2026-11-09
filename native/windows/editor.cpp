@@ -2,6 +2,7 @@
 #include "editor_window.h"
 #include "fixture_mode.h"
 #include "routing.h"
+#include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
 #include <optional>
 #include <shellapi.h>
@@ -48,6 +49,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   HWND window = keyrill::CreateFixture(instance, keyrill::editor::Window, false);
   HWND status = nullptr;
   HWND service_status = nullptr;
+  HWND runtime_status = nullptr;
   HWND denial_status = nullptr;
   HWND shutdown_status = nullptr;
   HWND source_mode = nullptr;
@@ -62,7 +64,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   }
   constexpr UINT_PTR status_timer = 1;
   if (window && attached && keyrill::routing::Format(routing, initial) &&
-      SetWindowPos(window, nullptr, 0, 0, 1040, 1060, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+      SetWindowPos(window, nullptr, 0, 0, 1040, 1140, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
     if (startup == keyrill::fixture::Mode::ProveOwnedEnToRu) {
       source.emplace(window, *manager.Get(), GetCurrentThreadId());
       context.source = &*source;
@@ -109,8 +111,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
       service_status = CreateWindowW(L"STATIC", service_initial, WS_CHILD | WS_VISIBLE, 16,
                                      source ? 780 : 680, 990, source ? 220 : 320, window,
                                      reinterpret_cast<HMENU>(106), instance, nullptr);
+    runtime_status = CreateWindowW(
+        L"STATIC", L"Keyrill runtime unavailable", WS_CHILD | WS_VISIBLE, 16, 1010, 990, 70, window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(keyrill::runtime::status_id)), instance,
+        nullptr);
   }
-  if (!status || !service_status || (deny_locks && !denial_status) ||
+  if (!status || !service_status || !runtime_status || (deny_locks && !denial_status) ||
       (shutdown && !shutdown_status) || (source && (!source_mode || !source_status)) ||
       !SetTimer(window, status_timer, 250, nullptr)) {
     if (window)
@@ -150,6 +156,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         SetWindowTextW(service_status, service_published);
       else
         SetWindowTextW(service_status, L"Keyrill service unavailable");
+      keyrill::runtime::Snapshot runtime_value;
+      wchar_t runtime_published[keyrill::runtime::status_capacity]{};
+      if (keyrill::runtime::Read(manager.Get(), runtime_value) == S_OK &&
+          keyrill::runtime::Format(runtime_value, runtime_published))
+        SetWindowTextW(runtime_status, runtime_published);
+      else
+        SetWindowTextW(runtime_status, L"Keyrill runtime unavailable");
       continue;
     }
     if (message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) {

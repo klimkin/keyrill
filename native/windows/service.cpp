@@ -87,6 +87,7 @@ public:
     return n;
   }
   HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
+    Service::DiagnosticCallback callback(owner_);
     if (entered_ || !Alive()) {
       owner_.Refuse(Stage::Session, entered_ ? Cause::Reentry : Cause::Stale);
       return E_FAIL;
@@ -530,12 +531,14 @@ private:
   uint32_t last_disposition_ = KR_KEY_PASS;
 };
 
-Service::Service(ITfInputProcessorProfileMgr *profile_api, decltype(&GetKeyboardLayoutList) layouts)
-    : profile_dependency_(profile_api), layouts_(layouts) {
+Service::Service(ITfInputProcessorProfileMgr *profile_api, decltype(&GetKeyboardLayoutList) layouts,
+                 vocabulary::ModuleOwner module_owner)
+    : profile_dependency_(profile_api), layouts_(layouts), module_owner_(module_owner) {
   InterlockedIncrement(&object_count);
 }
 Service::~Service() {
-  active_ = false;
+  StopMaintenance();
+  activation_ = Activation::Inactive;
   stopped_ = true;
   kr_engine_free(engine_);
   engine_ = nullptr;
@@ -561,6 +564,8 @@ HRESULT Service::QueryInterface(REFIID id, void **out) {
     *out = static_cast<diagnostics::SnapshotReader *>(this);
   else if (id == diagnostics::snapshot_v2_iid)
     *out = static_cast<diagnostics::SnapshotReaderV2 *>(this);
+  else if (id == runtime::reader_iid)
+    *out = static_cast<runtime::Reader *>(this);
   if (!*out)
     return E_NOINTERFACE;
   AddRef();
@@ -595,6 +600,8 @@ HRESULT Service::GetFunction(REFGUID function, REFIID interface_id, IUnknown **o
     *output = static_cast<diagnostics::SnapshotReader *>(this);
   else if (interface_id == diagnostics::snapshot_v2_iid)
     *output = static_cast<diagnostics::SnapshotReaderV2 *>(this);
+  else if (interface_id == runtime::reader_iid)
+    *output = static_cast<runtime::Reader *>(this);
   else
     return E_NOINTERFACE;
   AddRef();
@@ -611,7 +618,7 @@ HRESULT Service::Copy(uint32_t size, uint32_t requested_version, diagnostics::Sn
   if (busy_ || diagnostic_depth_)
     return E_PENDING;
   *output = diagnostics_;
-  output->active = active_;
+  output->active = Active();
   output->stopped = stopped_;
   output->mode = mode_;
   return S_OK;
@@ -642,7 +649,7 @@ void Service::RegisterDiagnostics() noexcept {
     DWORD length = GetModuleFileNameW(nullptr, path, 32768);
     const wchar_t *base = wcsrchr(path, L'\\');
     if (!length || length >= 32768 || !base || _wcsicmp(base + 1, L"KeyrillProofEditor.exe") != 0 ||
-        !diagnostics::SameActivation(active_, diagnostics_.activation, diagnostics_.activation))
+        !diagnostics::SameActivation(Active(), diagnostics_.activation, diagnostics_.activation))
       return;
     ComPtr<Service> self(this);
     ComPtr<ITfThreadMgr> manager = manager_;
@@ -650,7 +657,7 @@ void Service::RegisterDiagnostics() noexcept {
     const auto activation = diagnostics_.activation;
     ComPtr<ITfSourceSingle> source;
     if (!manager || FAILED(manager.As(&source)) || !source ||
-        !diagnostics::SameActivation(active_, diagnostics_.activation, activation))
+        !diagnostics::SameActivation(Active(), diagnostics_.activation, activation))
       return;
     HRESULT result = E_UNEXPECTED;
     try {
@@ -661,7 +668,7 @@ void Service::RegisterDiagnostics() noexcept {
       return;
     }
     if (SUCCEEDED(result) &&
-        diagnostics::SameActivation(active_, diagnostics_.activation, activation)) {
+        diagnostics::SameActivation(Active(), diagnostics_.activation, activation)) {
       diagnostic_source_ = source;
       diagnostic_client_ = client;
     } else {
@@ -671,7 +678,7 @@ void Service::RegisterDiagnostics() noexcept {
   }
 }
 bool Service::Current(uint64_t generation) const {
-  return active_ && !stopped_ && generation_ == generation && GetCurrentThreadId() == thread_;
+  return Active() && !stopped_ && generation_ == generation && GetCurrentThreadId() == thread_;
 }
 void Service::Invalidate(bool stop) {
   if (generation_ == std::numeric_limits<uint64_t>::max())
@@ -686,19 +693,36 @@ HRESULT Service::Activate(ITfThreadMgr *manager, TfClientId client) {
   return ActivateEx(manager, client, 0);
 }
 HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flags) try {
-  if (active_ || !manager || client == TF_CLIENTID_NULL || GetCurrentThreadId() != thread_)
+  if (activation_ != Activation::Inactive || !manager || client == TF_CLIENTID_NULL ||
+      GetCurrentThreadId() != thread_)
     return E_INVALIDARG;
   if (flags & TF_TMAE_SECUREMODE)
     return E_ACCESSDENIED;
+  DiagnosticCallback callback(*this);
+  auto config = vocabulary::CaptureConfig();
+  const bool invalid_config = !config;
+  if (config)
+    accepted_config_ = std::move(config);
+  else if (!accepted_config_)
+    accepted_config_ = vocabulary::Off{};
+  runtime_ = {};
+  runtime_.requested = vocabulary::Policy(*accepted_config_);
+  runtime_.configuration_error =
+      invalid_config ? vocabulary::Error::Configuration : vocabulary::Error::None;
   if (!engine_ && kr_engine_new(KR_ABI_VERSION, &engine_) != KR_OK)
     return E_FAIL;
   if (kr_reset(engine_) != KR_OK || kr_set_keyboard(engine_, KR_KEYBOARD_PC) != KR_OK ||
-      kr_set_automatic_policy(engine_, KR_POLICY_FIXTURE) != KR_OK)
+      kr_adopt_dictionaries(engine_, nullptr, nullptr) != KR_OK ||
+      kr_set_automatic_policy(engine_, runtime_.requested == KR_POLICY_MODEL
+                                           ? KR_POLICY_OFF
+                                           : runtime_.requested) != KR_OK)
     return E_FAIL;
   manager_ = manager;
   client_ = client;
-  active_ = true;
+  activation_ = Activation::Active;
   diagnostics::Increment(diagnostics_.activation, diagnostics_.saturated);
+  runtime_.activation = diagnostics_.activation;
+  runtime_.effective = runtime_.requested == KR_POLICY_MODEL ? KR_POLICY_OFF : runtime_.requested;
   stopped_ = false;
   uint64_t generation = generation_;
   if (FAILED(manager_->QueryInterface(IID_PPV_ARGS(&source_))) || !Current(generation) ||
@@ -727,6 +751,17 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
     OnActivated(profile.dwProfileType, profile.langid, profile.clsid, profile.catid,
                 profile.guidProfile, profile.hkl, TF_IPSINK_FLAG_ACTIVE);
   RegisterDiagnostics();
+  if (Active() && !stopped_ && runtime_.requested == KR_POLICY_MODEL) {
+    const auto runtime_generation = generation_;
+    const bool maintenance = StartMaintenance();
+    if (!Current(runtime_generation))
+      return S_OK;
+    if (!maintenance || !vocabulary_.Start(std::get<vocabulary::Model>(*accepted_config_),
+                                           runtime_.activation, module_owner_)) {
+      StopMaintenance();
+      runtime_.error = vocabulary::Error::Startup;
+    }
+  }
   return S_OK;
 } catch (...) {
   Deactivate();
@@ -737,13 +772,132 @@ void Service::InvalidateForLifecycle(diagnostics::LifecycleCause cause) {
                     owned_ ? owned_->diagnostic_serial : 0, cause);
   Invalidate(owned_ != nullptr);
 }
+HRESULT Service::Copy(uint32_t size, uint32_t requested_version, runtime::Snapshot *output) {
+  if (!output)
+    return E_POINTER;
+  ZeroMemory(output, (std::min)(static_cast<size_t>(size), sizeof(*output)));
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  if (size != sizeof(*output) || requested_version != runtime::version)
+    return E_INVALIDARG;
+  if (busy_ || diagnostic_depth_)
+    return E_PENDING;
+  *output = runtime_;
+  return S_OK;
+}
+LRESULT CALLBACK Service::MaintenanceWindow(HWND window, UINT message, WPARAM w, LPARAM l) {
+  if (message == WM_NCCREATE) {
+    auto *create = reinterpret_cast<CREATESTRUCTW *>(l);
+    SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+  }
+  if (message == WM_TIMER) {
+    auto *service = reinterpret_cast<Service *>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (service)
+      service->Maintain();
+    return 0;
+  }
+  return DefWindowProcW(window, message, w, l);
+}
+bool Service::StartMaintenance() {
+  const auto generation = generation_;
+  HINSTANCE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&MaintenanceWindow), &module) ||
+      !Current(generation))
+    return false;
+  WNDCLASSW type{};
+  type.hInstance = module;
+  type.lpszClassName = L"KeyrillSnapshotMaintenance";
+  type.lpfnWndProc = MaintenanceWindow;
+  if (!RegisterClassW(&type)) {
+    WNDCLASSW existing{};
+    if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS ||
+        !GetClassInfoW(module, type.lpszClassName, &existing) ||
+        existing.lpfnWndProc != MaintenanceWindow)
+      return false;
+  }
+  if (!Current(generation)) {
+    UnregisterClassW(type.lpszClassName, module);
+    return false;
+  }
+  HWND window = CreateWindowExW(0, type.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                module, this);
+  if (!Current(generation)) {
+    if (window) {
+      SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+      DestroyWindow(window);
+    }
+    UnregisterClassW(type.lpszClassName, module);
+    return false;
+  }
+  maintenance_window_ = window;
+  maintenance_module_ = module;
+  return window && SetTimer(window, 1, 100, nullptr) && Current(generation);
+}
+void Service::StopMaintenance() noexcept {
+  vocabulary_.Stop();
+  pending_ready_.reset();
+  HWND window = std::exchange(maintenance_window_, nullptr);
+  HINSTANCE module = std::exchange(maintenance_module_, nullptr);
+  if (window) {
+    SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    KillTimer(window, 1);
+    DestroyWindow(window);
+  }
+  if (module)
+    UnregisterClassW(L"KeyrillSnapshotMaintenance", module);
+}
+void Service::Maintain() noexcept {
+  if (GetCurrentThreadId() != thread_ || !Active() || stopped_ || diagnostic_depth_ || busy_ ||
+      key_admission_)
+    return;
+  try {
+    if (auto latest = vocabulary_.Poll();
+        latest && latest->activation == runtime_.activation && latest->revision > runtime_.revision)
+      pending_ready_ = std::move(latest);
+    if (!pending_ready_)
+      return;
+    auto &ready = *pending_ready_;
+    if (kr_adopt_dictionaries(engine_, ready.sources[0].dictionary.get(),
+                              ready.sources[1].dictionary.get()) != KR_OK) {
+      runtime_.error = vocabulary::Error::Startup;
+      return;
+    }
+    runtime_.model_ready = ready.model;
+    runtime_.error = ready.error;
+    for (size_t i = 0; i < ready.sources.size(); ++i) {
+      runtime_.sources[i] = ready.sources[i].status;
+      runtime_.source_errors[i] = ready.sources[i].error;
+    }
+    if (ready.model && runtime_.effective != KR_POLICY_MODEL) {
+      if (owned_)
+        return;
+      if (kr_set_automatic_policy(engine_, KR_POLICY_MODEL) != KR_OK) {
+        runtime_.error = vocabulary::Error::Startup;
+        return;
+      }
+      runtime_.effective = KR_POLICY_MODEL;
+    }
+    runtime_.revision = ready.revision;
+    pending_ready_.reset();
+  } catch (...) {
+    runtime_.error = vocabulary::Error::Startup;
+  }
+}
 HRESULT Service::Deactivate() {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
+  if (activation_ != Activation::Active)
+    return S_OK;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
+  activation_ = Activation::Deactivating;
+  struct Teardown {
+    Activation &state;
+    ~Teardown() { state = Activation::Inactive; }
+  } teardown{activation_};
   InvalidateForLifecycle(diagnostics::LifecycleCause::Deactivate);
-  active_ = false;
   auto diagnostic_source = std::move(diagnostic_source_);
   const auto diagnostic_client = diagnostic_client_;
   diagnostic_client_ = TF_CLIENTID_NULL;
@@ -760,6 +914,7 @@ HRESULT Service::Deactivate() {
   thread_cookie_ = profile_cookie_ = TF_INVALID_COOKIE;
   client_ = TF_CLIENTID_NULL;
   mode_ = 0;
+  StopMaintenance();
   HRESULT result = S_OK;
   try {
     if (keys && client != TF_CLIENTID_NULL && FAILED(keys->UnadviseKeyEventSink(client)))
@@ -789,8 +944,8 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
     return false;
   DiagnosticCallback callback(*this);
   diagnostics::Count(diagnostics_, Counter::HandleEntered);
-  if (!active_ || stopped_ || !context) {
-    Refuse(Stage::Handle, !active_ ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::Missing);
+  if (!Active() || stopped_ || !context) {
+    Refuse(Stage::Handle, !Active() ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::Missing);
     return false;
   }
   if (busy_) {
@@ -876,7 +1031,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
         !Current(generation)) {
       Refuse(Stage::Profile,
              profile_result != S_OK ? Cause::Native
-             : !active_             ? Cause::Inactive
+             : !Active()            ? Cause::Inactive
              : stopped_             ? Cause::Stopped
              : !manager             ? Cause::Missing
                                     : Cause::Stale,
@@ -967,11 +1122,11 @@ HRESULT Service::OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
     return E_POINTER;
   DiagnosticCallback callback(*this);
   diagnostics::Count(diagnostics_, Counter::TestEntered);
-  *eaten = active_ && !stopped_ && mode_ != 0;
+  *eaten = Active() && !stopped_ && mode_ != 0;
   if (*eaten)
     diagnostics::Count(diagnostics_, Counter::Interested);
   else
-    Refuse(Stage::Test, !active_ ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::ModeUnset);
+    Refuse(Stage::Test, !Active() ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::ModeUnset);
   return S_OK;
 }
 HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
@@ -990,24 +1145,29 @@ HRESULT Service::OnPreservedKey(ITfContext *, REFGUID, BOOL *eaten) {
   return S_OK;
 }
 HRESULT Service::OnSetFocus(BOOL foreground) {
+  DiagnosticCallback callback(*this);
   if (!foreground)
     InvalidateForLifecycle(diagnostics::LifecycleCause::ForegroundLost);
   return S_OK;
 }
 HRESULT Service::OnInitDocumentMgr(ITfDocumentMgr *) { return S_OK; }
 HRESULT Service::OnUninitDocumentMgr(ITfDocumentMgr *) {
+  DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentUninit);
   return S_OK;
 }
 HRESULT Service::OnSetFocus(ITfDocumentMgr *, ITfDocumentMgr *) {
+  DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentFocus);
   return S_OK;
 }
 HRESULT Service::OnPushContext(ITfContext *) {
+  DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPush);
   return S_OK;
 }
 HRESULT Service::OnPopContext(ITfContext *) {
+  DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPop);
   return S_OK;
 }
@@ -1061,6 +1221,7 @@ HRESULT Service::OnCompositionTerminated(TfEditCookie, ITfComposition *compositi
 }
 HRESULT Service::OnActivated(DWORD, LANGID, REFCLSID clsid, REFGUID, REFGUID profile, HKL,
                              DWORD flags) {
+  DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ProfileChanged);
   mode_ = 0;
   if (clsid == service_id && (flags & TF_IPSINK_FLAG_ACTIVE))

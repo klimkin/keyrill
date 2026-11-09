@@ -1,9 +1,10 @@
 # Windows TSF proof
 
-This is an x64 Text Services Framework adapter with fixture automatic correction. It links the
+This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
+correction. It links the
 existing Rust engine through [the C ABI](../include/keyrill.h). It has no replacement backend,
-hooks, input injection,
-clipboard transport, runtime network access, model policy, or personal dictionaries.
+hooks, input injection, clipboard transport, or runtime network access. Admission remains limited
+to the proof editor.
 
 The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
 maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
@@ -25,8 +26,8 @@ document/caret oracles passed, with zero Unknown effects. These runs establish t
 fixture sequence, not physical keyboard evidence or general application support. The native
 EN-to-RU experiment below also passed with fresh owned evidence and an independent no-Space
 document/caret oracle. This completes the controlled-editor proof, not general Windows support.
-Application coverage, shared model and vocabulary integration, settings, and packaging remain
-later work. Unretained final destruction and complete callback drainage are not established by
+Application coverage, live acceptance of model and vocabulary integration, settings, and packaging
+remain later work. Unretained final destruction and complete callback drainage are not established by
 the bounded shutdown assertion.
 
 ## Build and check without installation
@@ -106,14 +107,52 @@ the caret, composition identity, command expiry, denied and failed requests, ext
 Shift transitions, exclusions, reentry, and unknown effects. Actual `ToUnicodeEx` checks cover
 PC OEM keys with Shift and Caps Lock in each already loaded supported layout. These are
 controlled observations, not physical keyboard or live TSF routing evidence. The new manual
-chords still need fresh real-editor acceptance. Runtime policy configuration, the shared model,
-and vocabulary acquisition are not wired into the Windows adapter yet.
+chords still need fresh real-editor acceptance.
+
+## Shared model and personal vocabulary
+
+Windows captures a complete configuration at activation. `KEYRILL_WINDOWS_POLICY` accepts
+`off`, `fixture`, or `model`. An absent value preserves the fixture proof default. Invalid
+configuration retains the service's previous complete configuration; its first invalid
+configuration uses off. Off disables inference while preserving manual conversion and reversal.
+
+`KEYRILL_WINDOWS_EN_DICTIONARY` and `KEYRILL_WINDOWS_RU_DICTIONARY` accept absolute local
+paths. Defaults are `%USERPROFILE%\vimfiles\spell\en.utf-8.add` and `ru.utf-8.add`. A genuinely
+absent default initially supplies empty protection. An explicit absent source remains missing,
+so the shared model abstains until both sources are ready. A real empty file is ready after
+settling. Invalid or disappearing files retain their last good snapshot for that activation.
+
+The acquisition worker reads at most 1 MiB per source. It admits local fixed NTFS volumes,
+opens each component relative to an OS volume handle, and rejects reparse points, offline
+files, remote paths, and uncertain metadata before reading contents. Final-file replacement
+is allowed; changed identity or observed writes discard the candidate. Two equal observations
+are a settling heuristic. They cannot prove an editor has finished saving.
+
+Rust parses the existing Vim format on the worker, including skipped invalid lines and flags.
+The TSF thread adopts both immutable snapshots outside callbacks. Reloads preserve the current
+word and reversal receipt. Model preparation also runs on the worker; activation remains
+manual-only until the prepared policy can be enabled while idle. Workers hold a DLL reference
+until their callback returns. Deactivation signals cancellation without joining the worker.
+
+The proof editor exposes content-free readiness in control 111. `KeyrillProofInspect PID runtime`
+reads requested and effective policy, revision, source states, and numeric errors.
+`model-ready` requires the prepared model and both ready or retained sources in an active
+service with a known EN or RU mode. Document-and-caret oracles include `manual`,
+`manual-reversed`, `manual-provisional`,
+`manual-pc`, `model`, `model-ru`, `model-reversed`, `model-ru-reversed`, and `vocabulary`.
+`model-ru-reversed` requires exact A=`цщкдв `, empty B, and A's collapsed end caret.
+They read only A and B.
+These tools provide test evidence; UI Automation grants no editing authority to the adapter.
+
+The runtime is under controlled verification. Fresh live model, vocabulary, and manual-command
+acceptance remains required. This does not expand application admission or provide settings UI
+or packaging.
 
 ## Editing authority
 
 One STA service owns the engine, generation, and optional mark. An edit request retains its
 context and completion result. It expires as soon as the synchronous request returns. No
-asynchronous work, cached cookie, retry, or key replay is allowed. Admission requires both the
+asynchronous editing work, cached cookie, retry, or key replay is allowed. Admission requires both the
 native focused HWND and the thread manager's current top context to match the captured target.
 
 Admission is restricted to the named proof executable and root window class, writable controls
