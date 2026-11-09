@@ -445,11 +445,16 @@ struct Document final : ITfContext,
   bool disabled = false;
   bool empty_disabled = false;
   bool queried_empty = false;
+  HRESULT compartment_result[2] = {S_OK, S_OK};
+  VARTYPE compartment_type[2] = {VT_I4, VT_I4};
   bool view_present = true;
   HRESULT scope_interface_result = S_OK;
   bool foreign = false;
   bool reject_composition = false;
   bool callback = true;
+  bool retain_callback = false;
+  DWORD expected_request_flags = TF_ES_SYNC | TF_ES_READWRITE;
+  bool acp_available = true;
   bool throw_after_callback = false;
   HRESULT request_result = S_OK;
   HRESULT session_result = S_OK;
@@ -502,8 +507,9 @@ struct Document final : ITfContext,
   }
   HRESULT STDMETHODCALLTYPE RequestEditSession(TfClientId client, ITfEditSession *request,
                                                DWORD flags, HRESULT *result) override {
-    Require(client == 42 && flags == (TF_ES_SYNC | TF_ES_READWRITE),
-            "sync granted-cookie protocol");
+    Require(client == 42 && flags == expected_request_flags, "sync granted-cookie protocol");
+    if (retain_callback)
+      retained_request = request;
     int before = writes;
     Call("RequestEditSession");
     if (callback)
@@ -603,9 +609,10 @@ struct Document final : ITfContext,
   HRESULT STDMETHODCALLTYPE GetValue(VARIANT *out) override {
     Call("compartment.GetValue");
     VariantInit(out);
-    out->vt = VT_I4;
-    out->lVal = queried_empty ? empty_disabled : disabled;
-    return S_OK;
+    out->vt = compartment_type[queried_empty];
+    if (out->vt == VT_I4)
+      out->lVal = queried_empty ? empty_disabled : disabled;
+    return compartment_result[queried_empty];
   }
   HRESULT STDMETHODCALLTYPE StartComposition(TfEditCookie, ITfRange *range, ITfCompositionSink *,
                                              ITfComposition **out) override {
@@ -665,6 +672,11 @@ struct Document final : ITfContext,
 HRESULT Range::QueryInterface(REFIID id, void **out) {
   document.Call("range.QI");
   *out = nullptr;
+  if (id == IID_ITfRangeACP) {
+    document.Call("range.ACP");
+    if (!document.acp_available)
+      return E_NOINTERFACE;
+  }
   if (id != IID_IUnknown && id != IID_ITfRange && id != IID_ITfRangeACP)
     return E_NOINTERFACE;
   *out = static_cast<ITfRangeACP *>(this);
@@ -761,6 +773,8 @@ struct Manager final : ITfThreadMgr,
                        ITfCompartment {
   Document *top = nullptr;
   bool disabled = false;
+  HRESULT compartment_result = S_OK;
+  VARTYPE compartment_type = VT_I4;
   bool diagnostic_source = true;
   bool throw_advise = false;
   bool throw_unadvise = false;
@@ -843,9 +857,10 @@ struct Manager final : ITfThreadMgr,
   HRESULT STDMETHODCALLTYPE GetValue(VARIANT *out) override {
     top->Call("thread.GetValue");
     VariantInit(out);
-    out->vt = VT_I4;
-    out->lVal = disabled;
-    return S_OK;
+    out->vt = compartment_type;
+    if (out->vt == VT_I4)
+      out->lVal = disabled;
+    return compartment_result;
   }
   STUB(ClearCompartment, (TfClientId, REFGUID));
   STUB(EnumCompartments, (IEnumGUID **));
@@ -3479,6 +3494,240 @@ void DiagnosticLifetimeSchedules() {
     h.manager.throw_unadvise = false;
   }
 }
+void HostMetadataSchedules() {
+  using host::Reason;
+  auto run = [](Document &document, Manager &manager, bool &alive) {
+    document.expected_request_flags = TF_ES_SYNC | TF_ES_READ;
+    return host::Observe(
+        &document, &manager, 42,
+        {static_cast<ITfContext *>(&document), &alive, 1,
+         [](void *state, uint64_t) noexcept { return *static_cast<bool *>(state); }});
+  };
+  auto unchanged = [](Document &document) {
+    Require(document.reads == 0 && document.writes == 0 && document.starts == 0 &&
+                document.ends == 0 && document.calls["GetExtent"] == 0 &&
+                document.calls["ShiftStart"] == 0 && document.calls["EnumCompositions"] == 0 &&
+                document.text == L"prefix suffix" && document.caret == 7,
+            "metadata has no text, boundary, composition, extent or document effect");
+  };
+  for (int scenario = 0; scenario != 12; ++scenario) {
+    Document document;
+    Manager manager;
+    manager.top = &document;
+    bool alive = true;
+    document.window = GetDlgItem(controlled_root, 101);
+    SetFocus(document.window);
+    Reason expected = Reason::ProofOnly;
+    switch (scenario) {
+    case 1:
+      document.acp_available = false;
+      expected = Reason::MissingAcp;
+      break;
+    case 2:
+      document.status = TF_SD_READONLY;
+      expected = Reason::ReadOnly;
+      break;
+    case 3:
+      document.disabled = true;
+      expected = Reason::Disabled;
+      break;
+    case 4:
+      document.scope = IS_PASSWORD;
+      expected = Reason::Scope;
+      break;
+    case 5:
+      document.application_scope.present = false;
+      expected = Reason::MissingScope;
+      break;
+    case 6:
+      document.application_scope.scopes_count = 2;
+      expected = Reason::Scope;
+      break;
+    case 7:
+      document.callback = false;
+      document.request_result = E_ACCESSDENIED;
+      expected = Reason::Request;
+      break;
+    case 8:
+      document.callback = false;
+      document.session_result = TF_E_SYNCHRONOUS;
+      expected = Reason::Session;
+      break;
+    case 9:
+      document.callback = false;
+      expected = Reason::Absent;
+      break;
+    case 10:
+      document.window = nullptr;
+      break;
+    case 11:
+      document.window = GetDlgItem(controlled_root, 104);
+      expected = Reason::Secure;
+      break;
+    }
+    const auto observed = run(document, manager, alive);
+    Require(observed.reason == expected, "metadata reports exact production refusal");
+    Require((observed.acp != 0) == (scenario == 0 || scenario == 10),
+            "ACP is queried only after ordinary singleton scope");
+    if (scenario == 1)
+      Require(observed.selection && observed.scope == host::Scope::Default,
+              "raw range scope is observed without ACP");
+    if (scenario >= 2 && scenario <= 6)
+      Require(document.calls["range.ACP"] == 0, "excluded or uncertain scope never queries ACP");
+    if (scenario == 2 || scenario == 3 || scenario == 11)
+      Require(document.calls["GetSelection"] == 0, "known excluded target stops before selection");
+    if (scenario >= 7 && scenario <= 9) {
+      const auto before = document.trace;
+      Require(document.retained_request && FAILED(document.retained_request->DoEditSession(123)) &&
+                  document.trace == before,
+              "denied absent or deferred metadata request expires without native queries");
+      document.retained_request.Reset();
+    }
+    unchanged(document);
+  }
+  bool compartments_match = true;
+  for (int compartment = 0; compartment != 3; ++compartment) {
+    const char *names[] = {"context keyboard-disabled", "empty-context",
+                           "thread keyboard-disabled"};
+    struct Outcome {
+      HRESULT result;
+      VARTYPE type;
+      Reason reason;
+      bool stale = false;
+    };
+    for (const auto outcome :
+         {Outcome{S_FALSE, VT_EMPTY, Reason::ProofOnly}, Outcome{S_OK, VT_EMPTY, Reason::ProofOnly},
+          Outcome{S_FALSE, VT_I4, Reason::Native}, Outcome{E_UNEXPECTED, VT_EMPTY, Reason::Native},
+          Outcome{S_OK, VT_BOOL, Reason::Disabled},
+          Outcome{S_FALSE, VT_EMPTY, Reason::Stale, true}}) {
+      Document document;
+      Manager manager;
+      manager.top = &document;
+      bool alive = true;
+      document.window = GetDlgItem(controlled_root, 101);
+      SetFocus(document.window);
+      if (compartment == 2) {
+        manager.compartment_result = outcome.result;
+        manager.compartment_type = outcome.type;
+      } else {
+        document.compartment_result[compartment] = outcome.result;
+        document.compartment_type[compartment] = outcome.type;
+      }
+      document.hook = [&](const char *name) {
+        if (outcome.stale && (compartment == 2 ? strcmp(name, "thread.GetValue") == 0
+                                               : strcmp(name, "compartment.GetValue") == 0 &&
+                                                     document.calls[name] == compartment + 1))
+          alive = false;
+      };
+      const auto observed = run(document, manager, alive);
+      if (observed.reason != outcome.reason) {
+        fprintf(stderr, "metadata %s HRESULT=%08lx VT=%u reason=%s expected=%s result=%08lx\n",
+                names[compartment], static_cast<unsigned long>(outcome.result), outcome.type,
+                host::reason_labels[static_cast<uint32_t>(observed.reason)],
+                host::reason_labels[static_cast<uint32_t>(outcome.reason)],
+                static_cast<unsigned long>(observed.result));
+        compartments_match = false;
+      }
+      if (observed.reason == Reason::ProofOnly)
+        Require(observed.selection && observed.scope == host::Scope::Default && observed.acp,
+                "unset disabling compartment permits ordinary scope and ACP observation");
+      else
+        Require(!observed.selection && !observed.acp && document.calls["GetSelection"] == 0,
+                "invalid or stale compartment stops before selection and ACP");
+      if (outcome.reason == Reason::Native)
+        Require(observed.result == static_cast<uint32_t>(outcome.result),
+                "invalid compartment preserves its native failure result");
+      unchanged(document);
+    }
+  }
+  Require(compartments_match,
+          "all disabling compartment results report the expected metadata reason");
+  const char *queries[] = {"context.QI",       "manager.GetFocus",
+                           "GetTop",           "GetActiveView",
+                           "GetWnd",           "GetStatus",
+                           "GetCompartment",   "compartment.GetValue",
+                           "manager.QI",       "thread.GetCompartment",
+                           "thread.GetValue",  "GetSelection",
+                           "range.GetContext", "GetAppProperty",
+                           "scope.GetValue",   "GetInputScopes",
+                           "range.ACP"};
+  for (const char *query : queries) {
+    Document document;
+    Manager manager;
+    manager.top = &document;
+    bool alive = true;
+    document.window = GetDlgItem(controlled_root, 101);
+    document.hook = [&](const char *name) {
+      if (strcmp(name, query) == 0)
+        alive = false;
+    };
+    const auto observed = run(document, manager, alive);
+    Require(!alive && observed.reason == Reason::Stale,
+            "liveness loss at each metadata query aborts observation");
+    unchanged(document);
+  }
+  {
+    Document document;
+    Manager manager;
+    manager.top = &document;
+    bool alive = true;
+    document.retain_callback = true;
+    document.window = GetDlgItem(controlled_root, 101);
+    document.hook = [&](const char *name) {
+      if (strcmp(name, "GetSelection") == 0) {
+        const auto before = document.trace;
+        Require(FAILED(document.retained_request->DoEditSession(123)) && document.trace == before,
+                "metadata callback reentry performs no additional native query");
+      }
+    };
+    const auto observed = run(document, manager, alive);
+    Require(observed.reason == Reason::ProofOnly,
+            "reentrant duplicate cannot overwrite observation");
+    document.retained_request.Reset();
+    unchanged(document);
+  }
+}
+void HostPublicationEquivalence() {
+  diagnostics::SnapshotV2 baseline;
+  {
+    Harness h;
+    h.Type(L"ghbdtn");
+    Require(h.Key(L' '), "baseline boundary consumed");
+    h.Oracle(L"привет ", 14);
+    Require(h.service->Copy(sizeof(baseline), diagnostics::version_v2, &baseline) == S_OK,
+            "unarmed service snapshot");
+  }
+  host::Identity identity;
+  Require(host::Capture(GetCurrentProcess(), GetCurrentProcessId(), GetCurrentThreadId(), identity),
+          "proof process identity");
+  probe::ArmedPage armed;
+  Require(armed.Create(identity), "proof service optional mapping armed");
+  {
+    Harness h;
+    h.Type(L"ghbdtn");
+    Require(h.Key(L' '), "armed boundary consumed identically");
+    h.Oracle(L"привет ", 14);
+    diagnostics::SnapshotV2 current;
+    Require(h.service->Copy(sizeof(current), diagnostics::version_v2, &current) == S_OK &&
+                current.base == baseline.base && current.lifecycle == baseline.lifecycle,
+            "diagnostics on and off preserve exact executor and lifecycle behavior");
+    probe::Payload payload;
+    probe::Snapshot decoded;
+    Require(armed.Read(payload) == probe::Availability::Available &&
+                probe::Decode(payload, decoded) && decoded.service.base == current.base &&
+                decoded.service.lifecycle == current.lifecycle &&
+                decoded.service.lifecycle.owned_present && decoded.service.lifecycle.owned_serial,
+            "outermost production callback publishes exact service and owned serial");
+    h.service->OnSetFocus(FALSE);
+    Require(armed.Read(payload) == probe::Availability::Available &&
+                probe::Decode(payload, decoded) &&
+                decoded.metadata.reason == host::Reason::Unobserved,
+            "lifecycle invalidation expires cached metadata");
+  }
+  probe::Payload payload;
+  Require(armed.Read(payload) == probe::Availability::Missing,
+          "service destruction releases only its publisher claim");
+}
 void DiagnosticCodecSchedules() {
   using namespace diagnostics;
   Require(SameActivation(true, 1, 1) && !SameActivation(false, 1, 1) &&
@@ -4582,6 +4831,8 @@ int wmain(int argc, wchar_t **argv) {
   puts("RUN dedicated substitute layout reentry");
   DedicatedLayoutReentry();
   puts("RUN actual service diagnostic codec");
+  HostMetadataSchedules();
+  HostPublicationEquivalence();
   DiagnosticCodecSchedules();
   LifecycleCodecSchedules();
   LifecycleServiceSchedules();

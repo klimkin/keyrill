@@ -1,4 +1,5 @@
 #pragma once
+#include "host_probe.h"
 #include "profiles.h"
 #include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
@@ -60,7 +61,10 @@ private:
   struct DiagnosticCallback {
     Service &service;
     explicit DiagnosticCallback(Service &value) : service(value) { ++service.diagnostic_depth_; }
-    ~DiagnosticCallback() { --service.diagnostic_depth_; }
+    ~DiagnosticCallback() {
+      if (!--service.diagnostic_depth_)
+        service.PublishObservation();
+    }
   };
   ~Service();
   struct Owned {
@@ -79,6 +83,8 @@ private:
   static LRESULT CALLBACK MaintenanceWindow(HWND, UINT, WPARAM, LPARAM);
   bool Current(uint64_t generation) const;
   void RegisterDiagnostics() noexcept;
+  void PublishObservation() noexcept;
+  void ObserveHost(ITfContext *);
   void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
   void Refuse(diagnostics::Stage stage, diagnostics::Cause cause, HRESULT result = S_OK) noexcept {
     diagnostics::Refuse(diagnostics_, stage, cause, result);
@@ -116,5 +122,10 @@ private:
   runtime::Snapshot runtime_;
   HWND maintenance_window_ = nullptr;
   HINSTANCE maintenance_module_ = nullptr;
+  host::Identity host_identity_;
+  host::Metadata host_metadata_;
+  probe::Publisher host_publisher_;
+  uint64_t observed_generation_ = 0;
+  bool observing_host_ = false;
 };
 } // namespace keyrill

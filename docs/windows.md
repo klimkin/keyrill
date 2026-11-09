@@ -57,6 +57,7 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 | `KeyrillRegister.exe` | Explicit maintainer registration, status, and enablement commands |
 | `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
 | `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
+| `KeyrillHostInspect.exe` | Explicit-PID native metadata, optional service observation, and public empty-document UIA oracle |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
 | `keyrill_activation_smoke.exe` | `CoCreateInstance` with the proof manifest and an adjacent-DLL identity check |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
@@ -76,6 +77,89 @@ The controlled COM test executable has the same fixture executable name in the s
 `target/windows-check/tests/Release` directory. It supplies fake TSF interfaces to the exact
 `Service::HandleEvent` and `ITfEditSession::DoEditSession` implementation used by the DLL.
 Its client ID and cookie belong only to those doubles. They never establish live routing.
+
+## Observe ordinary Notepad without admitting it
+
+The packaged x64 `Microsoft.WindowsNotepad_8wekyb3d8bbwe` application is a diagnostic
+candidate. Its package name, architecture, executable basename and package version are captured
+at service activation. This identity grants no editing authority. The compiled editing policy
+remains proof-only. Rust, the C ABI and macOS do not change.
+
+After the existing source and loaded-layout checks, the first Notepad key callback in a native
+generation requests a separate `TF_ES_SYNC | TF_ES_READ` metadata session. It passes the key.
+The session checks the focused document's exact context identity and reports the TSF view's
+relationship to native focus without weakening the editing predicate. Known password, disabled
+and read-only controls stop before selection. It checks disabling compartments, obtains a raw
+selection range and queries the application input scope before asking whether ACP exists.
+Missing, ambiguous and non-text scopes stop before ACP. It never reads document characters,
+queries a boundary, plans an engine event or starts or changes a composition. Unknown hosts
+receive no additional observation session. Request result, session result and callback completion
+are distinct. Requests expire on return and never retry asynchronously. Lifecycle invalidation
+expires cached metadata. Reentrant key callbacks abort observation through the existing generation.
+
+Use only a fresh public test document. These commands take an explicit process ID:
+
+```powershell
+KeyrillHostInspect.exe build
+KeyrillHostInspect.exe host TARGET_PID
+KeyrillHostInspect.exe service TARGET_PID --arm-seconds 120
+KeyrillHostInspect.exe service TARGET_PID
+KeyrillHostInspect.exe public-empty TARGET_PID
+```
+
+`host` reports package version and focused native window class without reading window titles or
+document text. `service --arm-seconds` creates up to 64 ephemeral pages for the target's current
+threads and holds them for the specified period, capped at one hour. Arm before the maintainer
+activates the source. A newly created thread needs explicit rearming and source reactivation.
+The ordinary `service` command opens existing pages with read access only. A missing, busy,
+stale, incompatible or inaccessible observation does not establish service inactivity.
+`build_match=1` compares the reported native-source digest with this inspector's digest.
+Check the actual loaded DLL's identity separately. Registry agreement is insufficient.
+
+`public-empty` requires the focused UIA element to belong to the target process, be enabled,
+report non-password status and provide TextPattern. It reads at most two UTF-16 units and
+reports only the length and selection comparison. It succeeds only for exactly empty text
+and one collapsed selection at the document end. It assumes no RichEdit trailing carriage
+return and supplies no replacement runtime transport. Missing UIA evidence blocks the oracle.
+
+No inspector command registers the DLL, selects an input source, changes policy, requests text
+from the service or widens admission. The maintainer registers the reviewed exact DLL path with
+the existing registration tool and selects the source. First confirm a fresh activation,
+matching source digest and actual loaded DLL. Ordinary Notepad support still requires a separate
+admission contract and physical application acceptance.
+
+### Observation protocol
+
+Protocol v1 uses a local-session page named by protocol, PID, process creation time and TID.
+Arming refuses an existing object and gives mapping read/write rights only to the current logon
+SID through an explicit protected DACL. The publisher opens only an already armed page.
+An atomic nonblocking claim allows one service instance per thread page. A page-resident,
+nonwrapping allocator distinguishes instances across DLL unload and reload. A colliding
+instance cannot publish or release another instance's claim. Exhausted allocation or publication
+sequence requires handles to drain and explicit rearming.
+
+Every wire field is an aligned 32-bit Windows integer. Payload encoding enumerates fixed-width
+fields and reserved zeros explicitly. It copies no native structs, booleans, padding, keys,
+text, titles, paths, dictionary entries or absolute text ranges. The snapshot includes metadata
+refusal, activation and callback counters, the existing V2 lifecycle journal and owned serial,
+runtime policy/readiness and a deterministic SHA-256 digest of the Windows native sources.
+Decoding validates enums and the existing service and lifecycle invariants.
+
+Windows provides [atomic aligned 32-bit access](https://learn.microsoft.com/en-us/windows/win32/sync/interlocked-variable-access).
+Writers use [interlocked stores with a full memory barrier](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-interlockedexchange)
+around an odd and even sequence. Readers use [MSVC `/volatile:ms` loads](https://learn.microsoft.com/en-us/cpp/build/reference/volatile-volatile-keyword-interpretation)
+and full Windows memory barriers, then
+recheck sequence, claim and immutable identity. Readers never issue an interlocked read-modify-write
+against read-only pages. Three bounded attempts return Busy if coherence cannot be established.
+The production tests run a separate process with an actual `PAGE_READONLY` view, plus collision,
+reopen, malformed identity, exhausted identity, incomplete publication and concurrent writer schedules.
+This is diagnostic evidence, not authentication against a malicious process in the same logon.
+
+Publication happens after the outermost service callback. It copies existing scalar observations
+without waiting, allocating, performing I/O or querying COM or the host. Missing diagnostics keep
+the same admission and key disposition. Controlled tests compare the exact document, caret,
+service snapshot and lifecycle with publication enabled and disabled. Packaged-process mapping
+access and ordinary Notepad routing remain separate live gates.
 
 ## Manual conversion and reversal
 

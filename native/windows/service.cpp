@@ -680,7 +680,42 @@ void Service::RegisterDiagnostics() noexcept {
 bool Service::Current(uint64_t generation) const {
   return Active() && !stopped_ && generation_ == generation && GetCurrentThreadId() == thread_;
 }
+void Service::PublishObservation() noexcept {
+  if (!host_publisher_.instance() || GetCurrentThreadId() != thread_)
+    return;
+  auto snapshot = diagnostics_;
+  snapshot.active = Active();
+  snapshot.stopped = stopped_;
+  snapshot.mode = mode_;
+  diagnostics::SnapshotV2 complete;
+  complete.base = snapshot;
+  complete.lifecycle = lifecycle_.Copy(owned_ != nullptr, owned_ ? owned_->diagnostic_serial : 0);
+  host_publisher_.Publish(probe::Encode(host_identity_, host_metadata_, complete, runtime_,
+                                        host_publisher_.instance()));
+}
+void Service::ObserveHost(ITfContext *context) {
+  if (observing_host_ || observed_generation_ == generation_ || !Current(generation_) || !context)
+    return;
+  observed_generation_ = generation_;
+  const auto captured = generation_;
+  observing_host_ = true;
+  struct Observation {
+    bool &busy;
+    ~Observation() { busy = false; }
+  } observation{observing_host_};
+  ComPtr<ITfThreadMgr> manager = manager_;
+  host_metadata_ = host::Observe(context, manager.Get(), client_,
+                                 {static_cast<ITfTextInputProcessorEx *>(this), this, generation_,
+                                  [](void *state, uint64_t generation) noexcept {
+                                    return static_cast<Service *>(state)->Current(generation);
+                                  }});
+  if (!Current(captured)) {
+    host_metadata_ = {};
+    host_metadata_.reason = host::Reason::Stale;
+  }
+}
 void Service::Invalidate(bool stop) {
+  host_metadata_ = {};
   if (generation_ == std::numeric_limits<uint64_t>::max())
     stop = true;
   else
@@ -724,6 +759,11 @@ HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flag
   runtime_.activation = diagnostics_.activation;
   runtime_.effective = runtime_.requested == KR_POLICY_MODEL ? KR_POLICY_OFF : runtime_.requested;
   stopped_ = false;
+  host::Capture(GetCurrentProcess(), GetCurrentProcessId(), thread_, host_identity_);
+  host_metadata_ = {};
+  observed_generation_ = 0;
+  if (host_identity_.kind != host::Kind::Unknown)
+    host_publisher_.Attach(host_identity_);
   uint64_t generation = generation_;
   if (FAILED(manager_->QueryInterface(IID_PPV_ARGS(&source_))) || !Current(generation) ||
       FAILED(manager_->QueryInterface(IID_PPV_ARGS(&keys_))) || !Current(generation) ||
@@ -1005,7 +1045,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
   DiagnosticCallback callback(*this);
   try {
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
-    if (busy_ || key_admission_) {
+    if (busy_ || key_admission_ || observing_host_) {
       Refuse(Stage::Key, Cause::Reentry);
       Invalidate(owned_ != nullptr);
       return S_OK;
@@ -1095,6 +1135,10 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
         std::find(loaded, loaded + count, layout) == loaded + count) {
       Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
       InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+      return S_OK;
+    }
+    if (host_identity_.kind == host::Kind::PackagedNotepad) {
+      ObserveHost(context);
       return S_OK;
     }
     NativeKey translated = TranslateKey(key, flags, layout, state);
