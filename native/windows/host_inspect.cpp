@@ -49,7 +49,9 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
       printf("%08x", part);
     printf(" reason=%s result=%08x focus=%u scope=%u request=%08x session=%08x"
            " entered=%lu completed=%lu selection=%lu acp=%lu activation=%lu active=%lu"
-           " stopped=%lu mode=%lu test=%lu key=%lu attempted=%lu verified=%lu unknown=%lu"
+           " stopped=%lu mode=%lu test=%lu interested=%lu key=%lu consumed=%lu handle=%lu"
+           " requested=%lu session_entered=%lu session_completed=%lu"
+           " attempted=%lu verified=%lu refused=%lu unknown=%lu"
            " owned=%u serial=%u lifecycle_sequence=%u lifecycle_count=%u"
            " requested_policy=%u effective_policy=%u model=%u revision=%llu"
            " en_state=%u en_error=%u ru_state=%u ru_error=%u\n",
@@ -60,9 +62,16 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
            static_cast<unsigned long>(s.activation), static_cast<unsigned long>(s.active),
            static_cast<unsigned long>(s.stopped), static_cast<unsigned long>(s.mode),
            static_cast<unsigned long>(count(diagnostics::Counter::TestEntered)),
+           static_cast<unsigned long>(count(diagnostics::Counter::Interested)),
            static_cast<unsigned long>(count(diagnostics::Counter::KeyEntered)),
+           static_cast<unsigned long>(count(diagnostics::Counter::Consumed)),
+           static_cast<unsigned long>(count(diagnostics::Counter::HandleEntered)),
+           static_cast<unsigned long>(count(diagnostics::Counter::Requested)),
+           static_cast<unsigned long>(count(diagnostics::Counter::SessionEntered)),
+           static_cast<unsigned long>(count(diagnostics::Counter::SessionCompleted)),
            static_cast<unsigned long>(count(diagnostics::Counter::Attempted)),
            static_cast<unsigned long>(count(diagnostics::Counter::Verified)),
+           static_cast<unsigned long>(count(diagnostics::Counter::Refused)),
            static_cast<unsigned long>(count(diagnostics::Counter::Unknown)), l.owned_present,
            l.owned_serial, l.sequence, l.count, r.requested, r.effective, r.model_ready, r.revision,
            static_cast<unsigned>(r.sources[0]), static_cast<unsigned>(r.source_errors[0]),
@@ -73,6 +82,14 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
              static_cast<unsigned>(event.kind), event.subject, static_cast<unsigned>(event.cause),
              static_cast<unsigned>(event.unresolved));
     }
+    for (size_t i = 0; i != s.refusals.size(); ++i)
+      if (s.refusals[i])
+        printf(" refusal_count_stage=%ls count=%lu\n", diagnostics::stage_labels[i],
+               static_cast<unsigned long>(s.refusals[i]));
+    if (s.first.present)
+      printf(" first_refusal_stage=%ls cause=%ls result=%08x\n",
+             diagnostics::stage_labels[static_cast<size_t>(s.first.stage)],
+             diagnostics::cause_labels[static_cast<size_t>(s.first.cause)], s.first.result);
     if (s.latest.present)
       printf(" refusal_stage=%ls cause=%ls result=%08x\n",
              diagnostics::stage_labels[static_cast<size_t>(s.latest.stage)],
