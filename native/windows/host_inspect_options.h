@@ -1,4 +1,5 @@
 #pragma once
+#include "host_field.h"
 #include <array>
 #include <cstdint>
 #include <cwchar>
@@ -7,12 +8,13 @@
 
 namespace keyrill::inspection {
 using BuildDigest = std::array<uint32_t, 8>;
-enum class Command { Build, Host, Service, PublicEmpty };
+enum class Command { Build, Host, Service, Field, PublicCase };
 struct Options {
   Command command = Command::Build;
   DWORD pid = 0;
   DWORD seconds = 0;
   std::optional<BuildDigest> expected_build;
+  field::PublicCase public_case = field::PublicCase::Empty;
 };
 inline bool Number(const wchar_t *text, DWORD &value) noexcept {
   if (!text || !*text)
@@ -57,17 +59,25 @@ inline bool ParseOptions(int argc, const wchar_t *const *argv, Options &output) 
     output = candidate;
     return true;
   }
-  if (argc < 3 || argc > 7 || argc % 2 == 0 || !Number(argv[2], candidate.pid))
+  if (argc < 3 || argc > 7 || !Number(argv[2], candidate.pid))
     return false;
   if (wcscmp(argv[1], L"host") == 0)
     candidate.command = Command::Host;
   else if (wcscmp(argv[1], L"service") == 0)
     candidate.command = Command::Service;
-  else if (wcscmp(argv[1], L"public-empty") == 0)
-    candidate.command = Command::PublicEmpty;
-  else
+  else if (wcscmp(argv[1], L"field") == 0)
+    candidate.command = Command::Field;
+  else if (wcscmp(argv[1], L"public-case") == 0) {
+    candidate.command = Command::PublicCase;
+    if (argc != 4 || !field::ParsePublicCase(argv[3], candidate.public_case))
+      return false;
+    output = candidate;
+    return true;
+  } else
     return false;
   if (argc != 3 && candidate.command != Command::Service)
+    return false;
+  if (argc % 2 == 0)
     return false;
   for (int i = 3; i < argc; i += 2) {
     if (wcscmp(argv[i], L"--arm-seconds") == 0 && !candidate.seconds) {

@@ -20,10 +20,23 @@ int main() {
   Options options;
   Require(Parse({L"inspect", L"build"}, options) && options.command == Command::Build,
           "existing build command accepted");
-  for (const auto *command : {L"host", L"service", L"public-empty"})
+  for (const auto *command : {L"host", L"service", L"field"})
     Require(Parse({L"inspect", command, L"123"}, options) && options.pid == 123 &&
                 options.seconds == 0 && !options.expected_build,
             "existing default command retains implicit observer build expectation");
+  for (const auto *name : {L"empty", L"probe-g", L"fixture-en-boundary"})
+    Require(Parse({L"inspect", L"public-case", L"123", name}, options) &&
+                options.command == Command::PublicCase,
+            "compiled public cases are accepted");
+  for (const auto *name : {L"", L"anything", L"ghbdtn ", L"EMPTY", L"empty "})
+    Require(!Parse({L"inspect", L"public-case", L"123", name}, options),
+            "arbitrary case names and literal text are rejected");
+  Require(!Parse({L"inspect", L"public-empty", L"123"}, options),
+          "obsolete empty command is removed");
+  Require(!Parse({L"inspect", L"public-case", L"123"}, options),
+          "public case requires a named case");
+  Require(!Parse({L"inspect", L"public-case", L"123", L"empty", L"--arm-seconds", L"1"}, options),
+          "public cases reject service-only flags");
   Require(Parse({L"inspect", L"service", L"123", L"--arm-seconds", L"3600"}, options) &&
               options.seconds == 3600 && !options.expected_build,
           "existing bounded arm option accepted");
@@ -53,7 +66,7 @@ int main() {
         L" 123456789abcdefABCDEF019876543200000000ffffffff8000000000000001"})
     Require(!Parse({L"inspect", L"service", L"123", L"--expect-server-build", invalid}, options),
             "nonexact or nonhex digest refused");
-  for (const auto *command : {L"host", L"public-empty", L"build"})
+  for (const auto *command : {L"host", L"field", L"public-case", L"build"})
     Require(!Parse({L"inspect", command, L"123", L"--expect-server-build", digest}, options),
             "explicit server digest is service-only");
   Require(!Parse({L"inspect", L"service", L"123", L"--expect-server-build"}, options),

@@ -57,7 +57,7 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 | `KeyrillRegister.exe` | Explicit maintainer registration, status, and enablement commands |
 | `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
 | `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
-| `KeyrillHostInspect.exe` | Explicit-PID native metadata, optional service observation, and public empty-document UIA oracle |
+| `KeyrillHostInspect.exe` | Explicit-PID field metadata, optional service observation, and named public-document UIA checks |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
 | `keyrill_activation_smoke.exe` | `CoCreateInstance` with the proof manifest and an adjacent-DLL identity check |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
@@ -105,7 +105,10 @@ KeyrillHostInspect.exe host TARGET_PID
 KeyrillHostInspect.exe service TARGET_PID --arm-seconds 120
 KeyrillHostInspect.exe service TARGET_PID
 KeyrillHostInspect.exe service TARGET_PID --arm-seconds 120 --expect-server-build REVIEWED_SERVER_SHA256
-KeyrillHostInspect.exe public-empty TARGET_PID
+KeyrillHostInspect.exe field TARGET_PID
+KeyrillHostInspect.exe public-case TARGET_PID empty
+KeyrillHostInspect.exe public-case TARGET_PID probe-g
+KeyrillHostInspect.exe public-case TARGET_PID fixture-en-boundary
 ```
 
 `host` reports package version and focused native window class without reading window titles or
@@ -130,11 +133,35 @@ actual digest to equal the expected server digest. The observer's own build comm
 unchanged, and the option does not bypass protocol, identity or payload validation.
 Check the actual loaded DLL's identity separately. Registry agreement is insufficient.
 
-`public-empty` requires the focused UIA element to belong to the target process, be enabled,
-report non-password status and provide TextPattern. It reads at most two UTF-16 units and
-reports only the length and selection comparison. It succeeds only for exactly empty text
-and one collapsed selection at the document end. It assumes no RichEdit trailing carriage
-return and supplies no replacement runtime transport. Missing UIA evidence blocks the oracle.
+`field` captures the actual foreground focus, its owning PID and TID, process and retained
+foreground and focused thread creation times, root and up to eight parents. The foreground
+window and focused field may belong to different threads in the same process. Both retained
+threads must remain live with the same creation times, and both GUI thread queries must report
+the exact focused field under the actual foreground root. Each bounded native window record contains
+its class, control ID, styles and enabled status. Missing or truncated facts remain explicit.
+It requires the focused UIA element's PID and native HWND to match that exact focused window,
+and `CompareElements` to match `ElementFromHandle` for the window. A same-process ancestor or
+windowless UIA element does not establish this binding. It reports the UIA control type,
+password/enabled evidence and independent ValuePattern and TextPattern read-only observations.
+It never fetches names, values, titles, document characters or selection.
+
+`public-case` checks one compiled public document and reports only the case, verdict and refusal.
+The cases are `empty` for zero UTF-16 units, `probe-g` for `g`, and `fixture-en-boundary` for
+`ghbdtn` followed by one Space. The last case is a literal baseline, not a corrected-output case.
+All require exactly one collapsed selection at the document end. The focused UIA control must
+report Document type, positive enabled and non-password evidence, exact native binding and
+TextPattern. Native password, read-only or disabled evidence vetoes the check. At least one
+read-only channel must successfully return exact Boolean false; the other may be unavailable or
+unsupported. A true, mixed or malformed observation refuses the check. Native styles never
+establish positive writability.
+
+The checker reads at most the compiled expected length plus one UTF-16 unit and compares exact
+code units and length, including embedded NUL and terminal carriage return. It does not normalize
+provider text. It revalidates retained process/thread identity, actual native focus and bounded
+native facts around provider calls, and fresh UIA identity and safety evidence before character
+access, after it and before success. Observed drift refuses the check. These calls do not lock
+the document atomically. Neither command changes values, selection or focus, performs editing,
+or grants runtime admission. The helper module links only into the inspector and its tests.
 
 No inspector command registers the DLL, selects an input source, changes policy, requests text
 from the service or widens admission. The maintainer registers the reviewed exact DLL path with

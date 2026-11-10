@@ -5,11 +5,9 @@
 #include <cstdio>
 #include <memory>
 #include <tlhelp32.h>
-#include <uiautomation.h>
 #include <vector>
 
 using namespace keyrill;
-using Microsoft::WRL::ComPtr;
 namespace {
 std::vector<DWORD> Threads(DWORD pid) {
   std::vector<DWORD> result;
@@ -98,45 +96,33 @@ probe::Availability Existing(const host::Identity &id, probe::Payload &payload) 
   CloseHandle(mapping);
   return state;
 }
-bool Empty(DWORD pid) {
-  ComPtr<IUIAutomation> automation;
-  ComPtr<IUIAutomationElement> element;
-  ComPtr<IUIAutomationTextPattern> text;
-  int actual_pid = 0;
-  BOOL password = TRUE, enabled = FALSE;
-  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                              IID_PPV_ARGS(&automation))) ||
-      FAILED(automation->GetFocusedElement(&element)) || !element ||
-      FAILED(element->get_CurrentProcessId(&actual_pid)) || actual_pid != static_cast<int>(pid) ||
-      FAILED(element->get_CurrentIsPassword(&password)) || password ||
-      FAILED(element->get_CurrentIsEnabled(&enabled)) || !enabled ||
-      FAILED(element->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&text)))) {
-    puts("public-empty oracle unavailable before text read");
-    return false;
-  }
-  ComPtr<IUIAutomationTextRange> document, selection_end, document_end;
-  ComPtr<IUIAutomationTextRangeArray> selections;
-  BSTR value = nullptr;
-  if (FAILED(text->get_DocumentRange(&document)) || !document ||
-      FAILED(document->GetText(2, &value)))
-    return false;
-  const UINT length = SysStringLen(value);
-  SysFreeString(value);
-  int count = 0;
-  if (FAILED(text->GetSelection(&selections)) || !selections ||
-      FAILED(selections->get_Length(&count)) || count != 1 ||
-      FAILED(selections->GetElement(0, &selection_end)) || !selection_end ||
-      FAILED(document->Clone(&document_end)))
-    return false;
-  int collapsed = 1, at_end = 1;
-  if (FAILED(selection_end->CompareEndpoints(TextPatternRangeEndpoint_Start, selection_end.Get(),
-                                             TextPatternRangeEndpoint_End, &collapsed)) ||
-      FAILED(selection_end->CompareEndpoints(TextPatternRangeEndpoint_End, document_end.Get(),
-                                             TextPatternRangeEndpoint_End, &at_end)))
-    return false;
-  printf("public-empty length=%u collapsed=%u caret_at_end=%u\n", length, collapsed == 0,
-         at_end == 0);
-  return length == 0 && collapsed == 0 && at_end == 0;
+void PrintWindow(const char *role, const field::Window &window) {
+  printf("%s hwnd=%p pid=%lu tid=%lu control=%d style=%016llx exstyle=%016llx"
+         " enabled=%u complete=%u class_truncated=%u class=%ls\n",
+         role, static_cast<void *>(window.handle), window.pid, window.tid, window.control,
+         static_cast<unsigned long long>(window.style),
+         static_cast<unsigned long long>(window.exstyle), window.enabled, window.complete,
+         window.class_truncated, window.class_name.data());
+}
+void PrintField(const field::Metadata &value) {
+  const auto &native = value.native;
+  printf("field refusal=%s pid=%lu foreground_tid=%lu process_started=%016llx"
+         " foreground_thread_started=%016llx focused_thread_started=%016llx"
+         " foreground=%p parents=%zu parents_truncated=%u\n",
+         field::refusal_labels[static_cast<size_t>(value.refusal)], native.pid,
+         native.foreground_tid, native.process_started, native.foreground_thread_started,
+         native.focused_thread_started, static_cast<void *>(native.foreground), native.parent_count,
+         native.parents_truncated);
+  PrintWindow("focused", native.focused);
+  PrintWindow("root", native.root);
+  for (size_t i = 0; i != native.parent_count; ++i)
+    PrintWindow("parent", native.parents[i]);
+  printf("uia pid=%d hwnd=%p control_type=%d exact_binding=%u nonpassword=%u enabled=%u"
+         " value_readonly=%s text_readonly=%s text_pattern=%u\n",
+         value.provider_pid, static_cast<void *>(value.provider_window), value.control_type,
+         value.exact_binding, value.nonpassword, value.enabled,
+         field::readonly_labels[static_cast<size_t>(value.value_readonly)],
+         field::readonly_labels[static_cast<size_t>(value.text_readonly)], value.text_pattern);
 }
 void NativeMetadata(DWORD pid, const std::vector<DWORD> &threads) {
   for (auto tid : threads) {
@@ -156,7 +142,8 @@ int wmain(int argc, wchar_t **argv) {
   setvbuf(stdout, nullptr, _IONBF, 0);
   inspection::Options options;
   if (!inspection::ParseOptions(argc, argv, options)) {
-    puts("Usage: KeyrillHostInspect build | host|service|public-empty PID"
+    puts("Usage: KeyrillHostInspect build | host|field PID | public-case PID"
+         " empty|probe-g|fixture-en-boundary | service PID"
          " [--arm-seconds 1..3600] [--expect-server-build SHA256]");
     return 2;
   }
@@ -178,21 +165,38 @@ int wmain(int argc, wchar_t **argv) {
     return 1;
   }
   const auto threads = Threads(pid);
-  printf("pid=%lu started=%016llx kind=%u version=%u.%u.%u.%u threads=%zu\n", pid, id.started,
-         static_cast<unsigned>(id.kind), id.version[0], id.version[1], id.version[2], id.version[3],
-         threads.size());
+  if (options.command != inspection::Command::PublicCase)
+    printf("pid=%lu started=%016llx kind=%u version=%u.%u.%u.%u threads=%zu\n", pid, id.started,
+           static_cast<unsigned>(id.kind), id.version[0], id.version[1], id.version[2],
+           id.version[3], threads.size());
   if (options.command == inspection::Command::Host) {
     NativeMetadata(pid, threads);
     CloseHandle(process);
     return threads.empty() ? 1 : 0;
   }
-  if (options.command == inspection::Command::PublicEmpty) {
+  if (options.command == inspection::Command::Field ||
+      options.command == inspection::Command::PublicCase) {
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    const bool matched = SUCCEEDED(initialized) && Empty(pid);
+    bool success = false;
+    if (SUCCEEDED(initialized)) {
+      const field::DiagnosticTarget target{process, id};
+      if (options.command == inspection::Command::Field) {
+        const auto metadata = field::Observe(target);
+        PrintField(metadata);
+        success = metadata.refusal == field::Refusal::None;
+      } else {
+        const auto result = field::CheckPublicCase(target, options.public_case);
+        printf("public-case case=%s matched=%u refusal=%s\n", field::CaseName(options.public_case),
+               result.matched, field::refusal_labels[static_cast<size_t>(result.refusal)]);
+        success = result.matched;
+      }
+    } else {
+      puts("field provider initialization unavailable before text read");
+    }
     if (SUCCEEDED(initialized))
       CoUninitialize();
     CloseHandle(process);
-    return matched ? 0 : 1;
+    return success ? 0 : 1;
   }
   printf("observer_native_build=");
   for (auto part : probe::build_digest)

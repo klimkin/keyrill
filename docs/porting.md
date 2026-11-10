@@ -11,7 +11,9 @@ owned manual conversion and reversal, and shared Rust model and vocabulary integ
 Automated real-editor checks cover both model directions and vocabulary reload behavior.
 General Windows application support remains unproved. No Linux adapter exists.
 The packaged Notepad candidate has a content-free, synchronous metadata observation path and
-an explicit-PID inspector. It still has no text admission; see [Windows observation](windows.md#observe-ordinary-notepad-without-admitting-it).
+an explicit-PID inspector with metadata-only field evidence and named public-document checks.
+It still has no runtime text admission; see
+[Windows observation](windows.md#observe-ordinary-notepad-without-admitting-it).
 Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
 rapid continuation and a focus change, all checked against the whole document. Use the fixture
