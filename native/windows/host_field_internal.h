@@ -5,6 +5,13 @@
 #include <uiautomation.h>
 
 namespace keyrill::field::detail {
+inline Refusal CopyDocumentText(HRESULT result, BSTR value, int bound, std::wstring &text) {
+  const auto length = SysStringLen(value);
+  if (result == S_OK && value && length <= static_cast<UINT>(bound))
+    text.assign(value, length);
+  return result == S_OK && length <= static_cast<UINT>(bound) ? Refusal::None
+                                                              : Refusal::TextUnavailable;
+}
 struct Case {
   PublicCase id;
   const wchar_t *name;

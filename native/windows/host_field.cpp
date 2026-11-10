@@ -166,14 +166,11 @@ public:
       return FailedProvider();
     BSTR value = nullptr;
     const auto hr = Call([&] { return document_->GetText(bound, &value); });
-    const auto length = SysStringLen(value);
-    if (hr == S_OK && value && length <= static_cast<UINT>(bound))
-      text.assign(value, length);
+    const auto result = detail::CopyDocumentText(hr, value, bound, text);
     SysFreeString(value);
     if (failure_ == Refusal::Stale)
       return failure_;
-    return hr == S_OK && length <= static_cast<UINT>(bound) ? Refusal::None
-                                                            : Refusal::TextUnavailable;
+    return result;
   }
   Refusal EndCaret() {
     if (!text_ || !document_ || !Guard())

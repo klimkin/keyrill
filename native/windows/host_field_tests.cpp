@@ -1,4 +1,5 @@
 #include "host_field_internal.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -20,6 +21,7 @@ struct Provider {
   Metadata metadata;
   BOOL compared = TRUE;
   std::wstring text;
+  bool null_text = false;
   detail::Selection selection{true, 1, 0, 0};
   Refusal read_failure = Refusal::None;
   unsigned observations = 0;
@@ -60,8 +62,12 @@ struct Provider {
   Refusal ReadDocument(int limit, std::wstring &output) {
     ++reads;
     bound = limit;
-    output = text.substr(0, static_cast<size_t>(limit));
-    return read_failure;
+    const auto length = static_cast<UINT>((std::min)(text.size(), static_cast<size_t>(limit)));
+    BSTR value = null_text ? nullptr : SysAllocStringLen(text.data(), length);
+    Require(null_text || value, "test BSTR allocation succeeds");
+    const auto result = detail::CopyDocumentText(S_OK, value, limit, output);
+    SysFreeString(value);
+    return read_failure == Refusal::None ? result : read_failure;
   }
   Refusal EndCaret() {
     ++selections;
@@ -318,6 +324,20 @@ void ExactPublicCases() {
             "failed endpoints, multiple selections, noncollapsed or wrong caret refuse");
   }
 }
+void NullTextResult() {
+  Provider provider;
+  provider.null_text = true;
+  const auto result = detail::Check(provider, detail::cases[0]);
+  if (result.matched || result.refusal != Refusal::TextUnavailable) {
+    fprintf(stderr,
+            "FAIL: S_OK/null BSTR expected TextUnavailable and matched=false; actual %s and "
+            "matched=%s\n",
+            refusal_labels[static_cast<size_t>(result.refusal)], result.matched ? "true" : "false");
+    std::exit(1);
+  }
+  Require(provider.reads == 1 && !provider.selections,
+          "null text result cannot reach the selection check");
+}
 } // namespace
 int main() {
   MetadataOnly();
@@ -325,5 +345,6 @@ int main() {
   Writability();
   Revalidation();
   ExactPublicCases();
+  NullTextResult();
   puts("focused field evidence schedules passed");
 }
