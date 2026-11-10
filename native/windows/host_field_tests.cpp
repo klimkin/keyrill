@@ -309,6 +309,13 @@ void ExactPublicCases() {
   interior.text = std::wstring(L"g\0bdtn ", 7);
   Require(detail::Check(interior, detail::cases[2]).refusal == Refusal::TextMismatch,
           "embedded NUL is compared as a code unit");
+  for (const auto &[actual, expected] : {std::pair{detail::cases[2].text, detail::cases[3]},
+                                         std::pair{detail::cases[3].text, detail::cases[2]}}) {
+    Provider provider;
+    provider.text = actual;
+    Require(detail::Check(provider, expected).refusal == Refusal::TextMismatch,
+            "literal baseline and corrected fixture have distinct exact document predicates");
+  }
   Provider failed;
   failed.read_failure = Refusal::TextUnavailable;
   Require(detail::Check(failed, detail::cases[0]).refusal == Refusal::TextUnavailable &&

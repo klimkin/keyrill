@@ -24,7 +24,7 @@ int main() {
     Require(Parse({L"inspect", command, L"123"}, options) && options.pid == 123 &&
                 options.seconds == 0 && !options.expected_build,
             "existing default command retains implicit observer build expectation");
-  for (const auto *name : {L"empty", L"probe-g", L"fixture-en-boundary"})
+  for (const auto *name : {L"empty", L"probe-g", L"fixture-en-boundary", L"fixture-en-corrected"})
     Require(Parse({L"inspect", L"public-case", L"123", name}, options) &&
                 options.command == Command::PublicCase,
             "compiled public cases are accepted");

@@ -10,10 +10,11 @@ Windows has an [SDK TSF proof](windows.md) with a passed first controlled-editor
 owned manual conversion and reversal, and shared Rust model and vocabulary integration.
 Automated real-editor checks cover both model directions and vocabulary reload behavior.
 General Windows application support remains unproved. No Linux adapter exists.
-The packaged Notepad candidate has a content-free, synchronous metadata observation path and
-an explicit-PID inspector with metadata-only field evidence and named public-document checks.
-It still has no runtime text admission; see
-[Windows observation](windows.md#observe-ordinary-notepad-without-admitting-it).
+Packaged x64 Notepad 11.2607.14.0 has a compiled main-document admission candidate through the
+same executor. Other versions remain metadata-only and pass input. An explicit-PID inspector
+supplies independent field evidence and named public-document checks. Actual owned composition,
+correction and lifecycle support remain live gates; see
+[Windows admission](windows.md#bounded-notepad-admission-and-observation).
 Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
 rapid continuation and a focus change, all checked against the whole document. Use the fixture
@@ -118,10 +119,11 @@ These follow from the architecture and apply on every platform:
 
 ## Windows: Text Services Framework
 
-The fixture-only SDK implementation is in `native/windows/`; its build, maintainer-only
+The SDK implementation is in `native/windows/`; its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
-termination on focus loss. The adapter does not admit general editors. TSF remains a proposal
+termination on focus loss. The adapter admits proof controls and a version-bounded Notepad
+main-document candidate, with ordinary Notepad editing still awaiting live acceptance. TSF remains a proposal
 ([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
 contexts and owned compositions fit the contract better than UI Automation reads plus synthetic
 replacement. Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin

@@ -1,5 +1,6 @@
 #pragma once
 #include "host_probe.h"
+#include "native_field.h"
 #include "profiles.h"
 #include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
@@ -24,7 +25,8 @@ class Service final : public ITfTextInputProcessorEx,
 public:
   explicit Service(ITfInputProcessorProfileMgr *profile_api = nullptr,
                    decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList,
-                   vocabulary::ModuleOwner module_owner = vocabulary::ModuleOwner::Dll);
+                   vocabulary::ModuleOwner module_owner = vocabulary::ModuleOwner::Dll,
+                   const native_field::Source *field_source = nullptr);
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override;
   ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;
@@ -108,6 +110,7 @@ private:
   ComPtr<ITfInputProcessorProfileMgr> profiles_manager_;
   const ComPtr<ITfInputProcessorProfileMgr> profile_dependency_;
   const decltype(&GetKeyboardLayoutList) layouts_;
+  const native_field::Source *const field_source_;
   DWORD thread_cookie_ = TF_INVALID_COOKIE;
   DWORD profile_cookie_ = TF_INVALID_COOKIE;
   uint32_t diagnostic_depth_ = 0;

@@ -14,31 +14,6 @@ using diagnostics::Counter;
 using diagnostics::Stage;
 long object_count = 0;
 
-bool ProofWindow(HWND window) {
-  DWORD process = 0;
-  if (!window || GetWindowThreadProcessId(window, &process) != GetCurrentThreadId() ||
-      process != GetCurrentProcessId() || !IsWindowEnabled(window))
-    return false;
-  wchar_t name[64]{};
-  if (!GetClassNameW(window, name, 64) || _wcsicmp(name, MSFTEDIT_CLASS) != 0)
-    return false;
-  LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-  if (style & (ES_PASSWORD | ES_READONLY | WS_DISABLED))
-    return false;
-  int id = GetDlgCtrlID(window);
-  if (id != 101 && id != 102)
-    return false;
-  HWND root = GetAncestor(window, GA_ROOT);
-  if (!GetClassNameW(root, name, 64) || wcscmp(name, fixture_class) != 0)
-    return false;
-  wchar_t path[32768]{};
-  DWORD count = GetModuleFileNameW(nullptr, path, 32768);
-  if (!count || count >= 32768)
-    return false;
-  const wchar_t *base = wcsrchr(path, L'\\');
-  return base && _wcsicmp(base + 1, L"KeyrillProofEditor.exe") == 0;
-}
-
 static const Profile *ActiveProfile(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode) {
   if (profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR || profile.clsid != service_id ||
       !(profile.dwFlags & TF_IPP_FLAG_ACTIVE))
@@ -160,11 +135,11 @@ private:
       return false;
     return Check(identity.Get() == expected && Alive());
   }
-  bool Focused() {
+  std::optional<native_field::FieldIdentity> FreshFieldIdentity() {
     Observe observe(*this, Stage::Focus);
     ComPtr<ITfThreadMgr> manager = owner_.manager_;
     if (!Check(Alive(), Cause::Stale) || !Check(manager != nullptr, Cause::Missing))
-      return false;
+      return std::nullopt;
     ComPtr<ITfDocumentMgr> document;
     ComPtr<ITfContext> top;
     ComPtr<ITfContextView> view;
@@ -173,11 +148,19 @@ private:
         !Good(document->GetTop(&top)) || !Identity(top.Get(), context_id_.Get()) ||
         !Good(context_->GetActiveView(&view)) || !Check(view != nullptr, Cause::Missing) ||
         !Good(view->GetWnd(&window)))
-      return false;
-    if (!Check(window && ::GetFocus() == window))
-      return false;
+      return std::nullopt;
     stage_ = Stage::ProofWindow;
-    return Check(ProofWindow(window) && Alive());
+    const auto facts = owner_.field_source_
+                           ? owner_.field_source_->Capture(window, owner_.host_identity_)
+                           : native_field::Capture(window, owner_.host_identity_);
+    auto identity = native_field::Match(facts);
+    if (!Check(identity.has_value() && Alive()))
+      return std::nullopt;
+    return identity;
+  }
+  bool Focused() {
+    const auto fresh = FreshFieldIdentity();
+    return Check(field_.has_value() && fresh == field_);
   }
   bool Extent(ITfRange *range, LONG &start, LONG &length) {
     Observe observe(*this, Stage::Context);
@@ -218,14 +201,56 @@ private:
     VariantClear(&value);
     return disabled || !Check(Alive(), Cause::Stale);
   }
-  bool Admit(TfEditCookie cookie, ITfRange *selection) {
+  enum class ScopeAuthority { ExplicitOrdinary, NotepadUnavailableValue };
+  std::optional<ScopeAuthority> OrdinaryScope(TfEditCookie cookie, ITfRange *selection,
+                                              native_field::Kind kind) {
+    Observe observe(*this, Stage::AppProperty);
+    ComPtr<ITfReadOnlyProperty> property;
+    HRESULT result = context_->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
+    if (!Exact(result) || !Check(property != nullptr, Cause::Missing))
+      return std::nullopt;
+    VARIANT value;
+    VariantInit(&value);
+    stage_ = Stage::AppValue;
+    result = property->GetValue(cookie, selection, &value);
+    if (result == E_FAIL && value.vt == VT_EMPTY && kind == native_field::Kind::Notepad &&
+        Check(Alive(), Cause::Stale)) {
+      VariantClear(&value);
+      return ScopeAuthority::NotepadUnavailableValue;
+    }
+    if (!Exact(result) || !Check(value.vt == VT_UNKNOWN, Cause::WrongType) ||
+        !Check(value.punkVal != nullptr, Cause::Missing)) {
+      VariantClear(&value);
+      return std::nullopt;
+    }
+    stage_ = Stage::ScopeInterface;
+    ComPtr<ITfInputScope> scope;
+    result = value.punkVal->QueryInterface(IID_PPV_ARGS(&scope));
+    VariantClear(&value);
+    if (!Exact(result) || !Check(scope != nullptr, Cause::Missing))
+      return std::nullopt;
+    stage_ = Stage::Scopes;
+    InputScope *scopes = nullptr;
+    UINT count = 0;
+    result = scope->GetInputScopes(&scopes, &count);
+    const bool ordinary = Exact(result) && Check(count == 1 && scopes &&
+                                                 (scopes[0] == IS_DEFAULT || scopes[0] == IS_TEXT));
+    CoTaskMemFree(scopes);
+    if (!ordinary || !Check(Alive(), Cause::Stale))
+      return std::nullopt;
+    return ScopeAuthority::ExplicitOrdinary;
+  }
+  struct AdmittedSelection {
+    native_field::FieldIdentity field;
+    ComPtr<ITfRange> range;
+    LONG caret;
+  };
+  std::optional<AdmittedSelection> AcquireAdmittedSelection(TfEditCookie cookie,
+                                                            bool require_collapsed) {
     Observe observe(*this, Stage::Focus);
-    ComPtr<ITfContextView> view;
-    HWND window = nullptr;
-    if (!Focused() || !Good(context_->GetActiveView(&view)) ||
-        !Check(view != nullptr, Cause::Missing) || !Good(view->GetWnd(&window)) ||
-        !Check(ProofWindow(window) && Alive()))
-      return false;
+    const auto field = FreshFieldIdentity();
+    if (!field || (field_ && !Check(field == field_)))
+      return std::nullopt;
     stage_ = Stage::Status;
     TF_STATUS status{};
     ComPtr<ITfThreadMgr> manager = owner_.manager_;
@@ -233,35 +258,30 @@ private:
         Disabled(context_.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED, Stage::ContextDisabled) ||
         Disabled(context_.Get(), GUID_COMPARTMENT_EMPTYCONTEXT, Stage::EmptyContext) ||
         Disabled(manager.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED, Stage::ThreadDisabled))
-      return false;
-    stage_ = Stage::AppProperty;
-    ComPtr<ITfReadOnlyProperty> property;
-    HRESULT result = context_->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
-    if (!Exact(result) || !Check(property != nullptr, Cause::Missing))
-      return false;
-    VARIANT value;
-    VariantInit(&value);
-    stage_ = Stage::AppValue;
-    result = property->GetValue(cookie, selection, &value);
-    if (!Exact(result) || !Check(value.vt == VT_UNKNOWN, Cause::WrongType) ||
-        !Check(value.punkVal != nullptr, Cause::Missing)) {
-      VariantClear(&value);
-      return false;
-    }
-    stage_ = Stage::ScopeInterface;
-    ComPtr<ITfInputScope> scope;
-    result = value.punkVal->QueryInterface(IID_PPV_ARGS(&scope));
-    VariantClear(&value);
-    if (!Good(result) || !Check(scope != nullptr, Cause::Missing))
-      return false;
-    stage_ = Stage::Scopes;
-    InputScope *scopes = nullptr;
-    UINT count = 0;
-    result = scope->GetInputScopes(&scopes, &count);
-    bool ordinary = Exact(result) && Check(count == 1 && scopes &&
-                                           (scopes[0] == IS_DEFAULT || scopes[0] == IS_TEXT));
-    CoTaskMemFree(scopes);
-    return ordinary && Check(Alive(), Cause::Stale);
+      return std::nullopt;
+    stage_ = Stage::Selection;
+    TF_SELECTION selection{};
+    ULONG fetched = 0;
+    HRESULT result = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    ComPtr<ITfRange> range;
+    range.Attach(selection.range);
+    if (!Exact(result) ||
+        !Check(fetched == 1 && range && !selection.style.fInterimChar &&
+               (selection.style.ase == TF_AE_NONE || selection.style.ase == TF_AE_START ||
+                selection.style.ase == TF_AE_END)))
+      return std::nullopt;
+    ComPtr<ITfContext> context;
+    if (!Good(range->GetContext(&context)) || !Identity(context.Get(), context_id_.Get()) ||
+        !OrdinaryScope(cookie, range.Get(), field->kind))
+      return std::nullopt;
+    if (!Check(FreshFieldIdentity() == field && Alive(), Cause::Stale))
+      return std::nullopt;
+    LONG caret = 0, length = 0;
+    if (!Extent(range.Get(), caret, length) || !Check(!require_collapsed || length == 0) ||
+        !Check(FreshFieldIdentity() == field && Alive(), Cause::Stale))
+      return std::nullopt;
+    field_ = field;
+    return AdmittedSelection{*field, range, caret};
   }
   bool NoForeign(TfEditCookie, ITfRange *, ComPtr<ITfContextComposition> &cc) {
     Observe observe(*this, Stage::Foreign);
@@ -293,7 +313,7 @@ private:
   bool Read(TfEditCookie cookie, ITfRange *range, const std::wstring &expected) {
     wchar_t text[KR_TEXT_CAPACITY + 1]{};
     ULONG count = 0;
-    return Good(range->GetText(cookie, 0, text, KR_TEXT_CAPACITY + 1, &count)) &&
+    return Focused() && Good(range->GetText(cookie, 0, text, KR_TEXT_CAPACITY + 1, &count)) &&
            count == expected.size() && std::equal(expected.begin(), expected.end(), text);
   }
   bool OwnedRange(TfEditCookie cookie, const std::wstring &expected, bool caret,
@@ -333,7 +353,7 @@ private:
       return false;
     wchar_t text[2]{};
     ULONG count = 0;
-    return Good(prefix->GetText(cookie, 0, text, 2, &count)) &&
+    return Focused() && Good(prefix->GetText(cookie, 0, text, 2, &count)) &&
            Check(count == 1 && iswspace(text[0]));
   }
   bool Apply(TfEditCookie cookie, const kr_plan &plan) {
@@ -442,11 +462,8 @@ private:
   void Run(TfEditCookie cookie) {
     if (!Check(Alive(), Cause::Stale))
       return;
-    ComPtr<ITfRange> selection;
-    LONG caret = 0;
-    if (!Selection(cookie, selection, caret, owner_.owned_ == nullptr))
-      return;
-    if (!Admit(cookie, selection.Get()))
+    auto admitted = AcquireAdmittedSelection(cookie, owner_.owned_ == nullptr);
+    if (!admitted)
       return;
     if (owner_.owned_ && owner_.owned_->context_id.Get() != context_id_.Get()) {
       owner_.Refuse(Stage::Context, Cause::Predicate);
@@ -456,7 +473,8 @@ private:
     event_.context = KR_CTX_INELIGIBLE;
     if (!owner_.owned_) {
       ComPtr<ITfContextComposition> cc;
-      if (!NoForeign(cookie, selection.Get(), cc) || !Boundary(cookie, selection.Get(), caret))
+      if (!NoForeign(cookie, admitted->range.Get(), cc) ||
+          !Boundary(cookie, admitted->range.Get(), admitted->caret))
         return;
       event_.context = KR_CTX_BOUNDARY;
     }
@@ -505,12 +523,10 @@ private:
       eaten = plan.disposition == KR_KEY_CONSUMED;
       if (plan.disposition != KR_KEY_REPLAN)
         return;
-      ComPtr<ITfRange> next_selection;
       ComPtr<ITfContextComposition> cc;
-      LONG next_caret = 0;
-      if (!Selection(cookie, next_selection, next_caret) || !Admit(cookie, next_selection.Get()) ||
-          !NoForeign(cookie, next_selection.Get(), cc) ||
-          !Boundary(cookie, next_selection.Get(), next_caret))
+      admitted = AcquireAdmittedSelection(cookie, true);
+      if (!admitted || !NoForeign(cookie, admitted->range.Get(), cc) ||
+          !Boundary(cookie, admitted->range.Get(), admitted->caret))
         return;
       event_.context = KR_CTX_BOUNDARY;
     }
@@ -521,6 +537,7 @@ private:
   kr_event event_;
   ComPtr<ITfContext> context_;
   ComPtr<IUnknown> context_id_;
+  std::optional<native_field::FieldIdentity> field_;
   Stage stage_ = Stage::Session;
   ULONG references_ = 1;
   bool entered_ = false;
@@ -532,8 +549,9 @@ private:
 };
 
 Service::Service(ITfInputProcessorProfileMgr *profile_api, decltype(&GetKeyboardLayoutList) layouts,
-                 vocabulary::ModuleOwner module_owner)
-    : profile_dependency_(profile_api), layouts_(layouts), module_owner_(module_owner) {
+                 vocabulary::ModuleOwner module_owner, const native_field::Source *field_source)
+    : profile_dependency_(profile_api), layouts_(layouts), field_source_(field_source),
+      module_owner_(module_owner) {
   InterlockedIncrement(&object_count);
 }
 Service::~Service() {
@@ -1137,7 +1155,8 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
       return S_OK;
     }
-    if (host_identity_.kind == host::Kind::PackagedNotepad) {
+    if (host_identity_.kind == host::Kind::PackagedNotepad &&
+        !native_field::KnownNotepad(host_identity_)) {
       ObserveHost(context);
       return S_OK;
     }

@@ -3,8 +3,8 @@
 This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
 correction. It links the
 existing Rust engine through [the C ABI](../include/keyrill.h). It has no replacement backend,
-hooks, input injection, clipboard transport, or runtime network access. Admission remains limited
-to the proof editor.
+hooks, input injection, clipboard transport, or runtime network access. Admission covers the
+proof editor and the version-bounded Notepad main-document candidate described below.
 
 The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
 maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
@@ -78,14 +78,53 @@ The controlled COM test executable has the same fixture executable name in the s
 `Service::HandleEvent` and `ITfEditSession::DoEditSession` implementation used by the DLL.
 Its client ID and cookie belong only to those doubles. They never establish live routing.
 
-## Observe ordinary Notepad without admitting it
+## Bounded Notepad admission and observation
 
-The packaged x64 `Microsoft.WindowsNotepad_8wekyb3d8bbwe` application is a diagnostic
-candidate. Its package name, architecture, executable basename and package version are captured
-at service activation. This identity grants no editing authority. The compiled editing policy
-remains proof-only. Rust, the C ABI and macOS do not change.
+The runtime admits the main document of packaged x64 Notepad **11.2607.14.0** as a candidate
+for the existing owned-composition executor. Its package family
+`Microsoft.WindowsNotepad_8wekyb3d8bbwe`, package name `Microsoft.WindowsNotepad`, architecture,
+executable basename and exact version are captured at service activation. Other Notepad versions
+retain metadata observation and pass every key. Rust, the C ABI and macOS do not change.
 
-After the existing source and loaded-layout checks, the first Notepad key callback in a native
+Package identity alone grants no editing authority. Before selection ACP or character access,
+the edit session validates the canonical TSF top context, active view, exact current-thread
+native focus, and freshly captured native field facts. The field must be `RichEditD2DPT`,
+control ID zero, on the current process and TSF thread. Its immediate parent must be
+`NotepadTextBox`, control ID zero, on that same process and thread. The next parent must be
+`Notepad`, control ID zero, in that process and equal both the actual foreground window and
+the field's `GA_ROOT`. The root may belong to a different thread. All three nodes must have
+complete metadata and be enabled. The field requires `WS_CHILD` and `ES_MULTILINE` and refuses
+`ES_PASSWORD`, `ES_READONLY` and `WS_DISABLED`. Dynamic scrollbar bits do not establish identity.
+Find, other controls, other hierarchies and unknown versions receive no text admission.
+
+Writable context status and all three disabled compartments precede raw selection acquisition.
+The raw range must belong to that same context and have valid selection flags. The scope query
+then requires exact `S_OK` results, a present property and interface, and exactly one `IS_DEFAULT`
+or `IS_TEXT`. The only alternative, `NotepadUnavailableValue`, requires the freshly matched
+Notepad field, `GetAppProperty` returning exactly `S_OK` with a property, and `GetValue` returning
+exactly `E_FAIL` with its initialized output still `VT_EMPTY`. The compiled main-field contract
+supplies ordinary-field authority; the error is not interpreted as a default scope. Other
+failures, failed nonempty values, private scopes, multiple scopes and malformed results refuse
+before ACP, characters or composition. Proof controls continue to require explicit ordinary scope.
+
+The same private acquisition runs initially and after a finish that requests replan. It checks
+generation and the exact native field again after scope callbacks, then obtains ACP. Field
+identity lives only in that edit session. Existing pre-effect focus checks recapture it; owned
+range, text, caret, returned range and acknowledgement checks remain in the single executor.
+There is no UIA runtime dependency, admission override, second editor or new editing transport.
+
+Controlled native facts and COM schedules establish these branches, including zero ACP/text/
+composition/write before failed admission. They do not establish an owned operation in ordinary
+Notepad. First live acceptance still requires the exact reviewed DLL loaded by a fresh unmodified
+Notepad process, a nonnull owned composition, exact returned ranges and readback, an independent
+full public document/caret oracle and zero Unknown effects. Correction, retained reversal,
+manual conversion, model/vocabulary behavior, continuation, Undo, focus, tab, source and close
+remain separate live gates. The unchanged-FINISH exact-write contract and the mapping of a
+platform-requested focus-loss commit remain unresolved. This admission changes no lifecycle
+callback or finish behavior and grants no write authority from a focus or termination notice.
+
+For an unadmitted Notepad version, after the existing source and loaded-layout checks, the first
+key callback in a native
 generation requests a separate `TF_ES_SYNC | TF_ES_READ` metadata session. It passes the key.
 The session checks the focused document's exact context identity and reports the TSF view's
 relationship to native focus without weakening the editing predicate. Known password, disabled
@@ -109,6 +148,7 @@ KeyrillHostInspect.exe field TARGET_PID
 KeyrillHostInspect.exe public-case TARGET_PID empty
 KeyrillHostInspect.exe public-case TARGET_PID probe-g
 KeyrillHostInspect.exe public-case TARGET_PID fixture-en-boundary
+KeyrillHostInspect.exe public-case TARGET_PID fixture-en-corrected
 ```
 
 `host` reports package version and focused native window class without reading window titles or
@@ -146,8 +186,9 @@ password/enabled evidence and independent ValuePattern and TextPattern read-only
 It never fetches names, values, titles, document characters or selection.
 
 `public-case` checks one compiled public document and reports only the case, verdict and refusal.
-The cases are `empty` for zero UTF-16 units, `probe-g` for `g`, and `fixture-en-boundary` for
-`ghbdtn` followed by one Space. The last case is a literal baseline, not a corrected-output case.
+The cases are `empty` for zero UTF-16 units, `probe-g` for `g`, `fixture-en-boundary` for
+`ghbdtn` followed by one Space, and `fixture-en-corrected` for `привет` followed by one Space.
+The literal baseline retains its original meaning. The corrected case does not accept it.
 All require exactly one collapsed selection at the document end. The focused UIA control must
 report Document type, positive enabled and non-password evidence, exact native binding and
 TextPattern. Native password, read-only or disabled evidence vetoes the check. At least one
@@ -168,8 +209,8 @@ or grants runtime admission. The helper module links only into the inspector and
 No inspector command registers the DLL, selects an input source, changes policy, requests text
 from the service or widens admission. The maintainer registers the reviewed exact DLL path with
 the existing registration tool and selects the source. First confirm a fresh activation,
-matching source digest and actual loaded DLL. Ordinary Notepad support still requires a separate
-admission contract and physical application acceptance.
+matching source digest and actual loaded DLL. Ordinary Notepad support still requires actual
+owned-composition and physical application acceptance under the bounded contract above.
 
 ### Observation protocol
 
@@ -311,24 +352,26 @@ context and completion result. It expires as soon as the synchronous request ret
 asynchronous editing work, cached cookie, retry, or key replay is allowed. Admission requires both the
 native focused HWND and the thread manager's current top context to match the captured target.
 
-Admission is restricted to the named proof executable and root window class, writable controls
+Proof admission requires the named proof executable and root window class, writable controls
 101 and 102, a known singleton `IS_DEFAULT` or `IS_TEXT` input scope, and non-disabled context and
-thread compartments. Secure-mode activation is refused. Read-only, password, sensitive, uncertain,
-foreign-composed, and unknown
-controls get no text read and no composition. This executable-name restriction is a proof
-support policy, not a security boundary or approval for arbitrary RichEdit hosts.
+thread compartments. The separate version-bounded Notepad main-field contract is described
+above. Secure-mode activation is refused. Read-only, password, sensitive, uncertain,
+foreign-composed, and unknown controls get no text read and no composition. The proof
+executable-name restriction is a support policy, not a security boundary or approval for
+arbitrary RichEdit hosts.
 
 Input scope comes from the context owner's read-only application property through
 [`ITfContext::GetAppProperty`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-getappproperty).
-Admission requires `S_OK`, a non-null property, and `S_OK` from
+Explicit ordinary scope requires `S_OK`, a non-null property, and `S_OK` from
 [`ITfReadOnlyProperty::GetValue`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfreadonlyproperty-getvalue)
 with a non-null `ITfInputScope` value. Its
 [`GetInputScopes`](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-itfinputscope-getinputscopes)
 must return `S_OK`, a non-null array, and exactly one `IS_DEFAULT` or `IS_TEXT`. `S_FALSE` from
 either property call refuses admission, including a valid-looking value returned with that status.
 Missing, private, password, unknown, mixed, and multiple scopes stay pass-through before text
-reads or composition starts. Controlled application-property tests do not establish live RichEdit
-admission.
+reads or composition starts. Only the compiled Notepad main field may use the exact
+`NotepadUnavailableValue` signature described above. Controlled application-property tests do
+not establish live RichEdit admission.
 
 The fixture declares `IS_TEXT` for writable A and B. Control 103 retains its read-only style and
 default scope, and control 104 retains its password style and password scope. A native metadata

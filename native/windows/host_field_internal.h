@@ -23,7 +23,9 @@ struct Case {
 inline constexpr Case cases[] = {
     {PublicCase::Empty, L"empty", "empty", L""},
     {PublicCase::ProbeG, L"probe-g", "probe-g", L"g"},
-    {PublicCase::FixtureEnBoundary, L"fixture-en-boundary", "fixture-en-boundary", L"ghbdtn "}};
+    {PublicCase::FixtureEnBoundary, L"fixture-en-boundary", "fixture-en-boundary", L"ghbdtn "},
+    {PublicCase::FixtureEnCorrected, L"fixture-en-corrected", "fixture-en-corrected",
+     L"\x043f\x0440\x0438\x0432\x0435\x0442 "}};
 struct LifetimeFacts {
   DWORD process = 0;
   uint64_t process_started = 0;

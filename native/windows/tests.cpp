@@ -440,6 +440,12 @@ struct Document final : ITfContext,
   LONG caret = 7;
   LONG selection_length = 0;
   DWORD status = 0;
+  HRESULT status_result = S_OK;
+  HRESULT selection_query_result = S_OK;
+  ULONG selection_fetched = 1;
+  bool selection_present = true;
+  TF_SELECTIONSTYLE selection_style{TF_AE_NONE, FALSE};
+  Document *range_context = nullptr;
   InputScope scope = IS_DEFAULT;
   ApplicationScopeProperty application_scope;
   bool disabled = false;
@@ -503,7 +509,7 @@ struct Document final : ITfContext,
     if (!*out)
       return E_NOINTERFACE;
     AddRef();
-    return S_OK;
+    return id == IID_ITfInputScope ? scope_interface_result : S_OK;
   }
   HRESULT STDMETHODCALLTYPE RequestEditSession(TfClientId client, ITfEditSession *request,
                                                DWORD flags, HRESULT *result) override {
@@ -528,10 +534,10 @@ struct Document final : ITfContext,
                                          ULONG *fetched) override {
     Require(ec == 123, "cookie is scoped");
     Call("GetSelection");
-    out->range = new Range(*this, caret, selection_length);
-    out->style = {TF_AE_NONE, FALSE};
-    *fetched = 1;
-    return S_OK;
+    out->range = selection_present ? new Range(*this, caret, selection_length) : nullptr;
+    out->style = selection_style;
+    *fetched = selection_fetched;
+    return selection_query_result;
   }
   HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION *value) override {
     Call("SetSelection");
@@ -557,7 +563,7 @@ struct Document final : ITfContext,
   HRESULT STDMETHODCALLTYPE GetStatus(TF_STATUS *out) override {
     Call("GetStatus");
     *out = {status, 0};
-    return S_OK;
+    return status_result;
   }
   HRESULT STDMETHODCALLTYPE GetProperty(REFGUID id, ITfProperty **out) override {
     Call("GetProperty");
@@ -705,8 +711,8 @@ HRESULT Range::SetText(TfEditCookie, DWORD, const WCHAR *text, LONG length) {
 }
 HRESULT Range::GetContext(ITfContext **out) {
   document.Call("range.GetContext");
-  *out = &document;
-  document.AddRef();
+  *out = document.range_context ? document.range_context : &document;
+  (*out)->AddRef();
   return S_OK;
 }
 HRESULT Range::GetExtent(LONG *start, LONG *length) {
@@ -1004,7 +1010,8 @@ struct Harness {
   Manager manager;
   ComPtr<Service> service;
   Harness(ITfInputProcessorProfileMgr *profile_api = nullptr,
-          decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList) {
+          decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList,
+          const native_field::Source *field_source = nullptr) {
     root = controlled_root;
     Require(root != nullptr, "controlled RichEdit metadata fixture created");
     a.window = GetDlgItem(root, 101);
@@ -1013,7 +1020,8 @@ struct Harness {
     ::SetActiveWindow(root);
     ::SetFocus(a.window);
     Require(::GetFocus() == a.window, "fixture native focus established");
-    service.Attach(new Service(profile_api, layouts, vocabulary::ModuleOwner::Process));
+    service.Attach(
+        new Service(profile_api, layouts, vocabulary::ModuleOwner::Process, field_source));
     Require(SUCCEEDED(service->Activate(&manager, 42)), "controlled COM service activation");
   }
   ~Harness() {
@@ -4224,9 +4232,9 @@ void ApplicationInputScope(InputScope scope) {
   Require(h.a.active_composition && h.a.starts == 1 && h.a.max_request_writes == 1,
           "application input scope supports one owned mark with one write per request");
 }
-void UncertainApplicationInputScope() {
+void UncertainApplicationInputScope(const native_field::Source *field_source = nullptr) {
   for (int scenario = 0; scenario != 22; ++scenario) {
-    Harness h;
+    Harness h(nullptr, GetKeyboardLayoutList, field_source);
     auto &property = h.a.application_scope;
     if (scenario == 0) {
       property.result = S_FALSE;
@@ -4282,9 +4290,344 @@ void UncertainApplicationInputScope() {
     if (scenario == 21)
       property.scopes_result = S_FALSE;
     Require(!h.Key(L'g', false), "uncertain application input scope passes key unchanged");
-    Require(h.a.reads == 0 && h.a.starts == 0 && h.a.writes == 0,
-            "uncertain application input scope has no text reads, composition starts or writes");
+    Require(
+        h.a.calls["range.ACP"] == 0 && h.a.reads == 0 && h.a.starts == 0 && h.a.writes == 0,
+        "uncertain application input scope has no ACP, text reads, composition starts or writes");
     h.Oracle(L"", 7);
+  }
+}
+struct NotepadFieldSource final : native_field::Source {
+  native_field::Facts facts;
+  mutable unsigned captures = 0;
+  std::function<void(unsigned)> on_capture;
+  NotepadFieldSource() {
+    facts = native_field::Capture(GetDlgItem(controlled_root, 101), {});
+    facts.proof_process = false;
+    facts.host.process = facts.process;
+    facts.host.thread = facts.thread;
+    facts.host.kind = host::Kind::PackagedNotepad;
+    facts.host.version = {11, 2607, 14, 0};
+    facts.field.control = facts.parent.control = facts.grandparent.control = 0;
+    wcscpy_s(facts.field.class_name.data(), facts.field.class_name.size(), L"RichEditD2DPT");
+    wcscpy_s(facts.parent.class_name.data(), facts.parent.class_name.size(), L"NotepadTextBox");
+    wcscpy_s(facts.grandparent.class_name.data(), facts.grandparent.class_name.size(), L"Notepad");
+    facts.field.style = WS_CHILD | ES_MULTILINE;
+    facts.parent.handle = reinterpret_cast<HWND>(2);
+    facts.grandparent.handle = facts.root;
+    facts.parent.process = facts.grandparent.process = facts.process;
+    facts.parent.thread = facts.thread;
+    facts.grandparent.thread = facts.thread + 1;
+    facts.parent.style = WS_CHILD;
+    facts.grandparent.style = 0;
+    facts.parent.complete = facts.grandparent.complete = true;
+    facts.parent.enabled = facts.grandparent.enabled = true;
+    facts.foreground = facts.root;
+  }
+  native_field::Facts Capture(HWND view, const host::Identity &) const noexcept override {
+    if (on_capture)
+      on_capture(++captures);
+    auto result = facts;
+    if (view != result.view)
+      result.focus = nullptr;
+    return result;
+  }
+};
+using FieldMutation = std::function<void(native_field::Facts &)>;
+std::vector<FieldMutation> NotepadFieldRefusals() {
+  using native_field::Facts;
+  std::vector<FieldMutation> mutations = {[](Facts &f) { f.host.kind = host::Kind::Unknown; },
+                                          [](Facts &f) { ++f.host.process; },
+                                          [](Facts &f) { ++f.host.thread; },
+                                          [](Facts &f) { f.process = 0; },
+                                          [](Facts &f) { f.thread = 0; },
+                                          [](Facts &f) { f.focus = nullptr; },
+                                          [](Facts &f) { f.view = nullptr; },
+                                          [](Facts &f) { f.foreground = nullptr; },
+                                          [](Facts &f) { f.root = nullptr; },
+                                          [](Facts &f) { f.field.style &= ~WS_CHILD; },
+                                          [](Facts &f) { f.field.style &= ~ES_MULTILINE; },
+                                          [](Facts &f) { f.field.style |= ES_PASSWORD; },
+                                          [](Facts &f) { f.field.style |= ES_READONLY; },
+                                          [](Facts &f) { ++f.field.thread; },
+                                          [](Facts &f) { ++f.parent.thread; },
+                                          [](Facts &f) { f.grandparent.handle = f.parent.handle; }};
+  for (size_t version = 0; version != 4; ++version)
+    mutations.push_back([version](Facts &f) { ++f.host.version[version]; });
+  for (int node = 0; node != 3; ++node) {
+    const auto select = [node](Facts &f) -> native_field::Window & {
+      return node == 0 ? f.field : node == 1 ? f.parent : f.grandparent;
+    };
+    mutations.push_back([select](Facts &f) { select(f).complete = false; });
+    mutations.push_back([select](Facts &f) { select(f).handle = nullptr; });
+    mutations.push_back([select](Facts &f) { ++select(f).process; });
+    mutations.push_back([select](Facts &f) { select(f).thread = 0; });
+    mutations.push_back([select](Facts &f) { ++select(f).control; });
+    mutations.push_back([select](Facts &f) { select(f).enabled = false; });
+    mutations.push_back([select](Facts &f) { select(f).style |= WS_DISABLED; });
+    mutations.push_back([select](Facts &f) { select(f).class_name[0] = L'!'; });
+  }
+  return mutations;
+}
+void NoAdmissionEffects(Harness &h) {
+  Require(h.a.calls["range.ACP"] == 0 && h.a.reads == 0 && h.a.starts == 0 && h.a.writes == 0,
+          "refused admission performs zero ACP, character reads, composition starts and writes");
+  h.Oracle(L"", 7);
+}
+void NotepadNativeAdmission() {
+  NotepadFieldSource source;
+  const auto identity = native_field::Match(source.facts);
+  Require(identity && identity->kind == native_field::Kind::Notepad,
+          "exact version and direct main-field contract permits a different root thread");
+  auto scrolled = source.facts;
+  scrolled.field.style |= WS_VSCROLL | WS_HSCROLL;
+  Require(native_field::Match(scrolled) == identity,
+          "dynamic scrollbar bits are not field identity");
+  for (const auto &mutate : NotepadFieldRefusals()) {
+    NotepadFieldSource refused;
+    mutate(refused.facts);
+    Require(!native_field::Match(refused.facts), "one changed native contract fact refuses");
+    Harness h(nullptr, GetKeyboardLayoutList, &refused);
+    Require(!h.Key(L'g', false), "unsupported native field passes unchanged");
+    NoAdmissionEffects(h);
+  }
+  for (int scenario = 0; scenario != 18; ++scenario) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    if (scenario == 0)
+      h.a.status = TF_SD_READONLY;
+    if (scenario == 1)
+      h.a.disabled = true;
+    if (scenario == 2)
+      h.a.empty_disabled = true;
+    if (scenario == 3)
+      h.manager.disabled = true;
+    if (scenario >= 4 && scenario < 10) {
+      const int index = (scenario - 4) / 3;
+      if ((scenario - 4) % 3 == 2)
+        h.manager.compartment_result = index ? E_FAIL : E_ACCESSDENIED;
+      else
+        h.a.compartment_result[(scenario - 4) % 3] = index ? E_FAIL : E_ACCESSDENIED;
+    }
+    if (scenario >= 10 && scenario < 16) {
+      const int index = (scenario - 10) / 3;
+      if ((scenario - 10) % 3 == 2)
+        h.manager.compartment_type = static_cast<VARTYPE>(index ? VT_BOOL : VT_UNKNOWN);
+      else
+        h.a.compartment_type[(scenario - 10) % 3] =
+            static_cast<VARTYPE>(index ? VT_BOOL : VT_UNKNOWN);
+    }
+    if (scenario == 16)
+      h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+    if (scenario == 17)
+      h.a.application_scope = {S_OK, true, E_ACCESSDENIED, VT_EMPTY};
+    if (scenario == 16) {
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, "scope.GetValue") == 0)
+          ordinary.facts.focus = nullptr;
+      };
+    }
+    Require(!h.Key(L'g', false), "disabled, uncertain or stale main field passes unchanged");
+    NoAdmissionEffects(h);
+  }
+}
+void NotepadScopeAdmission() {
+  NotepadFieldSource source;
+  UncertainApplicationInputScope(&source);
+  for (int scenario = 0; scenario != 5; ++scenario) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    auto &property = h.a.application_scope;
+    property.value_type = VT_EMPTY;
+    property.value_result = scenario == 0   ? S_OK
+                            : scenario == 1 ? S_FALSE
+                            : scenario == 2 ? E_ACCESSDENIED
+                                            : E_FAIL;
+    if (scenario == 3)
+      property.result = S_FALSE;
+    if (scenario == 4)
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, "scope.GetValue") == 0)
+          h.service->OnPushContext(&h.b);
+      };
+    Require(!h.Key(L'g', false),
+            "only fresh exact E_FAIL with VT_EMPTY gets exceptional authority");
+    NoAdmissionEffects(h);
+  }
+  for (bool unavailable : {false, true}) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    if (unavailable)
+      h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+    h.Type(L"ghbdtn ");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
+    Require(h.a.starts == 1 && h.a.writes == 7 && h.a.max_request_writes == 1,
+            "admitted main-field facts use the existing owned correction executor");
+    Require(unavailable ? h.a.calls["GetInputScopes"] == 0 : h.a.calls["GetInputScopes"] > 0,
+            "unavailable value is distinct from an explicit ordinary scope");
+    const auto first_scope = std::find(h.a.trace.begin(), h.a.trace.end(), "scope.GetValue");
+    const auto first_acp = std::find(h.a.trace.begin(), h.a.trace.end(), "range.ACP");
+    Require(first_scope < first_acp, "scope classification precedes the first ACP query");
+    Require(h.Key(L'x', false),
+            "retained boundary finishes and replans through the same admission");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 x", 15);
+  }
+  {
+    Harness h;
+    h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+    Require(!h.Key(L'g', false),
+            "proof control cannot use the Notepad unavailable-value authority");
+    NoAdmissionEffects(h);
+  }
+}
+void NotepadExecutorRefusals() {
+  for (int scenario = 0; scenario != 8; ++scenario) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+    if (scenario == 0)
+      h.a.acp_available = false;
+    if (scenario == 1) {
+      h.a.callback = false;
+      h.a.request_result = E_ACCESSDENIED;
+    }
+    if (scenario == 2)
+      h.a.callback = false;
+    if (scenario == 3)
+      h.a.foreign = true;
+    if (scenario == 4)
+      h.a.reject_composition = true;
+    if (scenario == 5)
+      ordinary.on_capture = [&](unsigned count) {
+        if (count == 3)
+          ordinary.facts.parent.handle = reinterpret_cast<HWND>(3);
+      };
+    if (scenario == 6)
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, "range.GetContext") == 0)
+          h.service->OnPushContext(&h.b);
+      };
+    if (scenario == 7)
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, "GetInputScopes") == 0)
+          h.service->OnPushContext(&h.b);
+      };
+    if (scenario == 7)
+      h.a.application_scope = {};
+    Require(!h.Key(L'g', false), "native executor refusal preserves ordinary key disposition");
+    Require(h.a.writes == 0, "no native refusal before SetText writes characters");
+    h.Oracle(L"", 7);
+    if (h.a.retained_request) {
+      const auto acp = h.a.calls["range.ACP"];
+      Require(FAILED(h.a.retained_request->DoEditSession(123)) && h.a.calls["range.ACP"] == acp &&
+                  h.a.writes == 0,
+              "late callback cannot revive admission or inspect text");
+    }
+  }
+  for (int scenario = 0; scenario != 11; ++scenario) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+    if (scenario == 0)
+      h.a.status_result = E_FAIL;
+    if (scenario == 1)
+      h.a.selection_query_result = E_FAIL;
+    if (scenario == 2)
+      h.a.selection_query_result = S_FALSE;
+    if (scenario == 3)
+      h.a.selection_present = false;
+    if (scenario == 4)
+      h.a.selection_fetched = 0;
+    if (scenario == 5)
+      h.a.selection_fetched = 2;
+    if (scenario == 6)
+      h.a.selection_style.fInterimChar = TRUE;
+    if (scenario == 7)
+      h.a.selection_style.ase = static_cast<TfActiveSelEnd>(99);
+    if (scenario == 8)
+      h.a.range_context = &h.b;
+    if (scenario == 9) {
+      h.a.application_scope = {};
+      h.a.scope_interface_result = S_FALSE;
+    }
+    if (scenario == 10)
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, "GetSelection") == 0)
+          h.service->OnPushContext(&h.b);
+      };
+    Require(!h.Key(L'g', false), "raw selection, context and scope failures pass unchanged");
+    NoAdmissionEffects(h);
+  }
+}
+void NotepadFieldDriftBeforeText() {
+  for (const auto *boundary : {"range.ACP", "GetExtent", "enumerator.Next", "Clone", "ShiftStart"})
+    for (bool readonly : {false, true}) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      h.a.application_scope = {S_OK, true, E_FAIL, VT_EMPTY};
+      bool drifted = false;
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, boundary) == 0) {
+          ordinary.facts.field.style |= readonly ? ES_READONLY : ES_PASSWORD;
+          drifted = true;
+        }
+      };
+      Require(!h.Key(L'g', false) && drifted && h.a.reads == 0 && h.a.starts == 0 &&
+                  h.a.writes == 0,
+              "native exclusion drift after ACP or range callbacks refuses before boundary text");
+      h.Oracle(L"", 7);
+    }
+  for (const auto *boundary : {"GetRange", "GetExtent", "enumerator.Next"})
+    for (bool readonly : {false, true}) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      h.Type(L"g");
+      const int reads = h.a.reads, writes = h.a.writes;
+      bool drifted = false;
+      h.a.hook = [&](const char *call) {
+        if (strcmp(call, boundary) == 0 &&
+            (strcmp(call, "GetExtent") != 0 || h.a.active_composition)) {
+          ordinary.facts.field.style |= readonly ? ES_READONLY : ES_PASSWORD;
+          drifted = true;
+        }
+      };
+      Require(
+          !h.Key(L'h', false) && drifted && h.a.reads == reads && h.a.writes == writes,
+          "native exclusion drift before owned-mark readback makes no new character read or write");
+      h.Oracle(L"g", 8);
+    }
+}
+void NotepadReplanAdmission() {
+  for (int scenario = 0; scenario != 3; ++scenario) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"ghbdtn ");
+    const auto writes = h.a.writes;
+    bool ended = false, readmitted = false;
+    int acp_at_scope = -1, reads_at_scope = -1;
+    h.a.hook = [&](const char *call) {
+      if (strcmp(call, "EndComposition.after") == 0) {
+        ended = true;
+        if (scenario == 0)
+          h.a.application_scope.value_result = E_ACCESSDENIED;
+        if (scenario == 1)
+          h.a.status = TF_SD_READONLY;
+        if (scenario == 2)
+          h.manager.disabled = true;
+      }
+      if (ended && strcmp(call, "GetStatus") == 0)
+        readmitted = true;
+      if (ended && strcmp(call, "GetAppProperty") == 0) {
+        acp_at_scope = h.a.calls["range.ACP"];
+        reads_at_scope = h.a.reads;
+      }
+    };
+    Require(!h.Key(L'x', false) && ended && readmitted && h.a.starts == 1 && h.a.writes == writes,
+            "finish replan reacquires admission and a newly excluded target passes the next key");
+    if (scenario == 0)
+      Require(acp_at_scope >= 0 && h.a.calls["range.ACP"] == acp_at_scope &&
+                  h.a.reads == reads_at_scope,
+              "replan scope failure performs no subsequent ACP or character access");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
   }
 }
 void CorrectionAndReversal() {
@@ -4440,9 +4783,9 @@ void Exclusions() {
               !secure->HandleEvent(&h.a, Text(L'g')) && h.a.reads == 0 && h.a.writes == 0,
           "secure activation cannot inspect or compose");
 }
-void DriftAndUnknown() {
+void DriftAndUnknown(const native_field::Source *field_source = nullptr) {
   for (int scenario = 0; scenario != 5; ++scenario) {
-    Harness h;
+    Harness h(nullptr, GetKeyboardLayoutList, field_source);
     h.Type(L"ghbdtn");
     int before = h.a.writes;
     if (scenario == 0)
@@ -4461,7 +4804,7 @@ void DriftAndUnknown() {
     Require(h.service->stopped(), "unfinishable mark blocks activation");
   }
   for (int scenario = 0; scenario != 3; ++scenario) {
-    Harness h;
+    Harness h(nullptr, GetKeyboardLayoutList, field_source);
     h.Type(L"ghbdtn");
     int before = h.a.writes;
     if (scenario == 0)
@@ -4863,6 +5206,16 @@ int wmain(int argc, wchar_t **argv) {
   ApplicationInputScope(IS_TEXT);
   puts("RUN uncertain application input scope");
   UncertainApplicationInputScope();
+  puts("RUN version-bounded Notepad native admission");
+  NotepadNativeAdmission();
+  puts("RUN Notepad scope admission");
+  NotepadScopeAdmission();
+  puts("RUN Notepad existing executor refusals");
+  NotepadExecutorRefusals();
+  puts("RUN fresh Notepad authority before text");
+  NotepadFieldDriftBeforeText();
+  puts("RUN Notepad replan admission");
+  NotepadReplanAdmission();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
   puts("RUN changing finish caret");
@@ -4875,6 +5228,10 @@ int wmain(int argc, wchar_t **argv) {
   Exclusions();
   puts("RUN drift and unknown");
   DriftAndUnknown();
+  {
+    NotepadFieldSource ordinary;
+    DriftAndUnknown(&ordinary);
+  }
   puts("RUN finish outcomes");
   FinishOutcomes();
   puts("RUN focus and termination");

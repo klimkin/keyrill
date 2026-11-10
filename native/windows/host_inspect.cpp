@@ -143,7 +143,7 @@ int wmain(int argc, wchar_t **argv) {
   inspection::Options options;
   if (!inspection::ParseOptions(argc, argv, options)) {
     puts("Usage: KeyrillHostInspect build | host|field PID | public-case PID"
-         " empty|probe-g|fixture-en-boundary | service PID"
+         " empty|probe-g|fixture-en-boundary|fixture-en-corrected | service PID"
          " [--arm-seconds 1..3600] [--expect-server-build SHA256]");
     return 2;
   }

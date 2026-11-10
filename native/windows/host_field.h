@@ -3,7 +3,7 @@
 #include <array>
 
 namespace keyrill::field {
-enum class PublicCase { Empty, ProbeG, FixtureEnBoundary };
+enum class PublicCase { Empty, ProbeG, FixtureEnBoundary, FixtureEnCorrected };
 bool ParsePublicCase(const wchar_t *, PublicCase &) noexcept;
 const char *CaseName(PublicCase) noexcept;
 enum class ReadOnly { Unknown, Unavailable, Unsupported, Writable, ReadOnly, Mixed };
