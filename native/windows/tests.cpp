@@ -4596,6 +4596,74 @@ void NotepadFieldDriftBeforeText() {
       h.Oracle(L"g", 8);
     }
 }
+void FinishContractRegressions() {
+  bool passed = true;
+  struct FinishSelection {
+    const char *name;
+    LONG caret, length;
+  };
+  for (const auto &selection :
+       {FinishSelection{"unchanged", 12, 0}, FinishSelection{"moved-caret", 11, 0},
+        FinishSelection{"whole-document-selection", 0, 18}}) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"hello");
+    h.a.caret = selection.caret;
+    h.a.selection_length = selection.length;
+    const auto writes = h.a.writes, ends = h.a.ends;
+    kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+    Require(!h.service->HandleEvent(&h.a, finish) && !h.a.active_composition &&
+                !h.service->stopped() && h.a.ends == ends + 1,
+            "unchanged finish passes the key and ends the owned composition once");
+    h.Oracle(L"hello", selection.caret);
+    Require(h.a.selection_length == selection.length,
+            "unchanged finish preserves the exact selection");
+    const auto additional_writes = h.a.writes - writes;
+    fprintf(stderr,
+            "FINISH %s owned SetText expected=1 actual=%d; EndComposition expected=1 "
+            "actual=%d; document/caret/selection preserved\n",
+            selection.name, additional_writes, h.a.ends - ends);
+    passed = additional_writes == 1 && passed;
+  }
+  for (bool readonly : {false, true}) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"ghbdtn ");
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    int reads_at_end = -1, writes_at_end = -1;
+    const auto ends = h.a.ends;
+    h.a.hook = [&](const char *call) {
+      if (strcmp(call, "EndComposition.after") == 0) {
+        reads_at_end = h.a.reads;
+        writes_at_end = h.a.writes;
+        if (readonly)
+          h.a.status = TF_SD_READONLY;
+        else
+          h.a.application_scope.value_result = E_ACCESSDENIED;
+      }
+    };
+    Require(!h.Key(L'x', false) && reads_at_end >= 0 && h.a.ends == ends + 1 && h.a.starts == 1 &&
+                h.a.writes == writes_at_end,
+            "post-end exclusion passes the next key without a new composition or text write");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
+    const auto post_end_reads = h.a.reads - reads_at_end;
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+    fprintf(stderr,
+            "FINISH post-end %s GetText expected=0 actual=%d; unknown delta=%llu; "
+            "stopped=%d; next key passed; document/caret preserved\n",
+            readonly ? "read-only" : "scope-denied", post_end_reads,
+            static_cast<unsigned long long>(after.counts[unknown] - before.counts[unknown]),
+            h.service->stopped());
+    passed = post_end_reads == 0 && passed;
+    const auto reads = h.a.reads, writes = h.a.writes;
+    Require(!h.Key(L'y', false) && h.a.reads == reads && h.a.writes == writes &&
+                h.a.ends == ends + 1 && h.a.starts == 1,
+            "excluded continuation makes no later read, write, replay or repair");
+    h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
+  }
+  Require(passed, "FINISH contract regression aggregate");
+}
 void NotepadReplanAdmission() {
   for (int scenario = 0; scenario != 3; ++scenario) {
     NotepadFieldSource ordinary;
@@ -5215,6 +5283,7 @@ int wmain(int argc, wchar_t **argv) {
   puts("RUN fresh Notepad authority before text");
   NotepadFieldDriftBeforeText();
   puts("RUN Notepad replan admission");
+  FinishContractRegressions();
   NotepadReplanAdmission();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
