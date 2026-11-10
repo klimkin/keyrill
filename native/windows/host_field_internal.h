@@ -6,11 +6,13 @@
 
 namespace keyrill::field::detail {
 inline Refusal CopyDocumentText(HRESULT result, BSTR value, int bound, std::wstring &text) {
+  if (result != S_OK || !value)
+    return Refusal::TextUnavailable;
   const auto length = SysStringLen(value);
-  if (result == S_OK && value && length <= static_cast<UINT>(bound))
-    text.assign(value, length);
-  return result == S_OK && length <= static_cast<UINT>(bound) ? Refusal::None
-                                                              : Refusal::TextUnavailable;
+  if (length > static_cast<UINT>(bound))
+    return Refusal::TextUnavailable;
+  text.assign(value, length);
+  return Refusal::None;
 }
 struct Case {
   PublicCase id;

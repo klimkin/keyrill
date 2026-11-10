@@ -157,7 +157,9 @@ establish positive writability.
 
 The checker reads at most the compiled expected length plus one UTF-16 unit and compares exact
 code units and length, including embedded NUL and terminal carriage return. It does not normalize
-provider text. It revalidates retained process/thread identity, actual native focus and bounded
+provider text. The check requires an actual returned BSTR, including an allocated empty BSTR for
+`empty`. An `S_OK` result with null text returns `TextUnavailable` under this tool's contract.
+It revalidates retained process/thread identity, actual native focus and bounded
 native facts around provider calls, and fresh UIA identity and safety evidence before character
 access, after it and before success. Observed drift refuses the check. These calls do not lock
 the document atomically. Neither command changes values, selection or focus, performs editing,

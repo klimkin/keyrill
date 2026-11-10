@@ -338,6 +338,37 @@ void NullTextResult() {
   Require(provider.reads == 1 && !provider.selections,
           "null text result cannot reach the selection check");
 }
+void ReturnedTextBoundary() {
+  BSTR empty = SysAllocStringLen(L"", 0);
+  Require(empty != nullptr, "test allocates an actual empty BSTR");
+  std::wstring output = L"previous";
+  Require(detail::CopyDocumentText(S_OK, empty, 1, output) == Refusal::None && output.empty(),
+          "allocated empty BSTR establishes returned empty text");
+  SysFreeString(empty);
+
+  for (HRESULT result : {E_FAIL, S_FALSE}) {
+    BSTR value = SysAllocStringLen(L"g", 1);
+    Require(value != nullptr, "test allocates a valid-looking failed result");
+    output = L"previous";
+    Require(detail::CopyDocumentText(result, value, 2, output) == Refusal::TextUnavailable &&
+                output == L"previous",
+            "a non-S_OK result cannot establish text even with a returned BSTR");
+    SysFreeString(value);
+  }
+  for (const auto &text :
+       {std::wstring(L"g\0", 2), std::wstring(L"gx", 2), std::wstring(L"g\r", 2)}) {
+    BSTR value = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+    Require(value != nullptr, "test allocates exact UTF16 suffix text");
+    output.clear();
+    Require(detail::CopyDocumentText(S_OK, value, 2, output) == Refusal::None && output == text,
+            "copy preserves embedded NUL and suffix code units at the requested bound");
+    output = L"previous";
+    Require(detail::CopyDocumentText(S_OK, value, 1, output) == Refusal::TextUnavailable &&
+                output == L"previous",
+            "a provider result beyond the requested bound cannot establish text");
+    SysFreeString(value);
+  }
+}
 } // namespace
 int main() {
   MetadataOnly();
@@ -346,5 +377,6 @@ int main() {
   Revalidation();
   ExactPublicCases();
   NullTextResult();
+  ReturnedTextBoundary();
   puts("focused field evidence schedules passed");
 }
