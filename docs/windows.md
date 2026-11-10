@@ -198,6 +198,24 @@ It never fetches names, values, titles, document characters or selection.
 The cases are `empty` for zero UTF-16 units, `probe-g` for `g`, `fixture-en-boundary` for
 `ghbdtn` followed by one Space, and `fixture-en-corrected` for `привет` followed by one Space.
 The literal baseline retains its original meaning. The corrected case does not accept it.
+The additional compiled cases check these exact documents. A visible `␠` denotes one Space.
+
+| Case | Exact document |
+|---|---|
+| `fixture-en-word` | `ghbdtn` |
+| `fixture-ru-word` | `привет` |
+| `fixture-continuation` | `привет␠x` |
+| `fixture-two-words` | `привет␠привет␠` |
+| `manual-provisional` | `хорошо` |
+| `manual-provisional-literal` | `[jhjij` |
+| `manual-pc` | `ёлка` |
+| `manual-pc-literal` | `` `krf␠ `` |
+| `model-en` | `список␠` |
+| `model-en-literal` | `cgbcjr␠` |
+| `model-ru` | `world␠` |
+| `model-ru-literal` | `цщкдв␠` |
+| `prefix-suffix` | `left␠привет␠right` |
+
 All require exactly one collapsed selection at the document end. The focused UIA control must
 report Document type, positive enabled and non-password evidence, exact native binding and
 TextPattern. Native password, read-only or disabled evidence vetoes the check. At least one

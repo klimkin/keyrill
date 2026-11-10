@@ -25,7 +25,27 @@ inline constexpr Case cases[] = {
     {PublicCase::ProbeG, L"probe-g", "probe-g", L"g"},
     {PublicCase::FixtureEnBoundary, L"fixture-en-boundary", "fixture-en-boundary", L"ghbdtn "},
     {PublicCase::FixtureEnCorrected, L"fixture-en-corrected", "fixture-en-corrected",
-     L"\x043f\x0440\x0438\x0432\x0435\x0442 "}};
+     L"\x043f\x0440\x0438\x0432\x0435\x0442 "},
+    {PublicCase::FixtureEnWord, L"fixture-en-word", "fixture-en-word", L"ghbdtn"},
+    {PublicCase::FixtureRuWord, L"fixture-ru-word", "fixture-ru-word",
+     L"\x043f\x0440\x0438\x0432\x0435\x0442"},
+    {PublicCase::FixtureContinuation, L"fixture-continuation", "fixture-continuation",
+     L"\x043f\x0440\x0438\x0432\x0435\x0442 x"},
+    {PublicCase::FixtureTwoWords, L"fixture-two-words", "fixture-two-words",
+     L"\x043f\x0440\x0438\x0432\x0435\x0442 \x043f\x0440\x0438\x0432\x0435\x0442 "},
+    {PublicCase::ManualProvisional, L"manual-provisional", "manual-provisional",
+     L"\x0445\x043e\x0440\x043e\x0448\x043e"},
+    {PublicCase::ManualProvisionalLiteral, L"manual-provisional-literal",
+     "manual-provisional-literal", L"[jhjij"},
+    {PublicCase::ManualPc, L"manual-pc", "manual-pc", L"\x0451\x043b\x043a\x0430"},
+    {PublicCase::ManualPcLiteral, L"manual-pc-literal", "manual-pc-literal", L"`krf "},
+    {PublicCase::ModelEn, L"model-en", "model-en", L"\x0441\x043f\x0438\x0441\x043e\x043a "},
+    {PublicCase::ModelEnLiteral, L"model-en-literal", "model-en-literal", L"cgbcjr "},
+    {PublicCase::ModelRu, L"model-ru", "model-ru", L"world "},
+    {PublicCase::ModelRuLiteral, L"model-ru-literal", "model-ru-literal",
+     L"\x0446\x0449\x043a\x0434\x0432 "},
+    {PublicCase::PrefixSuffix, L"prefix-suffix", "prefix-suffix",
+     L"left \x043f\x0440\x0438\x0432\x0435\x0442 right"}};
 struct LifetimeFacts {
   DWORD process = 0;
   uint64_t process_started = 0;

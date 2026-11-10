@@ -304,6 +304,16 @@ void ExactPublicCases() {
       Require(!result.matched && result.refusal == Refusal::TextMismatch && !extra.selections,
               "extra text including NUL and terminal CR refuses exact UTF16 comparison");
     }
+    for (auto selection : {detail::Selection{false, 1, 0, 0}, detail::Selection{true, 0, 0, 0},
+                           detail::Selection{true, 2, 0, 0}, detail::Selection{true, 1, 1, 0},
+                           detail::Selection{true, 1, 0, -1}, detail::Selection{true, 1, 0, 1}}) {
+      Provider wrong_caret;
+      wrong_caret.text = expected.text;
+      wrong_caret.selection = selection;
+      const auto result = detail::Check(wrong_caret, expected);
+      Require(!result.matched && result.refusal == Refusal::Selection && wrong_caret.reads == 1,
+              "each public case refuses failed endpoints, multiple selections or wrong caret");
+    }
   }
   Provider interior;
   interior.text = std::wstring(L"g\0bdtn ", 7);
@@ -321,15 +331,6 @@ void ExactPublicCases() {
   Require(detail::Check(failed, detail::cases[0]).refusal == Refusal::TextUnavailable &&
               failed.reads == 1 && !failed.selections,
           "failed character read does not reach selection or success");
-  for (auto selection : {detail::Selection{false, 1, 0, 0}, detail::Selection{true, 0, 0, 0},
-                         detail::Selection{true, 2, 0, 0}, detail::Selection{true, 1, 1, 0},
-                         detail::Selection{true, 1, 0, -1}, detail::Selection{true, 1, 0, 1}}) {
-    Provider provider;
-    provider.selection = selection;
-    const auto result = detail::Check(provider, detail::cases[0]);
-    Require(!result.matched && result.refusal == Refusal::Selection && provider.reads == 1,
-            "failed endpoints, multiple selections, noncollapsed or wrong caret refuse");
-  }
 }
 void NullTextResult() {
   Provider provider;

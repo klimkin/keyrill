@@ -24,7 +24,11 @@ int main() {
     Require(Parse({L"inspect", command, L"123"}, options) && options.pid == 123 &&
                 options.seconds == 0 && !options.expected_build,
             "existing default command retains implicit observer build expectation");
-  for (const auto *name : {L"empty", L"probe-g", L"fixture-en-boundary", L"fixture-en-corrected"})
+  for (const auto *name :
+       {L"empty", L"probe-g", L"fixture-en-boundary", L"fixture-en-corrected", L"fixture-en-word",
+        L"fixture-ru-word", L"fixture-continuation", L"fixture-two-words", L"manual-provisional",
+        L"manual-provisional-literal", L"manual-pc", L"manual-pc-literal", L"model-en",
+        L"model-en-literal", L"model-ru", L"model-ru-literal", L"prefix-suffix"})
     Require(Parse({L"inspect", L"public-case", L"123", name}, options) &&
                 options.command == Command::PublicCase,
             "compiled public cases are accepted");
