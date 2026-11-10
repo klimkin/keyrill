@@ -1,5 +1,6 @@
 #include "host_build.h"
 #include "host_probe.h"
+#include "host_threads.h"
 #include <cstdio>
 #include <memory>
 #include <tlhelp32.h>
@@ -204,32 +205,40 @@ int wmain(int argc, wchar_t **argv) {
     return matched ? 0 : 1;
   }
   std::vector<std::unique_ptr<probe::ArmedPage>> armed;
-  struct ThreadHandles {
-    std::vector<HANDLE> values;
-    ~ThreadHandles() {
-      for (auto handle : values)
-        CloseHandle(handle);
-    }
-  } handles;
+  std::vector<inspection::ThreadCheck> live_threads;
   if (threads.empty()) {
     CloseHandle(process);
     return 1;
   }
   for (auto tid : threads) {
-    HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, tid);
-    if (!thread || GetProcessIdOfThread(thread) != pid ||
-        WaitForSingleObject(thread, 0) != WAIT_TIMEOUT) {
-      if (thread)
-        CloseHandle(thread);
-      puts("target thread unavailable before arming");
+    auto checked = inspection::CaptureThread(process, pid, tid);
+    if (checked.state == inspection::ThreadState::Live) {
+      live_threads.push_back(std::move(checked));
+      continue;
+    }
+    printf("pid=%lu started=%016llx thread=%lu capture=%s owner=%lu error=%lu"
+           " thread_wait=%08lx process_wait=%08lx\n",
+           pid, id.started, tid, inspection::thread_labels[static_cast<size_t>(checked.state)],
+           checked.owner, checked.error, checked.wait, checked.process_wait);
+    if (checked.state != inspection::ThreadState::Exited &&
+        checked.state != inspection::ThreadState::Missing) {
       CloseHandle(process);
       return 1;
     }
-    handles.values.push_back(thread);
+  }
+  if (live_threads.empty()) {
+    puts("no live target threads captured; no mapping armed");
+    CloseHandle(process);
+    return 1;
   }
   if (seconds) {
-    for (auto tid : threads) {
-      id.thread = tid;
+    for (const auto &thread : live_threads) {
+      if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) {
+        puts("target stale before arming; no further mapping created");
+        CloseHandle(process);
+        return 1;
+      }
+      id.thread = thread.tid;
       auto page = std::make_unique<probe::ArmedPage>();
       if (!page->Create(id)) {
         puts("arming unavailable or collision; no existing mapping changed");
@@ -242,18 +251,19 @@ int wmain(int argc, wchar_t **argv) {
            armed.size());
   }
   bool available = false;
-  std::vector<probe::Payload> previous(threads.size());
-  std::vector<probe::Availability> previous_states(threads.size(), probe::Availability::Missing);
+  std::vector<probe::Payload> previous(live_threads.size());
+  std::vector<probe::Availability> previous_states(live_threads.size(),
+                                                   probe::Availability::Missing);
   for (DWORD iteration = 0; iteration <= seconds; ++iteration) {
     if (WaitForSingleObject(process, 0) != WAIT_TIMEOUT) {
       puts("target stale; retained mappings are unavailable evidence");
       CloseHandle(process);
       return 1;
     }
-    for (size_t i = 0; i != threads.size(); ++i) {
-      id.thread = threads[i];
+    for (size_t i = 0; i != live_threads.size(); ++i) {
+      id.thread = live_threads[i].tid;
       probe::Payload payload{};
-      const auto state = WaitForSingleObject(handles.values[i], 0) != WAIT_TIMEOUT
+      const auto state = WaitForSingleObject(live_threads[i].handle.get(), 0) != WAIT_TIMEOUT
                              ? probe::Availability::Stale
                          : seconds ? armed[i]->Read(payload)
                                    : Existing(id, payload);

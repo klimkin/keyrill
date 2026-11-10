@@ -111,6 +111,12 @@ KeyrillHostInspect.exe public-empty TARGET_PID
 document text. `service --arm-seconds` creates up to 64 ephemeral pages for the target's current
 threads and holds them for the specified period, capped at one hour. Arm before the maintainer
 activates the source. A newly created thread needs explicit rearming and source reactivation.
+The thread snapshot does not retain thread lifetime. The inspector omits only a signaled,
+exited thread or an `OpenThread` failure with `ERROR_INVALID_PARAMETER`. It retains live thread
+handles, requires at least one, and revalidates the held process before arming. Access denial,
+owner mismatch and unexpected API errors stop capture. Content-free failures report the exact
+TID, owner, Win32 error and thread/process wait results alongside the target PID and creation time.
+There is no automatic snapshot refresh or retry.
 The ordinary `service` command opens existing pages with read access only. A missing, busy,
 stale, incompatible or inaccessible observation does not establish service inactivity.
 `build_match=1` compares the reported native-source digest with this inspector's digest.

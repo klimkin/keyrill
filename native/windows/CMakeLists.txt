@@ -69,6 +69,7 @@ target_link_libraries(KeyrillHostInspect PRIVATE ole32 oleaut32 user32 uuid adva
 add_executable(keyrill_host_probe_tests host_probe_tests.cpp host_observation.cpp host_probe.cpp guids.cpp)
 target_link_libraries(keyrill_host_probe_tests PRIVATE ole32 oleaut32 user32 uuid advapi32)
 add_executable(keyrill_host_threads_tests host_threads_tests.cpp)
+target_link_libraries(keyrill_host_threads_tests PRIVATE advapi32)
 add_executable(keyrill_routing_tests routing_tests.cpp)
 add_executable(keyrill_windows_tests tests.cpp)
 set_target_properties(keyrill_windows_tests PROPERTIES OUTPUT_NAME KeyrillProofEditor

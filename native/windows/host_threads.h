@@ -58,7 +58,8 @@ inline ThreadCheck CaptureThread(HANDLE process, DWORD pid, DWORD tid) noexcept 
   result.handle.reset(OpenThread(THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, tid));
   if (!result.handle) {
     result.error = GetLastError();
-    result.state = ThreadState::OpenFailed;
+    result.state =
+        result.error == ERROR_INVALID_PARAMETER ? ThreadState::Missing : ThreadState::OpenFailed;
   } else {
     result.owner = GetProcessIdOfThread(result.handle.get());
     if (!result.owner) {
@@ -68,7 +69,9 @@ inline ThreadCheck CaptureThread(HANDLE process, DWORD pid, DWORD tid) noexcept 
       result.state = ThreadState::WrongOwner;
     } else {
       result.wait = WaitForSingleObject(result.handle.get(), 0);
-      result.state = result.wait == WAIT_TIMEOUT ? ThreadState::Live : ThreadState::WaitFailed;
+      result.state = result.wait == WAIT_TIMEOUT    ? ThreadState::Live
+                     : result.wait == WAIT_OBJECT_0 ? ThreadState::Exited
+                                                    : ThreadState::WaitFailed;
       if (result.wait == WAIT_FAILED)
         result.error = GetLastError();
     }
