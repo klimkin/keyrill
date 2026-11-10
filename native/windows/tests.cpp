@@ -333,6 +333,12 @@ struct ApplicationScopeProperty {
 struct Span {
   LONG start, length;
 };
+enum class NativeOperation { Start, SetText, End };
+struct OperationTrace {
+  int request, composition;
+  NativeOperation operation;
+  LONG start, length, replacement_length;
+};
 struct Range final : ITfRangeACP {
   Document &document;
   std::shared_ptr<Span> span;
@@ -453,6 +459,8 @@ struct Document final : ITfContext,
   bool queried_empty = false;
   HRESULT compartment_result[2] = {S_OK, S_OK};
   VARTYPE compartment_type[2] = {VT_I4, VT_I4};
+  HRESULT compartment_manager_result = S_OK, compartment_query_result = S_OK;
+  bool compartment_manager_present = true, compartment_present = true;
   bool view_present = true;
   HRESULT scope_interface_result = S_OK;
   bool foreign = false;
@@ -471,6 +479,8 @@ struct Document final : ITfContext,
   bool active_composition = false;
   int reads = 0, writes = 0, starts = 0, ends = 0;
   int max_request_writes = 0;
+  int request_ordinal = 0;
+  std::vector<OperationTrace> operations;
   int references = 1;
   ComPtr<Composition> composition;
   ComPtr<ITfEditSession> retained_request;
@@ -502,9 +512,13 @@ struct Document final : ITfContext,
       if (FAILED(scope_interface_result))
         return scope_interface_result;
       *out = static_cast<ITfInputScope *>(this);
-    } else if (id == IID_ITfCompartmentMgr)
-      *out = static_cast<ITfCompartmentMgr *>(this);
-    else if (id == IID_ITfCompartment)
+    } else if (id == IID_ITfCompartmentMgr) {
+      if (compartment_manager_present) {
+        *out = static_cast<ITfCompartmentMgr *>(this);
+        AddRef();
+      }
+      return compartment_manager_result;
+    } else if (id == IID_ITfCompartment)
       *out = static_cast<ITfCompartment *>(this);
     if (!*out)
       return E_NOINTERFACE;
@@ -517,6 +531,7 @@ struct Document final : ITfContext,
     if (retain_callback)
       retained_request = request;
     int before = writes;
+    ++request_ordinal;
     Call("RequestEditSession");
     if (callback)
       request->DoEditSession(123);
@@ -608,9 +623,10 @@ struct Document final : ITfContext,
   HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID id, ITfCompartment **out) override {
     Call("GetCompartment");
     queried_empty = id == GUID_COMPARTMENT_EMPTYCONTEXT;
-    *out = static_cast<ITfCompartment *>(this);
-    AddRef();
-    return S_OK;
+    *out = compartment_present ? static_cast<ITfCompartment *>(this) : nullptr;
+    if (*out)
+      AddRef();
+    return compartment_query_result;
   }
   HRESULT STDMETHODCALLTYPE GetValue(VARIANT *out) override {
     Call("compartment.GetValue");
@@ -629,6 +645,9 @@ struct Document final : ITfContext,
       return S_OK;
     composition.Attach(new Composition(*this, static_cast<Range *>(range)->span));
     active_composition = true;
+    const auto &span = static_cast<Range *>(range)->span;
+    operations.push_back(
+        {request_ordinal, starts, NativeOperation::Start, span->start, span->length, 0});
     *out = composition.Get();
     (*out)->AddRef();
     return S_OK;
@@ -697,6 +716,7 @@ HRESULT Range::GetText(TfEditCookie, DWORD, WCHAR *text, ULONG capacity, ULONG *
     return E_FAIL;
   *count = std::min(capacity, static_cast<ULONG>(span->length));
   std::copy_n(document.text.data() + span->start, *count, text);
+  document.Call("GetText.after");
   return S_OK;
 }
 HRESULT Range::SetText(TfEditCookie, DWORD, const WCHAR *text, LONG length) {
@@ -704,6 +724,15 @@ HRESULT Range::SetText(TfEditCookie, DWORD, const WCHAR *text, LONG length) {
   ++document.writes;
   Require(document.active_composition && document.composition->span == span,
           "text writes address only the owned composition");
+  Require(std::none_of(document.operations.begin(), document.operations.end(),
+                       [&](const OperationTrace &operation) {
+                         return operation.operation == NativeOperation::SetText &&
+                                operation.request == document.request_ordinal &&
+                                operation.composition == document.starts;
+                       }),
+          "each request writes a composition at most once per plan");
+  document.operations.push_back({document.request_ordinal, document.starts,
+                                 NativeOperation::SetText, span->start, span->length, length});
   document.text.replace(span->start, span->length, text, length);
   span->length = length;
   document.Call("SetText.after");
@@ -764,6 +793,8 @@ HRESULT Composition::GetRange(ITfRange **out) {
 HRESULT Composition::EndComposition(TfEditCookie) {
   document.Call("EndComposition");
   ++document.ends;
+  document.operations.push_back({document.request_ordinal, document.starts, NativeOperation::End,
+                                 span->start, span->length, 0});
   if (!document.keep_composition)
     document.active_composition = false;
   document.Call("EndComposition.after");
@@ -781,6 +812,8 @@ struct Manager final : ITfThreadMgr,
   bool disabled = false;
   HRESULT compartment_result = S_OK;
   VARTYPE compartment_type = VT_I4;
+  HRESULT compartment_manager_result = S_OK, compartment_query_result = S_OK;
+  bool compartment_manager_present = true, compartment_present = true;
   bool diagnostic_source = true;
   bool throw_advise = false;
   bool throw_unadvise = false;
@@ -811,8 +844,13 @@ struct Manager final : ITfThreadMgr,
       *out = static_cast<ITfSourceSingle *>(this);
     else if (id == IID_ITfKeystrokeMgr)
       *out = static_cast<ITfKeystrokeMgr *>(this);
-    else if (id == IID_ITfCompartmentMgr)
-      *out = static_cast<ITfCompartmentMgr *>(this);
+    else if (id == IID_ITfCompartmentMgr) {
+      if (compartment_manager_present) {
+        *out = static_cast<ITfCompartmentMgr *>(this);
+        AddRef();
+      }
+      return compartment_manager_result;
+    }
     if (!*out)
       return E_NOINTERFACE;
     AddRef();
@@ -856,9 +894,10 @@ struct Manager final : ITfThreadMgr,
   }
   HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID, ITfCompartment **out) override {
     top->Call("thread.GetCompartment");
-    *out = static_cast<ITfCompartment *>(this);
-    AddRef();
-    return S_OK;
+    *out = compartment_present ? static_cast<ITfCompartment *>(this) : nullptr;
+    if (*out)
+      AddRef();
+    return compartment_query_result;
   }
   HRESULT STDMETHODCALLTYPE GetValue(VARIANT *out) override {
     top->Call("thread.GetValue");
@@ -2760,10 +2799,10 @@ void SourceServiceSchedules() {
                     : status.stage == source_proof::Stage::Verified,
               "actual service exact callback passes while a real reentrant HandleEvent finish is "
               "interference");
-      Require(h.a.writes == writes && h.a.starts == starts && h.a.ends == ends + (input ? 1 : 0) &&
-                  (input || h.a.reads == reads) && native.language_calls == 1 &&
-                  !native.activation_calls,
-              "probe adds no document writes, composition starts, or forced termination");
+      Require(h.a.writes == writes + (input ? 1 : 0) && h.a.starts == starts &&
+                  h.a.ends == ends + (input ? 1 : 0) && (input || h.a.reads == reads) &&
+                  native.language_calls == 1 && !native.activation_calls,
+              "only the interfering input finish writes once and ends its composition");
       h.Oracle(L"ghbdtn", 13);
       probe.Close();
       Require(native.references == 1,
@@ -3147,9 +3186,10 @@ void ShutdownServiceSchedules() {
     const auto deactivated = h.service->Deactivate();
     Require((probe.Finish(deactivated) == Verdict::Verified) == (scenario != 3),
             "real service exact and verified finish pass while detached-only shutdown fails");
-    Require(h.manager.provider_queries == queries && h.a.writes == writes && h.a.starts == starts &&
+    Require(h.manager.provider_queries == queries &&
+                h.a.writes == writes + (scenario == 2 ? 1 : 0) && h.a.starts == starts &&
                 h.a.ends == ends + (scenario == 2 ? 1 : 0),
-            "shutdown observation adds no provider rediscovery, write, start, or forced end");
+            "shutdown observation adds no effects beyond the explicit ordinary finish");
     h.Oracle(L"ghbdtn", 13);
   }
   {
@@ -4022,8 +4062,8 @@ void LifecycleServiceSchedules() {
     Require(after.lifecycle.owned_present &&
                 after.lifecycle.owned_serial == before.lifecycle.owned_serial + 1 &&
                 !after.base.stopped && h.a.composition.Get() != old.Get() &&
-                h.a.active_composition && h.a.writes == writes + 1 && h.a.starts == starts + 1 &&
-                h.a.ends == ends + 1 && h.a.max_request_writes == 1,
+                h.a.active_composition && h.a.writes == writes + 2 && h.a.starts == starts + 1 &&
+                h.a.ends == ends + 1 && h.a.max_request_writes == 2,
             "identity query replacement preserves new ownership and ordinary continuation effects");
     if (reentry) {
       Require(h.a.trace == continuation_trace,
@@ -4127,8 +4167,8 @@ void LifecycleServiceSchedules() {
                                                            LifecycleKind::Acquired}),
             "finish is verified only after original final Alive and ordinary continuation acquires "
             "a distinct serial");
-    Require(eaten == !reentry && h.a.ends == 1 && h.a.max_request_writes == 1,
-            "ordinary end reentry preserves key disposition and one write bound");
+    Require(eaten == !reentry && h.a.ends == 1 && h.a.max_request_writes == (reentry ? 1 : 2),
+            "ordinary end reentry preserves disposition and permits only distinct plan writes");
     h.Oracle(reentry ? L"\x043f\x0440\x0438\x0432\x0435\x0442 "
                      : L"\x043f\x0440\x0438\x0432\x0435\x0442 x",
              reentry ? 14 : 15);
@@ -4655,7 +4695,8 @@ void FinishContractRegressions() {
             readonly ? "read-only" : "scope-denied", post_end_reads,
             static_cast<unsigned long long>(after.counts[unknown] - before.counts[unknown]),
             h.service->stopped());
-    passed = post_end_reads == 0 && passed;
+    passed = post_end_reads == 0 && after.counts[unknown] == before.counts[unknown] + 1 &&
+             h.service->stopped() && passed;
     const auto reads = h.a.reads, writes = h.a.writes;
     Require(!h.Key(L'y', false) && h.a.reads == reads && h.a.writes == writes &&
                 h.a.ends == ends + 1 && h.a.starts == 1,
@@ -4663,6 +4704,276 @@ void FinishContractRegressions() {
     h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 14);
   }
   Require(passed, "FINISH contract regression aggregate");
+}
+void WritablePolicyResults() {
+  for (const auto result : {S_FALSE, E_FAIL}) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.a.status_result = result;
+    Require(!h.Key(L'g', false) && h.a.calls["GetSelection"] == 0,
+            "context status requires exact S_OK before raw selection");
+    NoAdmissionEffects(h);
+  }
+  for (bool thread : {false, true})
+    for (int failure = 0; failure != 6; ++failure) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      auto &manager_result =
+          thread ? h.manager.compartment_manager_result : h.a.compartment_manager_result;
+      auto &query_result =
+          thread ? h.manager.compartment_query_result : h.a.compartment_query_result;
+      auto &manager_present =
+          thread ? h.manager.compartment_manager_present : h.a.compartment_manager_present;
+      auto &present = thread ? h.manager.compartment_present : h.a.compartment_present;
+      if (failure == 0)
+        manager_result = S_FALSE;
+      if (failure == 1)
+        manager_result = E_NOINTERFACE;
+      if (failure == 2)
+        manager_present = false;
+      if (failure == 3)
+        query_result = S_FALSE;
+      if (failure == 4)
+        query_result = E_ACCESSDENIED;
+      if (failure == 5)
+        present = false;
+      Require(!h.Key(L'g', false) && h.a.calls["GetSelection"] == 0,
+              "missing malformed or failed compartment interfaces stop before selection");
+      NoAdmissionEffects(h);
+    }
+  struct CompartmentValue {
+    HRESULT result;
+    VARTYPE type;
+    bool allowed;
+  };
+  for (int compartment = 0; compartment != 3; ++compartment)
+    for (const auto value :
+         {CompartmentValue{S_OK, VT_EMPTY, true}, CompartmentValue{S_OK, VT_I4, true},
+          CompartmentValue{S_FALSE, VT_EMPTY, true}, CompartmentValue{S_FALSE, VT_I4, false},
+          CompartmentValue{S_OK, VT_BOOL, false}, CompartmentValue{S_OK, VT_UNKNOWN, false},
+          CompartmentValue{E_FAIL, VT_EMPTY, false},
+          CompartmentValue{E_ACCESSDENIED, VT_I4, false}}) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      if (compartment == 2) {
+        h.manager.compartment_result = value.result;
+        h.manager.compartment_type = value.type;
+      } else {
+        h.a.compartment_result[compartment] = value.result;
+        h.a.compartment_type[compartment] = value.type;
+      }
+      Require(h.Key(L'g', false) == value.allowed,
+              "only exact valid zero or legitimate unset compartments permit editing");
+      if (value.allowed) {
+        Require(h.a.starts == 1 && h.a.writes == 1 && !h.service->stopped(),
+                "legitimate compartment signatures preserve the owned executor");
+        h.Oracle(L"g", 8);
+      } else {
+        Require(h.a.calls["GetSelection"] == 0,
+                "invalid compartment signatures stop before raw selection");
+        NoAdmissionEffects(h);
+      }
+    }
+}
+void FinishReplacementFailures() {
+  for (int failure = 0; failure != 10; ++failure) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"hello");
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    const auto writes = h.a.writes, ends = h.a.ends, starts = h.a.starts;
+    int reads_at_write = -1;
+    h.a.hook = [&](const char *call) {
+      if (strcmp(call, "SetText.after") != 0)
+        return;
+      reads_at_write = h.a.reads;
+      switch (failure) {
+      case 0:
+        h.a.write_result = E_FAIL;
+        break;
+      case 1:
+        h.a.text[7] = L'!';
+        break;
+      case 2:
+        ++h.a.composition->span->length;
+        break;
+      case 3:
+        h.a.range_context = &h.b;
+        break;
+      case 4:
+        h.a.status = TF_SD_READONLY;
+        break;
+      case 5:
+        h.a.application_scope.value_result = E_ACCESSDENIED;
+        break;
+      case 6:
+        h.service->OnPushContext(&h.b);
+        break;
+      case 7:
+        h.a.active_composition = false;
+        h.service->OnCompositionTerminated(123, h.a.composition.Get());
+        break;
+      case 8:
+        Require(!h.Key(L'x', false), "nested input passes during attempted FINISH");
+        break;
+      case 9:
+        h.a.end_result = E_FAIL;
+        break;
+      }
+    };
+    const kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+    Require(!h.service->HandleEvent(&h.a, finish) && reads_at_write >= 0 &&
+                h.a.writes == writes + 1 && h.a.ends == ends + (failure == 9 ? 1 : 0) &&
+                h.a.starts == starts && h.service->stopped(),
+            "unknown unchanged FINISH passes without another composition or character write");
+    constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    Require(after.counts[unknown] == before.counts[unknown] + 1,
+            "failed FINISH replacement or end records one unknown outcome");
+    if (failure == 4 || failure == 5)
+      Require(h.a.reads == reads_at_write, "post-write exclusion forbids further character reads");
+    h.Oracle(failure == 1 ? L"!ello" : L"hello", 12);
+    Require(h.a.selection_length == 0, "unknown unchanged FINISH preserves public selection");
+    h.a.hook = nullptr;
+    const auto reads = h.a.reads;
+    Require(!h.Key(L'y', false) && h.a.reads == reads && h.a.writes == writes + 1 &&
+                h.a.starts == starts && h.a.ends == ends + (failure == 9 ? 1 : 0),
+            "unknown FINISH never performs later readback replay or repair");
+    h.Oracle(failure == 1 ? L"!ello" : L"hello", 12);
+  }
+}
+void EmptyStartExclusion() {
+  for (bool readonly : {false, true}) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    int reads_at_start = -1;
+    h.a.hook = [&](const char *call) {
+      if (reads_at_start >= 0 || strcmp(call, "composition.QI") != 0)
+        return;
+      reads_at_start = h.a.reads;
+      if (readonly)
+        h.a.status = TF_SD_READONLY;
+      else
+        h.a.application_scope.value_result = E_ACCESSDENIED;
+    };
+    Require(!h.Key(L'g', false) && reads_at_start >= 0 && h.a.reads == reads_at_start &&
+                h.a.starts == 1 && h.a.active_composition && h.a.writes == 0 && h.a.ends == 0 &&
+                h.service->stopped(),
+            "exclusion after empty composition start stops before character access or effects");
+    constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+    constexpr auto refused = static_cast<size_t>(diagnostics::Counter::Refused);
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    Require(after.counts[unknown] == before.counts[unknown] &&
+                after.counts[refused] == before.counts[refused] + 1,
+            "empty start without a character write retains refused-before-write classification");
+    h.Oracle(L"", 7);
+    h.a.hook = nullptr;
+    Require(!h.Key(L'x', false) && h.a.reads == reads_at_start && h.a.starts == 1 &&
+                h.a.writes == 0 && h.a.ends == 0 && h.service->stopped(),
+            "empty-start refusal cannot resume ownership replay or repair on later input");
+    h.Oracle(L"", 7);
+  }
+}
+void FreshPolicyBoundaries() {
+  struct Boundary {
+    const char *operation, *preparation;
+    bool owned, finish;
+  };
+  for (const auto boundary : {Boundary{"GetText", "ShiftStart", false, false},
+                              Boundary{"GetText", "GetExtent", true, false},
+                              Boundary{"StartComposition", "enumerator.Next", false, false},
+                              Boundary{"SetText.before", "GetExtent", true, false},
+                              Boundary{"SetSelection", "Collapse", true, false},
+                              Boundary{"EndComposition", "GetText.after", true, true}}) {
+    const auto event =
+        boundary.finish ? kr_event{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}} : Text(L'b');
+    size_t preparation = 0;
+    {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      if (boundary.owned)
+        h.Type(L"hello");
+      h.a.trace.clear();
+      h.service->HandleEvent(&h.a, event);
+      const auto operation = std::find(h.a.trace.begin(), h.a.trace.end(), boundary.operation);
+      Require(operation != h.a.trace.end(), "positive schedule reaches the protected boundary");
+      auto found = operation;
+      while (found != h.a.trace.begin() && *found != boundary.preparation)
+        --found;
+      Require(*found == boundary.preparation,
+              "protected boundary has callback-capable preparation");
+      preparation = static_cast<size_t>(found - h.a.trace.begin());
+    }
+    for (int policy = 0; policy != 8; ++policy) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      if (boundary.owned)
+        h.Type(L"hello");
+      const auto before = DiagnosticSnapshot(*h.service.Get());
+      const auto initial_writes = h.a.writes;
+      bool injected = false;
+      int reads = -1, writes = -1, starts = -1, ends = -1, selections = -1;
+      h.a.trace.clear();
+      h.a.hook = [&](const char *) {
+        if (injected || h.a.trace.size() != preparation + 1)
+          return;
+        injected = true;
+        reads = h.a.reads;
+        writes = h.a.writes;
+        starts = h.a.starts;
+        ends = h.a.ends;
+        selections = h.a.calls["SetSelection"];
+        switch (policy) {
+        case 0:
+          h.a.status = TF_SD_READONLY;
+          break;
+        case 1:
+          h.a.disabled = true;
+          break;
+        case 2:
+          h.a.empty_disabled = true;
+          break;
+        case 3:
+          h.manager.disabled = true;
+          break;
+        case 4:
+          h.a.scope = IS_PRIVATE;
+          break;
+        case 5:
+          h.a.application_scope.value_result = E_ACCESSDENIED;
+          break;
+        case 6:
+          ordinary.facts.field.style |= ES_READONLY;
+          break;
+        case 7:
+          h.service->OnPushContext(&h.b);
+          break;
+        }
+      };
+      const bool eaten = h.service->HandleEvent(&h.a, event);
+      const bool attempted = writes > initial_writes;
+      Require(injected && eaten == (attempted && !boundary.finish) && h.a.reads == reads &&
+                  h.a.writes == writes && h.a.starts == starts && h.a.ends == ends &&
+                  h.a.calls["SetSelection"] == selections,
+              "fresh policy drift blocks further character access and effects after preparation");
+      constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+      const auto after = DiagnosticSnapshot(*h.service.Get());
+      Require(after.counts[unknown] == before.counts[unknown] + (attempted ? 1 : 0) &&
+                  (!attempted || h.service->stopped()),
+              "post-effect policy exclusion is unknown and stops correction");
+      h.Oracle(attempted && !boundary.finish ? L"hellob"
+               : boundary.owned              ? L"hello"
+                                             : L"",
+               boundary.owned ? 12 : 7);
+      Require(h.a.selection_length == 0, "policy drift leaves the exact public selection");
+      h.a.hook = nullptr;
+      if (policy != 7 || boundary.owned)
+        Require(!h.Key(L'x', false) && h.a.reads == reads && h.a.writes == writes &&
+                    h.a.starts == starts && h.a.ends == ends,
+                "policy refusal or unknown never replays or repairs on the next key");
+    }
+  }
 }
 void NotepadReplanAdmission() {
   for (int scenario = 0; scenario != 3; ++scenario) {
@@ -4689,8 +5000,9 @@ void NotepadReplanAdmission() {
         reads_at_scope = h.a.reads;
       }
     };
-    Require(!h.Key(L'x', false) && ended && readmitted && h.a.starts == 1 && h.a.writes == writes,
-            "finish replan reacquires admission and a newly excluded target passes the next key");
+    Require(!h.Key(L'x', false) && ended && readmitted && h.a.starts == 1 &&
+                h.a.writes == writes + 1 && h.service->stopped(),
+            "post-finish exclusion stops before replan and passes the next key");
     if (scenario == 0)
       Require(acp_at_scope >= 0 && h.a.calls["range.ACP"] == acp_at_scope &&
                   h.a.reads == reads_at_scope,
@@ -4766,7 +5078,22 @@ void Continuation() {
   h.Type(L"ghbdtn x");
   h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 x", 15);
   Require(h.a.ends == 1 && h.a.starts == 2, "bounded finish and replan starts next mark");
-  Require(h.a.max_request_writes == 1, "unchanged finish performs no duplicate text write");
+  Require(h.a.max_request_writes == 2, "continuation performs one FINISH then one MARK write");
+  std::vector<OperationTrace> continuation;
+  std::copy_if(
+      h.a.operations.begin(), h.a.operations.end(), std::back_inserter(continuation),
+      [&](const OperationTrace &operation) { return operation.request == h.a.request_ordinal; });
+  Require(
+      continuation.size() == 4 && continuation[0].operation == NativeOperation::SetText &&
+          continuation[0].composition == 1 && continuation[0].start == 7 &&
+          continuation[0].length == 7 && continuation[0].replacement_length == 7 &&
+          continuation[1].operation == NativeOperation::End && continuation[1].composition == 1 &&
+          continuation[2].operation == NativeOperation::Start && continuation[2].composition == 2 &&
+          continuation[2].start == 14 && continuation[2].length == 0 &&
+          continuation[3].operation == NativeOperation::SetText &&
+          continuation[3].composition == 2 && continuation[3].start == 14 &&
+          continuation[3].length == 0 && continuation[3].replacement_length == 1,
+      "continuation attributes each owned write to a distinct composition plan in order");
 }
 void Denials() {
   for (int scenario = 0; scenario != 4; ++scenario) {
@@ -4916,7 +5243,8 @@ void FinishOutcomes() {
     bool eaten = (scenario == 2 || scenario == 3) ? h.service->HandleEvent(&h.a, finish)
                                                   : h.Key(L'x', false);
     Require(!eaten, "unknown FINISH passes ordinary key without replan");
-    Require(h.a.writes == before && h.service->stopped(), "finish unknown makes no text repair");
+    Require(h.a.writes == before + 1 && h.service->stopped(),
+            "finish unknown makes one owned replacement without text repair");
   }
   Harness h;
   h.Type(L"hello");
@@ -4937,7 +5265,7 @@ void FinishOutcomes() {
   moved.Type(L"ghbdtn ");
   moved.a.caret = 3;
   int before = moved.a.writes;
-  Require(!moved.Key(L'x', false) && moved.a.writes == before && !moved.a.active_composition,
+  Require(!moved.Key(L'x', false) && moved.a.writes == before + 1 && !moved.a.active_composition,
           "finish with caret drift cannot replan inside unrelated prefix token");
   for (int scenario = 0; scenario != 3; ++scenario) {
     Harness reserved;
@@ -5284,6 +5612,10 @@ int wmain(int argc, wchar_t **argv) {
   NotepadFieldDriftBeforeText();
   puts("RUN Notepad replan admission");
   FinishContractRegressions();
+  WritablePolicyResults();
+  FinishReplacementFailures();
+  EmptyStartExclusion();
+  FreshPolicyBoundaries();
   NotepadReplanAdmission();
   puts("RUN correction and reversal");
   CorrectionAndReversal();

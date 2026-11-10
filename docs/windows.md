@@ -98,6 +98,9 @@ complete metadata and be enabled. The field requires `WS_CHILD` and `ES_MULTILIN
 Find, other controls, other hierarchies and unknown versions receive no text admission.
 
 Writable context status and all three disabled compartments precede raw selection acquisition.
+`GetStatus` requires exactly `S_OK`. A disabling compartment permits `S_OK` with `VT_EMPTY`
+or `VT_I4` zero, or the legitimate unset signature `S_FALSE` with `VT_EMPTY`. Other results,
+nonempty `S_FALSE` values, malformed values, and interface failures refuse admission.
 The raw range must belong to that same context and have valid selection flags. The scope query
 then requires exact `S_OK` results, a present property and interface, and exactly one `IS_DEFAULT`
 or `IS_TEXT`. The only alternative, `NotepadUnavailableValue`, requires the freshly matched
@@ -109,8 +112,12 @@ before ACP, characters or composition. Proof controls continue to require explic
 
 The same private acquisition runs initially and after a finish that requests replan. It checks
 generation and the exact native field again after scope callbacks, then obtains ACP. Field
-identity lives only in that edit session. Existing pre-effect focus checks recapture it; owned
-range, text, caret, returned range and acknowledgement checks remain in the single executor.
+identity lives only in that edit session. A shared private range guard checks fresh native field
+identity, canonical range context, writable status, all three compartments, and scope before
+each character read, composition start, text replacement, selection update, and composition end.
+Callback-capable preparation precedes the guard. The guard rechecks exact field identity and
+generation after policy callbacks. These metadata queries cannot make document authority atomic.
+Owned range, text, caret, returned range, and acknowledgement checks remain in the single executor.
 There is no UIA runtime dependency, admission override, second editor or new editing transport.
 
 Controlled native facts and COM schedules establish these branches, including zero ACP/text/
@@ -119,9 +126,11 @@ Notepad. First live acceptance still requires the exact reviewed DLL loaded by a
 Notepad process, a nonnull owned composition, exact returned ranges and readback, an independent
 full public document/caret oracle and zero Unknown effects. Correction, retained reversal,
 manual conversion, model/vocabulary behavior, continuation, Undo, focus, tab, source and close
-remain separate live gates. The unchanged-FINISH exact-write contract and the mapping of a
-platform-requested focus-loss commit remain unresolved. This admission changes no lifecycle
-callback or finish behavior and grants no write authority from a focus or termination notice.
+remain separate live gates. Unchanged FINISH now performs one exact owned-range replacement
+before ending the composition. Controlled tests preserve moved carets and noncollapsed selections,
+but fake `SetText` does not move selection. Actual Notepad selection preservation and Undo remain
+unproven. The mapping of a platform-requested focus-loss commit also remains a live gate.
+Focus and termination notifications grant no new write authority or saved-text writeback.
 
 For an unadmitted Notepad version, after the existing source and loaded-layout checks, the first
 key callback in a native
@@ -398,10 +407,29 @@ and reset order during normal and partial teardown.
 An owned mark retains canonical context and composition identities, exact ACP extent, and
 bounded verified UTF-16 text. Each update checks active composition membership, generation,
 expected text, returned extent, and caret. It verifies the returned range, composition range,
-text, and caret after the one permitted `SetText` call. Unchanged finish calls `EndComposition`
-without a redundant text write or caret requirement. It then checks the retained exact range's
-text and extent and verifies that no composition remains before acknowledging Rust. A replan
+text, and caret after the one permitted `SetText` call. Each MARK or FINISH that reaches
+replacement performs one exact owned-range `SetText`, including an unchanged finish.
+`EndComposition` removes the composing property and is a separate effect, not a second character
+write. Unchanged finish requires no expected end caret and does not force selection collapse.
+Changing finish retains its caret checks and verified end-caret update. Finish then checks the
+retained exact range's text and extent and verifies that no composition remains before
+acknowledging Rust. A replan
 reacquires the actual caret and boundary, rather than inheriting the finished mark's boundary.
+FINISH followed by a replanned MARK may perform two character writes in one request, each in a
+distinct plan and composition. Controlled operation traces attribute both writes by request
+ordinal, composition-start serial, operation, and exact span.
+
+If scope or writability excludes the field after an attempted character write, the guard refuses
+further character reads. The result is Unknown, correction stops, and the executor performs no replan,
+replay, repair, or second character write. A pre-effect refusal follows the existing key
+disposition rules. Fresh policy checks do not change the owned-composition transport or make
+native success a document oracle.
+
+A refusal after creating an empty owned composition but before `SetText` retains the existing
+`KR_REFUSED_BEFORE_WRITE` classification. Composition creation is already a native effect.
+The service stops for the activation and performs no further character read or editing effect.
+It never replays or repairs the input.
+It does not resume ownership on later input.
 
 Request HRESULT, session HRESULT, and actual callback completion all affect key disposition.
 A refused edit passes the key. An unknown MARK consumes the possibly inserted key. An unknown

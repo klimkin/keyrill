@@ -112,7 +112,10 @@ These follow from the architecture and apply on every platform:
   try to repair the document.
 - Set key disposition from what actually happened, not from whether a request was accepted.
 - Exclude password, secure and read-only fields before reading anything or starting a
-  composition.
+  composition. Recheck current scope, writability, exact field identity, and generation after
+  callback-capable preparation before every character read or native effect. Metadata checks
+  cannot make document authority atomic. Exclusion after an attempted character write forbids
+  further character reads and yields Unknown without replan, replay, or repair.
 - Never hold a Rust borrow, a dictionary lock or the engine across a callback into the host.
   Contain native exceptions on the native side.
 - Keep raw input, personal vocabulary and paths out of logs and status.
@@ -128,6 +131,13 @@ main-document candidate, with ordinary Notepad editing still awaiting live accep
 contexts and owned compositions fit the contract better than UI Automation reads plus synthetic
 replacement. Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
 native COM shim if it narrows lifetime risk.
+
+The Windows executor replaces the exact owned range once for each MARK or FINISH that reaches
+replacement. An unchanged FINISH has no expected end-caret requirement and does not force
+selection collapse. `EndComposition` is a separate composing-property effect. A FINISH followed
+by a replanned MARK may write twice in one request while preserving one character write per
+plan. Controlled doubles prove that accounting and fresh policy refusal. Their `SetText` does
+not move selection, so actual Notepad selection preservation and Undo remain separate live gates.
 
 | Interface | Documented behavior | Obligation |
 |---|---|---|
