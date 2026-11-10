@@ -888,6 +888,25 @@ struct Manager final : ITfThreadMgr,
   int diagnostic_advises = 0, diagnostic_unadvises = 0, provider_queries = 0;
   int references = 1;
   int key_unadvises = 0, thread_unadvises = 0, profile_unadvises = 0;
+  struct CommandKey {
+    GUID command;
+    TF_PRESERVEDKEY key;
+    bool operator==(const CommandKey &other) const {
+      return command == other.command && key.uVKey == other.key.uVKey &&
+             key.uModifiers == other.key.uModifiers;
+    }
+  };
+  struct Registration {
+    TfClientId client;
+    CommandKey binding;
+  };
+  std::vector<Registration> preserved_keys;
+  std::vector<CommandKey> unpreserved_keys;
+  // Harness retains the service until Deactivate clears this borrowed sink.
+  ITfKeyEventSink *key_sink = nullptr;
+  TfClientId key_client = TF_CLIENTID_NULL;
+  BOOL key_foreground = FALSE;
+  int key_advises = 0;
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
   ULONG STDMETHODCALLTYPE Release() override { return --references; }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
@@ -943,12 +962,18 @@ struct Manager final : ITfThreadMgr,
     }
     return S_OK;
   }
-  HRESULT STDMETHODCALLTYPE AdviseKeyEventSink(TfClientId, ITfKeyEventSink *, BOOL) override {
+  HRESULT STDMETHODCALLTYPE AdviseKeyEventSink(TfClientId client, ITfKeyEventSink *sink,
+                                               BOOL foreground) override {
+    ++key_advises;
+    key_client = client;
+    key_sink = sink;
+    key_foreground = foreground;
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE UnadviseKeyEventSink(TfClientId client) override {
     Require(client == 42, "captured teardown client");
     ++key_unadvises;
+    key_sink = nullptr;
     top->Call("UnadviseKeySink");
     return S_OK;
   }
@@ -1025,8 +1050,19 @@ struct Manager final : ITfThreadMgr,
   STUB(KeyUp, (WPARAM, LPARAM, BOOL *));
   STUB(GetPreservedKey, (ITfContext *, const TF_PRESERVEDKEY *, GUID *));
   STUB(IsPreservedKey, (REFGUID, const TF_PRESERVEDKEY *, BOOL *));
-  STUB(PreserveKey, (TfClientId, REFGUID, const TF_PRESERVEDKEY *, const WCHAR *, ULONG));
-  STUB(UnpreserveKey, (REFGUID, const TF_PRESERVEDKEY *));
+  HRESULT STDMETHODCALLTYPE PreserveKey(TfClientId client, REFGUID command,
+                                        const TF_PRESERVEDKEY *key, const WCHAR *, ULONG) override {
+    if (!key)
+      return E_INVALIDARG;
+    preserved_keys.push_back({client, {command, *key}});
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE UnpreserveKey(REFGUID command, const TF_PRESERVEDKEY *key) override {
+    if (!key)
+      return E_INVALIDARG;
+    unpreserved_keys.push_back({command, *key});
+    return S_OK;
+  }
   STUB(SetPreservedKeyDescription, (REFGUID, const WCHAR *, ULONG));
   STUB(GetPreservedKeyDescription, (REFGUID, BSTR *));
   STUB(SimulatePreservedKey, (ITfContext *, REFGUID, BOOL *));
@@ -1217,6 +1253,108 @@ struct KeyboardState {
     }
   }
 };
+bool PreservedCommandSequences() {
+  using diagnostics::Counter;
+  bool passed = true;
+  auto check = [&](bool condition, const char *label) {
+    if (!condition) {
+      fprintf(stderr, "FAIL: %s\n", label);
+      passed = false;
+    }
+  };
+  std::vector<Manager::CommandKey> stable_bindings;
+  for (int activation = 0; activation != 2; ++activation) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    auto &manager = h.manager;
+    const bool advised = manager.key_advises == 1 && manager.key_sink && manager.key_client == 42 &&
+                         manager.key_foreground;
+    check(advised, "preserved commands use the actual advised foreground sink and client");
+    if (manager.preserved_keys.size() != 2) {
+      fprintf(stderr, "FAIL: preserved command registrations activation=%d expected=2 actual=%zu\n",
+              activation + 1, manager.preserved_keys.size());
+      passed = false;
+    }
+    std::vector<Manager::CommandKey> bindings;
+    for (UINT key : {static_cast<UINT>('K'), static_cast<UINT>('Z')}) {
+      auto found = std::find_if(
+          manager.preserved_keys.begin(), manager.preserved_keys.end(),
+          [&](const Manager::Registration &entry) { return entry.binding.key.uVKey == key; });
+      if (found == manager.preserved_keys.end())
+        continue;
+      check(found->client == manager.key_client && found->binding.command != GUID_NULL &&
+                found->binding.key.uModifiers == (TF_MOD_LCONTROL | TF_MOD_LALT) &&
+                found->binding.key.uModifiers == 0xc0,
+            "preserved command binds its activation client and exact left Ctrl Alt keydown pair");
+      bindings.push_back(found->binding);
+    }
+    check(bindings.size() == 2, "activation registers both K and Z command bindings");
+    if (bindings.size() == 2) {
+      check(bindings[0].command != bindings[1].command,
+            "manual and reverse use distinct nonnull command GUIDs");
+      if (activation == 0)
+        stable_bindings = bindings;
+      else
+        check(bindings == stable_bindings,
+              "command GUID and key bindings are stable across activations");
+    }
+    if (advised) {
+      BOOL eaten = TRUE;
+      check(manager.key_sink->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
+                h.a.reads == 0 && h.a.writes == 0 && h.a.starts == 0 &&
+                h.a.calls["RequestEditSession"] == 0,
+            "unknown preserved GUID passes without text inspection or an edit request");
+    }
+    if (advised && manager.preserved_keys.size() == 2 && bindings.size() == 2) {
+      keyboard.Type(h, "GHBDTN");
+      h.Oracle(L"ghbdtn", 13);
+      auto *composition = h.a.composition.Get();
+      const int starts = h.a.starts, ends = h.a.ends;
+      keyboard.Set(VK_LCONTROL, 0x80);
+      keyboard.Set(VK_LMENU, 0x80);
+      for (const auto &binding : bindings) {
+        const int writes = h.a.writes, requests = h.a.calls["RequestEditSession"];
+        const auto before = DiagnosticSnapshot(*h.service.Get());
+        BOOL eaten = FALSE;
+        check(manager.key_sink->OnPreservedKey(&h.a, binding.command, &eaten) == S_OK && eaten,
+              "registered preserved command completes through the advised sink and consumes");
+        const auto after = DiagnosticSnapshot(*h.service.Get());
+        check(h.a.writes == writes + 1 && h.a.calls["RequestEditSession"] == requests + 1 &&
+                  h.a.max_request_writes == 1 &&
+                  after.counts[static_cast<size_t>(Counter::Attempted)] ==
+                      before.counts[static_cast<size_t>(Counter::Attempted)] + 1 &&
+                  after.counts[static_cast<size_t>(Counter::Verified)] ==
+                      before.counts[static_cast<size_t>(Counter::Verified)] + 1 &&
+                  after.counts[static_cast<size_t>(Counter::Unknown)] ==
+                      before.counts[static_cast<size_t>(Counter::Unknown)],
+              "each preserved command makes one requested verified write without unknown effects");
+        const wchar_t *word = binding.key.uVKey == 'K' ? L"привет" : L"ghbdtn";
+        check(h.a.text == std::wstring(L"prefix ") + word + L"suffix" && h.a.caret == 13 &&
+                  h.b.text == L"prefix suffix" && h.b.caret == 7 && h.b.writes == 0,
+              "preserved conversion and reversal preserve exact whole documents and end caret");
+        check(
+            h.a.composition.Get() == composition && h.a.active_composition &&
+                h.a.starts == starts && h.a.ends == ends,
+            "preserved commands retain the same owned composition without commit or reacquisition");
+      }
+    }
+    check(h.service->Deactivate() == S_OK && manager.key_sink == nullptr,
+          "deactivation clears the captured preserved-command sink");
+    check(manager.unpreserved_keys.size() == 2 &&
+              std::all_of(manager.preserved_keys.begin(), manager.preserved_keys.end(),
+                          [&](const Manager::Registration &entry) {
+                            return std::count(manager.unpreserved_keys.begin(),
+                                              manager.unpreserved_keys.end(), entry.binding) == 1;
+                          }),
+          "deactivation unregisters exactly the two acquired command pairs once");
+    const auto cleanup = manager.unpreserved_keys;
+    check(h.service->Deactivate() == S_OK && manager.unpreserved_keys == cleanup &&
+              manager.key_unadvises == 1,
+          "repeated deactivation does not unregister command pairs or sink twice");
+  }
+  return passed;
+}
 void CommandKeySequences() {
   {
     ProfileManager profile;
@@ -6191,11 +6329,15 @@ int wmain(int argc, wchar_t **argv) {
   RuntimeFileSchedules();
   puts("RUN actual service model and vocabulary schedules");
   RuntimeServiceSchedules();
-  DestroyWindow(controlled_root);
-  CoUninitialize();
   Require(unchanged_finish_selection,
           "unchanged FINISH preserves selection and continuation aggregate");
-  puts("Controlled same-service COM schedules passed. No registration or physical TSF routing "
-       "tested.");
+  puts("Existing controlled same-service COM schedules passed.");
+  puts("RUN activation-registered preserved command sequences");
+  const bool preserved_commands = PreservedCommandSequences();
+  DestroyWindow(controlled_root);
+  CoUninitialize();
+  Require(preserved_commands, "activation-registered preserved command aggregate");
+  puts("Controlled same-service COM schedules passed. No installed service or physical TSF "
+       "routing tested.");
   return 0;
 }
