@@ -13,6 +13,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <olectl.h>
 #include <thread>
 #include <vector>
 #include <winioctl.h>
@@ -901,14 +902,29 @@ struct Manager final : ITfThreadMgr,
     CommandKey binding;
   };
   std::vector<Registration> preserved_keys;
+  std::vector<Registration> preserve_calls;
   std::vector<CommandKey> unpreserved_keys;
+  HRESULT preserve_result[2]{S_OK, S_OK};
+  HRESULT unpreserve_result[2]{S_OK, S_OK};
+  int throw_preserve = -1, throw_unpreserve = -1;
+  std::function<void(size_t)> preserve_hook, unpreserve_hook;
+  std::function<void()> release_hook;
+  std::function<void(int)> advise_hook;
+  HRESULT sink_result[3]{S_OK, S_OK, S_OK};
+  HRESULT unsink_result[3]{S_OK, S_OK, S_OK};
+  int throw_sink = -1;
+  int thread_advises = 0, profile_advises = 0;
   // Harness retains the service until Deactivate clears this borrowed sink.
   ITfKeyEventSink *key_sink = nullptr;
   TfClientId key_client = TF_CLIENTID_NULL;
   BOOL key_foreground = FALSE;
   int key_advises = 0;
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
-  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  ULONG STDMETHODCALLTYPE Release() override {
+    if (release_hook)
+      release_hook();
+    return --references;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
     *out = nullptr;
     if (top)
@@ -948,8 +964,14 @@ struct Manager final : ITfThreadMgr,
     return S_OK;
   }
   HRESULT STDMETHODCALLTYPE AdviseSink(REFIID id, IUnknown *, DWORD *cookie) override {
-    *cookie = id == IID_ITfThreadMgrEventSink ? 1 : 2;
-    return S_OK;
+    const int index = id == IID_ITfThreadMgrEventSink ? 0 : 1;
+    ++(index == 0 ? thread_advises : profile_advises);
+    *cookie = sink_result[index] == S_OK ? static_cast<DWORD>(index + 1) : TF_INVALID_COOKIE;
+    if (advise_hook)
+      advise_hook(index);
+    if (throw_sink == index)
+      throw 1;
+    return sink_result[index];
   }
   HRESULT STDMETHODCALLTYPE UnadviseSink(DWORD cookie) override {
     if (cookie == 1) {
@@ -960,22 +982,26 @@ struct Manager final : ITfThreadMgr,
       ++profile_unadvises;
       top->Call("UnadviseProfileSink");
     }
-    return S_OK;
+    return unsink_result[cookie - 1];
   }
   HRESULT STDMETHODCALLTYPE AdviseKeyEventSink(TfClientId client, ITfKeyEventSink *sink,
                                                BOOL foreground) override {
     ++key_advises;
     key_client = client;
-    key_sink = sink;
+    key_sink = sink_result[2] == S_OK ? sink : nullptr;
     key_foreground = foreground;
-    return S_OK;
+    if (advise_hook)
+      advise_hook(2);
+    if (throw_sink == 2)
+      throw 1;
+    return sink_result[2];
   }
   HRESULT STDMETHODCALLTYPE UnadviseKeyEventSink(TfClientId client) override {
     Require(client == 42, "captured teardown client");
     ++key_unadvises;
     key_sink = nullptr;
     top->Call("UnadviseKeySink");
-    return S_OK;
+    return unsink_result[2];
   }
   HRESULT STDMETHODCALLTYPE GetCompartment(REFGUID, ITfCompartment **out) override {
     top->Call("thread.GetCompartment");
@@ -1054,14 +1080,26 @@ struct Manager final : ITfThreadMgr,
                                         const TF_PRESERVEDKEY *key, const WCHAR *, ULONG) override {
     if (!key)
       return E_INVALIDARG;
-    preserved_keys.push_back({client, {command, *key}});
-    return S_OK;
+    const size_t index = key->uVKey == 'K' ? 0 : 1;
+    preserve_calls.push_back({client, {command, *key}});
+    if (preserve_result[index] == S_OK)
+      preserved_keys.push_back({client, {command, *key}});
+    if (preserve_hook)
+      preserve_hook(index);
+    if (throw_preserve == static_cast<int>(index))
+      throw 1;
+    return preserve_result[index];
   }
   HRESULT STDMETHODCALLTYPE UnpreserveKey(REFGUID command, const TF_PRESERVEDKEY *key) override {
     if (!key)
       return E_INVALIDARG;
     unpreserved_keys.push_back({command, *key});
-    return S_OK;
+    const size_t index = key->uVKey == 'K' ? 0 : 1;
+    if (unpreserve_hook)
+      unpreserve_hook(index);
+    if (throw_unpreserve == static_cast<int>(index))
+      throw 1;
+    return unpreserve_result[index];
   }
   STUB(SetPreservedKeyDescription, (REFGUID, const WCHAR *, ULONG));
   STUB(GetPreservedKeyDescription, (REFGUID, BSTR *));
@@ -1082,6 +1120,7 @@ struct ProfileManager final : ITfInputProcessorProfileMgr,
   HKL substitute = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0x04090409));
   int active_calls = 0, query_calls = 0, substitute_calls = 0;
   std::function<void(const char *)> hook;
+  std::function<void()> release_hook;
   ProfileManager() {
     profile.dwProfileType = TF_PROFILETYPE_INPUTPROCESSOR;
     profile.clsid = service_id;
@@ -1091,7 +1130,11 @@ struct ProfileManager final : ITfInputProcessorProfileMgr,
     profile.hkl = reinterpret_cast<HKL>(static_cast<ULONG_PTR>(0xe0200409));
   }
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
-  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  ULONG STDMETHODCALLTYPE Release() override {
+    if (release_hook)
+      release_hook();
+    return --references;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
     *out = nullptr;
     if (id == IID_IUnknown || id == IID_ITfInputProcessorProfileMgr)
@@ -1355,6 +1398,521 @@ bool PreservedCommandSequences() {
   }
   return passed;
 }
+void PreservedActivationSchedules() {
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    h.service->Deactivate();
+    int callbacks = 0;
+    h.manager.preserve_hook = [&](size_t) {
+      ++callbacks;
+      const GUID id = h.manager.preserve_calls.back().binding.command;
+      BOOL eaten = TRUE;
+      Require(h.manager.key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK && !eaten &&
+                  !h.a.reads && !h.a.writes && !h.a.starts && !h.a.calls["RequestEditSession"],
+              "native callbacks during provisional registration have no editing authority");
+    };
+    Require(h.service->Activate(&h.manager, 42) == S_OK && callbacks == 2,
+            "editing generation changes cannot cancel or duplicate activation registrations");
+    h.manager.preserve_hook = nullptr;
+    h.Oracle(L"", 7);
+  }
+  for (int position : {0, 1}) {
+    for (HRESULT failure : {E_FAIL, S_FALSE, TF_E_ALREADY_EXISTS}) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      h.service->Deactivate();
+      auto &manager = h.manager;
+      manager.preserve_calls.clear();
+      manager.unpreserved_keys.clear();
+      manager.preserve_result[position] = failure;
+      const int keys = manager.key_unadvises, threads = manager.thread_unadvises,
+                profile_unadvises = manager.profile_unadvises;
+      Require(FAILED(h.service->Activate(&manager, 42)) &&
+                  manager.preserve_calls.size() == static_cast<size_t>(position + 1) &&
+                  manager.unpreserved_keys.size() == static_cast<size_t>(position) &&
+                  manager.key_unadvises == keys + 1 && manager.thread_unadvises == threads + 1 &&
+                  manager.profile_unadvises == profile_unadvises + 1 && manager.references == 1,
+              "registration failure drains only the exact successful prefix and every sink");
+      if (position)
+        Require(manager.unpreserved_keys.front() == manager.preserve_calls.front().binding,
+                "failed or duplicate second registration never becomes cleanup ownership");
+      const auto cleanup = manager.unpreserved_keys;
+      Require(h.service->Deactivate() == S_OK && manager.unpreserved_keys == cleanup,
+              "failed activation cannot unregister anything twice");
+      manager.preserve_result[position] = S_OK;
+      Require(h.service->Activate(&manager, 42) == S_OK,
+              "known registration failure permits fresh activation after complete rollback");
+      h.Oracle(L"", 7);
+      Require(!h.a.reads && !h.a.writes && !h.a.starts, "registration never inspects text");
+    }
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.service->Deactivate();
+    h.manager.unpreserved_keys.clear();
+    h.manager.throw_preserve = position;
+    Require(FAILED(h.service->Activate(&h.manager, 42)) &&
+                h.manager.unpreserved_keys.size() == static_cast<size_t>(position),
+            "throwing registration drains known successes without claiming the unknown effect");
+    h.manager.throw_preserve = -1;
+    const auto attempts = h.manager.preserve_calls.size();
+    Require(FAILED(h.service->Activate(&h.manager, 42)) &&
+                h.manager.preserve_calls.size() == attempts && h.service->Deactivate() == S_OK,
+            "uncertain acquisition faults the instance without retry or guessed unregister");
+  }
+  for (int boundary = 0; boundary != 5; ++boundary) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.service->Deactivate();
+    auto &manager = h.manager;
+    manager.unpreserved_keys.clear();
+    const int keys = manager.key_unadvises, threads = manager.thread_unadvises,
+              profile_unadvises = manager.profile_unadvises;
+    bool cancelled = false;
+    auto cancel = [&] {
+      cancelled = true;
+      Require(h.service->Deactivate() == S_OK && h.service->Activate(&manager, 42) == E_INVALIDARG,
+              "provisional cancellation leaves rollback with the outer activation owner");
+    };
+    manager.advise_hook = [&](int position) {
+      if (position == boundary)
+        cancel();
+    };
+    manager.preserve_hook = [&](size_t position) {
+      if (static_cast<int>(position) + 3 == boundary)
+        cancel();
+    };
+    int releases = 0;
+    manager.release_hook = [&] {
+      ++releases;
+      Require(h.service->Deactivate() == S_OK && h.service->Activate(&manager, 42) == E_INVALIDARG,
+              "rollback retains the activation barrier through captured COM releases");
+    };
+    Require(FAILED(h.service->Activate(&manager, 42)) && cancelled && releases == 3 &&
+                manager.unpreserved_keys.size() ==
+                    static_cast<size_t>(boundary < 3 ? 0 : boundary - 2) &&
+                manager.thread_unadvises == threads + 1 &&
+                manager.profile_unadvises == profile_unadvises + (boundary >= 1 ? 1 : 0) &&
+                manager.key_unadvises == keys + (boundary >= 2 ? 1 : 0),
+            "late exact sink and command successes are recorded before cancellation rollback");
+    manager.release_hook = nullptr;
+    manager.advise_hook = nullptr;
+    manager.preserve_hook = nullptr;
+    Require(h.service->Activate(&manager, 42) == S_OK,
+            "cancelled activation can restart after every captured release returns");
+    h.Oracle(L"", 7);
+  }
+  for (int position : {0, 1, 2}) {
+    for (bool throwing : {false, true}) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      h.service->Deactivate();
+      auto &manager = h.manager;
+      const int keys = manager.key_unadvises, threads = manager.thread_unadvises,
+                profile_unadvises = manager.profile_unadvises;
+      if (throwing)
+        manager.throw_sink = position;
+      else
+        manager.sink_result[position] = S_FALSE;
+      Require(FAILED(h.service->Activate(&manager, 42)) &&
+                  manager.thread_unadvises == threads + (position > 0 ? 1 : 0) &&
+                  manager.profile_unadvises == profile_unadvises + (position > 1 ? 1 : 0) &&
+                  manager.key_unadvises == keys,
+              "failed and throwing sink acquisitions never claim an unproven sink");
+      manager.throw_sink = -1;
+      manager.sink_result[position] = S_OK;
+      Require(throwing ? FAILED(h.service->Activate(&manager, 42))
+                       : h.service->Activate(&manager, 42) == S_OK,
+              "only unknown sink acquisition faults the activation instance");
+    }
+  }
+  for (int position : {0, 1}) {
+    for (int outcome = 0; outcome != 4; ++outcome) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      auto &manager = h.manager;
+      if (outcome == 0)
+        manager.unpreserve_result[position] = E_FAIL;
+      if (outcome == 1)
+        manager.unpreserve_result[position] = S_FALSE;
+      if (outcome == 2)
+        manager.throw_unpreserve = position;
+      if (outcome == 3)
+        manager.unpreserve_result[position] = CONNECT_E_NOCONNECTION;
+      manager.unpreserve_hook = [&](size_t) {
+        Require(h.service->Deactivate() == S_OK &&
+                    h.service->Activate(&manager, 42) == E_INVALIDARG,
+                "detached pair ledger prevents nested cleanup and overlapping registration");
+      };
+      int releases = 0;
+      manager.release_hook = [&] {
+        ++releases;
+        Require(h.service->Activate(&manager, 42) == E_INVALIDARG,
+                "active teardown holds its barrier through COM releases");
+      };
+      Require(FAILED(h.service->Deactivate()) && manager.unpreserved_keys.size() == 2 &&
+                  manager.unpreserved_keys[0] == manager.preserved_keys[1].binding &&
+                  manager.unpreserved_keys[1] == manager.preserved_keys[0].binding &&
+                  manager.key_unadvises == 1 && manager.thread_unadvises == 1 &&
+                  manager.profile_unadvises == 1 && manager.diagnostic_unadvises == 1 &&
+                  releases >= 4,
+              "each failed pair cleanup still drains both pairs and every independent sink");
+      manager.release_hook = nullptr;
+      manager.unpreserve_hook = nullptr;
+      manager.unpreserve_result[position] = S_OK;
+      manager.throw_unpreserve = -1;
+      const auto attempts = manager.preserve_calls.size();
+      const auto cleanup = manager.unpreserved_keys;
+      Require(h.service->Deactivate() == S_OK && manager.unpreserved_keys == cleanup,
+              "completed cleanup never retries a failed pair");
+      const auto activated = h.service->Activate(&manager, 42);
+      Require(outcome == 3 ? activated == S_OK
+                           : FAILED(activated) && manager.preserve_calls.size() == attempts,
+              "documented pair absence permits reuse while uncertain cleanup faults permanently");
+      h.Oracle(L"", 7);
+    }
+  }
+  for (int position : {0, 1, 2}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.manager.unsink_result[position] = S_FALSE;
+    Require(FAILED(h.service->Deactivate()) && h.manager.unpreserved_keys.size() == 2 &&
+                h.manager.key_unadvises == 1 && h.manager.thread_unadvises == 1 &&
+                h.manager.profile_unadvises == 1 && h.manager.diagnostic_unadvises == 1 &&
+                FAILED(h.service->Activate(&h.manager, 42)),
+            "nonexact sink cleanup drains independent resources then faults the instance");
+  }
+  for (bool cancel : {false, true}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.service->Deactivate();
+    auto &manager = h.manager;
+    manager.unpreserved_keys.clear();
+    manager.unpreserve_result[0] = E_FAIL;
+    if (cancel)
+      manager.preserve_hook = [&](size_t index) {
+        if (index == 1)
+          h.service->Deactivate();
+      };
+    else
+      manager.preserve_result[1] = E_FAIL;
+    Require(FAILED(h.service->Activate(&manager, 42)) &&
+                manager.unpreserved_keys.size() == (cancel ? 2u : 1u) &&
+                manager.key_unadvises == 2 && manager.thread_unadvises == 2 &&
+                manager.profile_unadvises == 2,
+            "failed and cancelled acquisition propagate rollback uncertainty after independent "
+            "cleanup");
+    manager.preserve_hook = nullptr;
+    manager.unpreserve_result[0] = manager.preserve_result[1] = S_OK;
+    Require(FAILED(h.service->Activate(&manager, 42)),
+            "rollback uncertainty cannot flatten into a reusable inactive service");
+  }
+  for (bool during_query : {false, true}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.service->Deactivate();
+    auto notify = [&] {
+      h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[1].language, service_id,
+                             GUID_TFCAT_TIP_KEYBOARD, profiles[1].id, nullptr,
+                             TF_IPSINK_FLAG_ACTIVE);
+    };
+    if (during_query)
+      profile.hook = [&](const char *name) {
+        if (std::string(name) == "GetActiveProfile")
+          notify();
+      };
+    else
+      h.manager.preserve_hook = [&](size_t) {
+        notify();
+        profile.profile.guidProfile = profiles[1].id;
+        profile.profile.langid = profiles[1].language;
+      };
+    Require(h.service->Activate(&h.manager, 42) == S_OK &&
+                DiagnosticSnapshot(*h.service.Get()).mode == KR_RU &&
+                h.manager.preserve_calls.size() == 4,
+            "profile notifications do not cancel registration or get overwritten by older query "
+            "results");
+    profile.hook = nullptr;
+    h.manager.preserve_hook = nullptr;
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    h.service->Deactivate();
+    HRESULT nested = S_OK;
+    h.manager.diagnostic_advise_hook = [&] {
+      Require(h.service->Deactivate() == S_OK, "optional startup revokes the published activation");
+      nested = h.service->Activate(&h.manager, 42);
+    };
+    h.manager.release_hook = [&] {
+      Require(h.service->Activate(&h.manager, 42) == E_INVALIDARG,
+              "optional startup captured releases cannot reopen the outer activation frame");
+    };
+    Require(FAILED(h.service->Activate(&h.manager, 42)) && nested == E_INVALIDARG &&
+                !DiagnosticSnapshot(*h.service.Get()).active,
+            "cancelled optional startup cannot report activation success");
+    h.manager.release_hook = nullptr;
+    h.manager.diagnostic_advise_hook = nullptr;
+    Require(h.service->Activate(&h.manager, 42) == S_OK,
+            "optional startup cancellation permits activation after the whole frame drains");
+  }
+}
+
+bool Preserved(Harness &h, UINT key) {
+  const auto found =
+      std::find_if(h.manager.preserved_keys.begin(), h.manager.preserved_keys.end(),
+                   [&](const auto &entry) { return entry.binding.key.uVKey == key; });
+  Require(found != h.manager.preserved_keys.end() && h.manager.key_sink,
+          "dispatch uses the command actually registered with the advised sink");
+  const GUID id = found->binding.command;
+  BOOL eaten = FALSE;
+  Require(h.manager.key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK,
+          "preserved command callback contains native failures");
+  return eaten != FALSE;
+}
+void PreservedDispatchSchedules() {
+  for (const auto &entry : profiles) {
+    ProfileManager profile;
+    profile.profile.guidProfile = entry.id;
+    profile.profile.langid = entry.language;
+    profile.substitute =
+        reinterpret_cast<HKL>(static_cast<ULONG_PTR>(entry.language) << 16 | entry.language);
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    const bool english = entry.mode == KR_EN;
+    keyboard.Type(h, english ? "GHBDTN" : "HELLO");
+    const wchar_t *original = english ? L"ghbdtn" : L"руддщ";
+    const wchar_t *converted = english ? L"привет" : L"hello";
+    const LONG caret = english ? 13 : 12;
+    h.Oracle(original, caret);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    keyboard.Set(VK_CAPITAL, 1);
+    const auto ordinary_callbacks =
+        DiagnosticSnapshot(*h.service.Get())
+            .counts[static_cast<size_t>(diagnostics::Counter::KeyEntered)];
+    const auto *composition = h.a.composition.Get();
+    const int writes = h.a.writes;
+    Require(Preserved(h, 'K'), "Caps Lock permits an admitted manual command in both modes");
+    h.Oracle(converted, caret);
+    Require(h.a.writes == writes + 1 && h.a.composition.Get() == composition && h.a.starts == 1 &&
+                h.a.ends == 0 && h.a.max_request_writes == 1,
+            "manual conversion retains exact composition ownership with one write");
+    for (int repeat = 0; repeat != 2; ++repeat) {
+      Require(Preserved(h, 'K') && h.a.writes == writes + repeat + 2 && h.a.max_request_writes == 1,
+              "each repeated native manual callback maps the owned text once without physical "
+              "deduplication");
+      h.Oracle(repeat == 0 ? original : converted, caret);
+    }
+    Require(Preserved(h, 'Z') && h.a.writes == writes + 4,
+            "preserved reversal writes its first owned receipt once");
+    h.Oracle(original, caret);
+    for (int repeat = 0; repeat != 3; ++repeat)
+      Require(Preserved(h, 'Z') && h.a.writes == writes + 4,
+              "held reversal callbacks cannot reuse an expired receipt");
+    Require(DiagnosticSnapshot(*h.service.Get())
+                    .counts[static_cast<size_t>(diagnostics::Counter::KeyEntered)] ==
+                ordinary_callbacks,
+            "preserved callbacks never impersonate ordinary-key diagnostic callbacks");
+  }
+  for (int extra : {VK_LSHIFT, VK_RSHIFT, VK_RCONTROL, VK_RMENU, VK_LWIN, VK_RWIN, 0, 1, 2}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    if (extra > 2)
+      keyboard.Set(extra, 0x80);
+    if (extra == 0)
+      keyboard.Set(VK_LCONTROL, 0);
+    if (extra == 1)
+      keyboard.Set(VK_LMENU, 0);
+    if (extra == 2) {
+      keyboard.Set(VK_LMENU, 0);
+      keyboard.Set(VK_RMENU, 0x80);
+    }
+    const auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    const int reads = h.a.reads, writes = h.a.writes, requests = h.a.calls["RequestEditSession"];
+    auto *composition = h.a.composition.Get();
+    Require(!Preserved(h, 'K') && !Preserved(h, 'Z') && h.a.reads == reads &&
+                h.a.writes == writes && h.a.calls["RequestEditSession"] == requests &&
+                h.a.composition.Get() == composition && h.a.active_composition &&
+                DiagnosticSnapshot(*h.service.Get()) == snapshot,
+            "wrong real modifier state passes without finishing or inspecting an owned word");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    const auto snapshot = DiagnosticSnapshot(*h.service.Get());
+    const auto profile_calls = profile.active_calls;
+    const GUID id = h.manager.preserved_keys.front().binding.command;
+    BOOL eaten = TRUE;
+    Require(h.service->OnPreservedKey(&h.a, id, nullptr) == E_POINTER &&
+                h.service->OnPreservedKey(nullptr, id, &eaten) == S_OK && !eaten,
+            "missing preserved output or context cannot begin admission");
+    const auto after_missing = DiagnosticSnapshot(*h.service.Get());
+    Require(h.service->OnPreservedKey(nullptr, GUID_NULL, &eaten) == S_OK && !eaten &&
+                DiagnosticSnapshot(*h.service.Get()) == after_missing &&
+                profile.active_calls == profile_calls,
+            "unknown GUID is a pure pass before profile and keyboard admission");
+    HRESULT wrong_thread = S_OK;
+    eaten = TRUE;
+    std::thread other([&] { wrong_thread = h.service->OnPreservedKey(&h.a, id, &eaten); });
+    other.join();
+    Require(wrong_thread == RPC_E_WRONG_THREAD && !eaten &&
+                DiagnosticSnapshot(*h.service.Get()) == after_missing && h.a.reads == 0 &&
+                h.a.writes == 0 && h.a.starts == 0 && snapshot.counts == after_missing.counts,
+            "foreign-thread command cannot inspect mutable service state or document text");
+    h.Oracle(L"", 7);
+  }
+  for (int scenario = 0; scenario != 10; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    if (scenario == 0)
+      h.a.window = GetDlgItem(h.root, 103);
+    if (scenario == 1)
+      h.a.window = GetDlgItem(h.root, 104);
+    if (scenario == 2)
+      h.a.scope = IS_PASSWORD;
+    if (scenario == 3)
+      h.a.disabled = true;
+    if (scenario == 4)
+      h.a.status = TF_SD_READONLY;
+    if (scenario == 5)
+      h.a.window = h.root;
+    if (scenario == 6)
+      h.a.scope = IS_EMAIL_SMTPEMAILADDRESS;
+    if (scenario == 7)
+      h.manager.disabled = true;
+    if (scenario == 8)
+      h.a.foreign = true;
+    if (scenario == 9)
+      h.manager.top = &h.b;
+    ::SetFocus(h.a.window);
+    Require(!Preserved(h, 'K') && !Preserved(h, 'Z') && !h.a.reads && !h.a.writes && !h.a.starts &&
+                !h.b.reads && !h.b.writes && !h.b.starts,
+            "excluded foreign and unfocused preserved commands have no text access or effect");
+    h.Oracle(L"", 7);
+  }
+  for (int scenario = 0; scenario != 8; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    const int writes = h.a.writes, reads = h.a.reads;
+    if (scenario < 3) {
+      h.a.callback = false;
+      if (scenario == 0)
+        h.a.request_result = E_ACCESSDENIED;
+      if (scenario == 1)
+        h.a.session_result = TF_E_SYNCHRONOUS;
+      if (scenario == 2)
+        h.a.session_result = TF_S_ASYNC;
+    }
+    if (scenario == 3)
+      --h.a.caret;
+    if (scenario == 4)
+      h.a.composition->span->start++;
+    if (scenario == 5)
+      h.a.text[7] = L'X';
+    if (scenario == 6)
+      h.a.foreign = true;
+    if (scenario == 7)
+      h.a.write_result = E_FAIL;
+    const bool attempted = scenario == 7;
+    Require(Preserved(h, 'K') == attempted && h.a.writes == writes + (attempted ? 1 : 0) &&
+                h.service->stopped() && h.a.starts == 1 && h.a.ends == 0,
+            "preserved refusal passes before write and attempted unknown consumes without replay");
+    if (scenario < 3)
+      Require(h.a.reads == reads && h.a.retained_request &&
+                  FAILED(h.a.retained_request->DoEditSession(123)) && h.a.writes == writes,
+              "denied and late preserved edit sessions cannot inspect or write owned text");
+    Require(!Preserved(h, 'K') && !Preserved(h, 'Z') && h.a.writes == writes + (attempted ? 1 : 0),
+            "stopped command authority cannot retry an uncertain or stale edit");
+    h.Oracle(attempted       ? L"привет"
+             : scenario == 5 ? L"Xhbdtn"
+                             : L"ghbdtn",
+             scenario == 3 ? 12 : 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    Require(keyboard.Down(h, VK_SPACE), "ordinary fixture correction retains its boundary receipt");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    Require(Preserved(h, 'Z'), "preserved command reverses an ordinary retained boundary receipt");
+    h.Oracle(L"ghbdtn ", 14);
+    keyboard.Set(VK_LCONTROL, 0);
+    keyboard.Set(VK_LMENU, 0);
+    Require(keyboard.Down(h, 'X'), "ordinary continuation follows a preserved reversal");
+    const int writes = h.a.writes;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    Require(Preserved(h, 'Z') && h.a.writes == writes,
+            "preserved command cannot revive a receipt after ordinary continuation");
+    h.Oracle(L"ghbdtn x", 15);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    bool released = false;
+    profile.release_hook = [&] {
+      if (released)
+        return;
+      released = true;
+      Require(h.service->Deactivate() == S_OK && h.service->Activate(&h.manager, 42) == S_OK,
+              "profile release can change activation after admission facts are copied");
+    };
+    const int writes = h.a.writes;
+    Require(!Preserved(h, 'K') && released && h.a.writes == writes && h.a.starts == 1,
+            "single-use dispatch rejects stale facts after callback-capable admission releases");
+    profile.release_hook = nullptr;
+    h.Oracle(L"ghbdtn", 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Type(h, "GHBDTN");
+    Require(h.service->OnCompositionTerminated(123, h.a.composition.Get()) == S_OK,
+            "host terminates the exact owned word before command delivery");
+    const int writes = h.a.writes, starts = h.a.starts;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    Preserved(h, 'K');
+    Preserved(h, 'Z');
+    Require(h.a.writes == writes && h.a.starts == starts,
+            "delivery after exact termination cannot recover committed text or acquire a "
+            "replacement mark");
+    h.Oracle(L"ghbdtn", 13);
+    ComPtr<ITfKeyEventSink> retained = h.manager.key_sink;
+    const GUID id = h.manager.preserved_keys.front().binding.command;
+    h.service->Deactivate();
+    const int reads = h.a.reads;
+    BOOL eaten = TRUE;
+    Require(retained->OnPreservedKey(&h.a, id, &eaten) == S_OK && !eaten && h.a.reads == reads &&
+                h.a.writes == writes && h.a.starts == starts,
+            "retained callback after deactivation cannot restore old editing authority");
+  }
+}
+
 void CommandKeySequences() {
   {
     ProfileManager profile;
@@ -1629,7 +2187,17 @@ void LayoutRefusalOracle(Harness &h, const diagnostics::Snapshot &before) {
           "layout refusal inspects no document text");
   h.Oracle(L"", 7);
 }
-void DedicatedLayoutNegatives() {
+HRESULT AdmissionProbe(Harness &h, bool preserved, BOOL *eaten) {
+  return preserved ? h.manager.key_sink->OnPreservedKey(
+                         &h.a, h.manager.preserved_keys.front().binding.command, eaten)
+                   : h.service->OnKeyDown(&h.a, VK_F12, 1, eaten);
+}
+void DedicatedLayoutNegatives(bool preserved = false) {
+  KeyboardState keyboard;
+  if (preserved) {
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+  }
   using diagnostics::Cause;
   using diagnostics::Stage;
   for (int scenario = 0; scenario != 20; ++scenario) {
@@ -1726,7 +2294,7 @@ void DedicatedLayoutNegatives() {
     Harness h(&profile_api, layouts);
     const auto before = DiagnosticSnapshot(*h.service.Get());
     BOOL eaten = TRUE;
-    Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+    Require(AdmissionProbe(h, preserved, &eaten) == S_OK && !eaten,
             "invalid dedicated admission passes actual key unchanged");
     LayoutRefusalOracle(h, before);
     const auto after = DiagnosticSnapshot(*h.service.Get());
@@ -1748,14 +2316,19 @@ void DedicatedLayoutNegatives() {
                              TF_IPSINK_FLAG_ACTIVE);
     const auto before = DiagnosticSnapshot(*h.service.Get());
     BOOL eaten = TRUE;
-    Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+    Require(AdmissionProbe(h, preserved, &eaten) == S_OK && !eaten,
             "mismatched profile language or selected mode passes unchanged");
     LayoutRefusalOracle(h, before);
     Require(profile_api.query_calls == 0 && profile_api.substitute_calls == 0,
             "mismatched profile identity cannot query a substitute");
   }
 }
-void DedicatedLayoutReentry() {
+void DedicatedLayoutReentry(bool preserved = false) {
+  KeyboardState keyboard;
+  if (preserved) {
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+  }
   for (const char *boundary : {"GetActiveProfile", "profiles.QI", "GetSubstituteKeyboardLayout"}) {
     for (int schedule = 0; schedule != 6; ++schedule) {
       ProfileManager profile_api;
@@ -1786,14 +2359,14 @@ void DedicatedLayoutReentry() {
         }
       };
       BOOL eaten = TRUE;
-      const HRESULT result = h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten);
+      const HRESULT result = AdmissionProbe(h, preserved, &eaten);
       Require(injected && !eaten && result == (schedule == 3 ? E_FAIL : S_OK),
               "each reentrant native boundary refuses the outer key before handling");
       LayoutRefusalOracle(h, before);
       profile_api.hook = nullptr;
       if (schedule < 3) {
         const auto resumed = DiagnosticSnapshot(*h.service.Get());
-        Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten,
+        Require(AdmissionProbe(h, preserved, &eaten) == S_OK && (eaten != FALSE) == preserved,
                 "later fresh key can resume after scoped admission releases");
         const auto after = DiagnosticSnapshot(*h.service.Get());
         Require(after.counts[static_cast<size_t>(diagnostics::Counter::HandleEntered)] ==
@@ -1832,8 +2405,8 @@ void DedicatedLayoutReentry() {
         }
       };
       BOOL eaten = TRUE;
-      Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == (schedule == 3 ? E_FAIL : S_OK) &&
-                  !eaten && layouts.calls == boundary,
+      Require(AdmissionProbe(h, preserved, &eaten) == (schedule == 3 ? E_FAIL : S_OK) && !eaten &&
+                  layouts.calls == boundary,
               "invalidation at each loaded-layout call stops all later admission work");
       LayoutRefusalOracle(h, before);
     }
@@ -1844,7 +2417,7 @@ void DedicatedLayoutReentry() {
   Harness h(&profile_api, LayoutSchedule::Observe);
   const auto before = DiagnosticSnapshot(*h.service.Get());
   BOOL eaten = TRUE;
-  Require(h.service->OnKeyDown(&h.a, VK_F12, 1, &eaten) == S_OK && !eaten && layouts.calls == 3,
+  Require(AdmissionProbe(h, preserved, &eaten) == S_OK && !eaten && layouts.calls == 3,
           "changed count after a complete loaded-layout fill refuses admission");
   LayoutRefusalOracle(h, before);
 }
@@ -3726,8 +4299,9 @@ void DiagnosticLifetimeSchedules() {
     }
     if (scenario == 8)
       h.manager.diagnostic_unadvise_hook = [&] { h.service->Deactivate(); };
-    Require(h.service->Activate(&h.manager, 42) == S_OK,
-            "best effort diagnostic registration preserves activation result");
+    const HRESULT activation = h.service->Activate(&h.manager, 42);
+    Require(scenario == 3 ? FAILED(activation) : activation == S_OK,
+            "optional diagnostics preserve success only while the activation remains active");
     h.service->Deactivate();
     h.service->Deactivate();
     Require(
@@ -6334,6 +6908,10 @@ int wmain(int argc, wchar_t **argv) {
   puts("Existing controlled same-service COM schedules passed.");
   puts("RUN activation-registered preserved command sequences");
   const bool preserved_commands = PreservedCommandSequences();
+  PreservedActivationSchedules();
+  PreservedDispatchSchedules();
+  DedicatedLayoutNegatives(true);
+  DedicatedLayoutReentry(true);
   DestroyWindow(controlled_root);
   CoUninitialize();
   Require(preserved_commands, "activation-registered preserved command aggregate");

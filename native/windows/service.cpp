@@ -6,6 +6,7 @@
 #include <inputscope.h>
 #include <limits>
 #include <new>
+#include <olectl.h>
 #include <richedit.h>
 
 namespace keyrill {
@@ -137,7 +138,7 @@ private:
   }
   std::optional<native_field::FieldIdentity> FreshFieldIdentity() {
     Observe observe(*this, Stage::Focus);
-    ComPtr<ITfThreadMgr> manager = owner_.manager_;
+    ComPtr<ITfThreadMgr> manager = owner_.native_ ? owner_.native_->manager : nullptr;
     if (!Check(Alive(), Cause::Stale) || !Check(manager != nullptr, Cause::Missing))
       return std::nullopt;
     ComPtr<ITfDocumentMgr> document;
@@ -199,7 +200,7 @@ private:
   bool WritableContext() {
     Observe observe(*this, Stage::Status);
     TF_STATUS status{};
-    ComPtr<ITfThreadMgr> manager = owner_.manager_;
+    ComPtr<ITfThreadMgr> manager = owner_.native_ ? owner_.native_->manager : nullptr;
     return Exact(context_->GetStatus(&status)) &&
            Check(!(status.dwDynamicFlags & TF_SD_READONLY)) &&
            !Disabled(context_.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED, Stage::ContextDisabled) &&
@@ -763,8 +764,8 @@ void Service::RegisterDiagnostics() noexcept {
         !diagnostics::SameActivation(Active(), diagnostics_.activation, diagnostics_.activation))
       return;
     ComPtr<Service> self(this);
-    ComPtr<ITfThreadMgr> manager = manager_;
-    const auto client = client_;
+    const auto client = native_ ? native_->client : TF_CLIENTID_NULL;
+    ComPtr<ITfThreadMgr> manager = native_ ? native_->manager : nullptr;
     const auto activation = diagnostics_.activation;
     ComPtr<ITfSourceSingle> source;
     if (!manager || FAILED(manager.As(&source)) || !source ||
@@ -814,8 +815,9 @@ void Service::ObserveHost(ITfContext *context) {
     bool &busy;
     ~Observation() { busy = false; }
   } observation{observing_host_};
-  ComPtr<ITfThreadMgr> manager = manager_;
-  host_metadata_ = host::Observe(context, manager.Get(), client_,
+  const auto client = native_ ? native_->client : TF_CLIENTID_NULL;
+  ComPtr<ITfThreadMgr> manager = native_ ? native_->manager : nullptr;
+  host_metadata_ = host::Observe(context, manager.Get(), client,
                                  {static_cast<ITfTextInputProcessorEx *>(this), this, generation_,
                                   [](void *state, uint64_t generation) noexcept {
                                     return static_cast<Service *>(state)->Current(generation);
@@ -838,85 +840,203 @@ void Service::Invalidate(bool stop) {
 HRESULT Service::Activate(ITfThreadMgr *manager, TfClientId client) {
   return ActivateEx(manager, client, 0);
 }
-HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flags) try {
-  if (activation_ != Activation::Inactive || !manager || client == TF_CLIENTID_NULL ||
-      GetCurrentThreadId() != thread_)
+bool Service::Preparing(ActivationEpoch epoch) const {
+  return activation_ == Activation::Preparing && activation_epoch_ == epoch;
+}
+bool Service::SameActivation(ActivationEpoch epoch) const {
+  return Active() && activation_epoch_ == epoch;
+}
+HRESULT Service::AcquireActivation(ActivationAttempt &attempt) {
+  auto &native = attempt.native;
+  const auto epoch = attempt.epoch;
+  HRESULT result = native.manager->QueryInterface(IID_PPV_ARGS(&native.source));
+  if (result != S_OK || !native.source || !Preparing(epoch))
+    return result == S_OK ? E_FAIL : result;
+  result = native.manager->QueryInterface(IID_PPV_ARGS(&native.keys));
+  if (result != S_OK || !native.keys || !Preparing(epoch))
+    return result == S_OK ? E_FAIL : result;
+  for (bool thread : {true, false}) {
+    DWORD cookie = TF_INVALID_COOKIE;
+    attempt.uncertain_acquisition = true;
+    result = native.source->AdviseSink(
+        thread ? IID_ITfThreadMgrEventSink : IID_ITfInputProcessorProfileActivationSink,
+        thread
+            ? static_cast<IUnknown *>(static_cast<ITfThreadMgrEventSink *>(this))
+            : static_cast<IUnknown *>(static_cast<ITfInputProcessorProfileActivationSink *>(this)),
+        &cookie);
+    attempt.uncertain_acquisition = false;
+    if (result != S_OK)
+      return result;
+    (thread ? native.thread_cookie : native.profile_cookie) = cookie;
+    if (cookie == TF_INVALID_COOKIE) {
+      attempt.uncertain_acquisition = true;
+      return E_FAIL;
+    }
+    if (!Preparing(epoch))
+      return E_FAIL;
+  }
+  attempt.uncertain_acquisition = true;
+  result = native.keys->AdviseKeyEventSink(native.client, this, TRUE);
+  attempt.uncertain_acquisition = false;
+  if (result == S_OK)
+    native.key_sink = true;
+  if (result != S_OK || !Preparing(epoch))
+    return result == S_OK ? E_FAIL : result;
+  for (const auto &command : commands) {
+    attempt.uncertain_acquisition = true;
+    result = native.keys->PreserveKey(native.client, command.id, &command.key, command.description,
+                                      static_cast<ULONG>(wcslen(command.description)));
+    attempt.uncertain_acquisition = false;
+    if (result == S_OK)
+      ++native.command_prefix;
+    if (result != S_OK || !Preparing(epoch))
+      return result == S_OK ? E_FAIL : result;
+  }
+  if (profile_dependency_)
+    native.profiles = profile_dependency_;
+  else
+    result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+                              IID_PPV_ARGS(&native.profiles));
+  if (!Preparing(epoch))
+    return E_FAIL;
+  if (result == S_OK && native.profiles) {
+    const auto generation = generation_;
+    TF_INPUTPROCESSORPROFILE profile{};
+    result = native.profiles->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile);
+    if (result == S_OK && Preparing(epoch) && generation_ == generation)
+      OnActivated(profile.dwProfileType, profile.langid, profile.clsid, profile.catid,
+                  profile.guidProfile, profile.hkl, TF_IPSINK_FLAG_ACTIVE);
+  }
+  return Preparing(epoch) ? S_OK : E_FAIL;
+}
+void Service::CleanupResult::Record(HRESULT result, bool absent) noexcept {
+  if (result == S_OK)
+    return;
+  if (error == S_OK)
+    error = FAILED(result) ? result : E_FAIL;
+  uncertain |= !absent;
+}
+Service::CleanupResult Service::DrainActivation(ActivationResources &native) noexcept {
+  CleanupResult cleanup;
+  while (native.command_prefix) {
+    const auto &command = commands[--native.command_prefix];
+    try {
+      HRESULT result = native.keys->UnpreserveKey(command.id, &command.key);
+      cleanup.Record(result, result == CONNECT_E_NOCONNECTION);
+    } catch (...) {
+      cleanup.Record(E_FAIL);
+    }
+  }
+  if (std::exchange(native.key_sink, false)) {
+    try {
+      cleanup.Record(native.keys->UnadviseKeyEventSink(native.client));
+    } catch (...) {
+      cleanup.Record(E_FAIL);
+    }
+  }
+  for (auto *entry : {&native.thread_cookie, &native.profile_cookie}) {
+    const auto cookie = std::exchange(*entry, TF_INVALID_COOKIE);
+    if (cookie == TF_INVALID_COOKIE)
+      continue;
+    try {
+      cleanup.Record(native.source->UnadviseSink(cookie));
+    } catch (...) {
+      cleanup.Record(E_FAIL);
+    }
+  }
+  native.client = TF_CLIENTID_NULL;
+  native.profiles.Reset();
+  native.keys.Reset();
+  native.source.Reset();
+  native.manager.Reset();
+  return cleanup;
+}
+HRESULT Service::ActivateEx(ITfThreadMgr *manager, TfClientId client, DWORD flags) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  if (activation_ != Activation::Inactive || activation_call_open_ || !manager ||
+      client == TF_CLIENTID_NULL || activation_epoch_.value == UINT64_MAX)
     return E_INVALIDARG;
   if (flags & TF_TMAE_SECUREMODE)
     return E_ACCESSDENIED;
+  ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
-  auto config = vocabulary::CaptureConfig();
-  const bool invalid_config = !config;
-  if (config)
-    accepted_config_ = std::move(config);
-  else if (!accepted_config_)
-    accepted_config_ = vocabulary::Off{};
-  runtime_ = {};
-  runtime_.requested = vocabulary::Policy(*accepted_config_);
-  runtime_.configuration_error =
-      invalid_config ? vocabulary::Error::Configuration : vocabulary::Error::None;
-  if (!engine_ && kr_engine_new(KR_ABI_VERSION, &engine_) != KR_OK)
-    return E_FAIL;
-  if (kr_reset(engine_) != KR_OK || kr_set_keyboard(engine_, KR_KEYBOARD_PC) != KR_OK ||
-      kr_adopt_dictionaries(engine_, nullptr, nullptr) != KR_OK ||
-      kr_set_automatic_policy(engine_, runtime_.requested == KR_POLICY_MODEL
-                                           ? KR_POLICY_OFF
-                                           : runtime_.requested) != KR_OK)
-    return E_FAIL;
-  manager_ = manager;
-  client_ = client;
-  activation_ = Activation::Active;
-  diagnostics::Increment(diagnostics_.activation, diagnostics_.saturated);
-  runtime_.activation = diagnostics_.activation;
-  runtime_.effective = runtime_.requested == KR_POLICY_MODEL ? KR_POLICY_OFF : runtime_.requested;
-  stopped_ = false;
-  host::Capture(GetCurrentProcess(), GetCurrentProcessId(), thread_, host_identity_);
-  host_metadata_ = {};
-  observed_generation_ = 0;
-  if (host_identity_.kind != host::Kind::Unknown)
-    host_publisher_.Attach(host_identity_);
-  uint64_t generation = generation_;
-  if (FAILED(manager_->QueryInterface(IID_PPV_ARGS(&source_))) || !Current(generation) ||
-      FAILED(manager_->QueryInterface(IID_PPV_ARGS(&keys_))) || !Current(generation) ||
-      FAILED(source_->AdviseSink(IID_ITfThreadMgrEventSink,
-                                 static_cast<ITfThreadMgrEventSink *>(this), &thread_cookie_)) ||
-      !Current(generation) ||
-      FAILED(source_->AdviseSink(IID_ITfInputProcessorProfileActivationSink,
-                                 static_cast<ITfInputProcessorProfileActivationSink *>(this),
-                                 &profile_cookie_)) ||
-      !Current(generation) || FAILED(keys_->AdviseKeyEventSink(client_, this, TRUE)) ||
-      !Current(generation)) {
-    Deactivate();
-    return E_FAIL;
-  }
-  TF_INPUTPROCESSORPROFILE profile{};
-  HRESULT profile_result = S_OK;
-  if (profile_dependency_)
-    profiles_manager_ = profile_dependency_;
-  else
-    profile_result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
-                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles_manager_));
-  if (SUCCEEDED(profile_result) && profiles_manager_ && Current(generation) &&
-      SUCCEEDED(profiles_manager_->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) &&
-      Current(generation))
-    OnActivated(profile.dwProfileType, profile.langid, profile.clsid, profile.catid,
-                profile.guidProfile, profile.hkl, TF_IPSINK_FLAG_ACTIVE);
-  RegisterDiagnostics();
-  if (Active() && !stopped_ && runtime_.requested == KR_POLICY_MODEL) {
-    const auto runtime_generation = generation_;
-    const bool maintenance = StartMaintenance();
-    if (!Current(runtime_generation))
-      return S_OK;
-    if (!maintenance || !vocabulary_.Start(std::get<vocabulary::Model>(*accepted_config_),
-                                           runtime_.activation, module_owner_)) {
-      StopMaintenance();
-      runtime_.error = vocabulary::Error::Startup;
+  activation_call_open_ = true;
+  struct ActivationFrame {
+    bool &open;
+    ~ActivationFrame() { open = false; }
+  } frame{activation_call_open_};
+  activation_ = Activation::Preparing;
+  ActivationAttempt attempt{ActivationEpoch{++activation_epoch_.value}, {}};
+  HRESULT result = E_FAIL;
+  try {
+    auto config = vocabulary::CaptureConfig();
+    const bool invalid_config = !config;
+    if (config)
+      accepted_config_ = std::move(config);
+    else if (!accepted_config_)
+      accepted_config_ = vocabulary::Off{};
+    runtime_ = {};
+    runtime_.requested = vocabulary::Policy(*accepted_config_);
+    runtime_.configuration_error =
+        invalid_config ? vocabulary::Error::Configuration : vocabulary::Error::None;
+    if ((!engine_ && kr_engine_new(KR_ABI_VERSION, &engine_) != KR_OK) ||
+        kr_reset(engine_) != KR_OK || kr_set_keyboard(engine_, KR_KEYBOARD_PC) != KR_OK ||
+        kr_adopt_dictionaries(engine_, nullptr, nullptr) != KR_OK ||
+        kr_set_automatic_policy(engine_, runtime_.requested == KR_POLICY_MODEL
+                                             ? KR_POLICY_OFF
+                                             : runtime_.requested) != KR_OK) {
+      activation_ = Activation::Inactive;
+      return E_FAIL;
     }
+    attempt.native.client = client;
+    attempt.native.manager = manager;
+    stopped_ = false;
+    mode_ = 0;
+    if (Preparing(attempt.epoch))
+      result = AcquireActivation(attempt);
+    if (result == S_OK && Preparing(attempt.epoch)) {
+      native_.emplace(std::exchange(attempt.native, {}));
+      activation_ = Activation::Active;
+      diagnostics::Increment(diagnostics_.activation, diagnostics_.saturated);
+      runtime_.activation = diagnostics_.activation;
+      runtime_.effective =
+          runtime_.requested == KR_POLICY_MODEL ? KR_POLICY_OFF : runtime_.requested;
+      host::Capture(GetCurrentProcess(), GetCurrentProcessId(), thread_, host_identity_);
+      host_metadata_ = {};
+      observed_generation_ = 0;
+      if (host_identity_.kind != host::Kind::Unknown)
+        host_publisher_.Attach(host_identity_);
+      if (SameActivation(attempt.epoch))
+        RegisterDiagnostics();
+      if (SameActivation(attempt.epoch) && !stopped_ && runtime_.requested == KR_POLICY_MODEL) {
+        const auto runtime_generation = generation_;
+        const bool maintenance = StartMaintenance();
+        if (SameActivation(attempt.epoch) && Current(runtime_generation) &&
+            (!maintenance || !vocabulary_.Start(std::get<vocabulary::Model>(*accepted_config_),
+                                                runtime_.activation, module_owner_))) {
+          StopMaintenance();
+          runtime_.error = vocabulary::Error::Startup;
+        }
+      }
+      result = SameActivation(attempt.epoch) ? S_OK : E_FAIL;
+    }
+  } catch (...) {
+    result = E_FAIL;
   }
-  return S_OK;
-} catch (...) {
-  Deactivate();
-  return E_FAIL;
+  if (SameActivation(attempt.epoch)) {
+    if (result == S_OK)
+      return S_OK;
+    Deactivate();
+  } else if (activation_ == Activation::Preparing || activation_ == Activation::Cancelling) {
+    activation_ = Activation::Draining;
+    InvalidateForLifecycle(diagnostics::LifecycleCause::Deactivate);
+    mode_ = 0;
+    const auto cleanup = DrainActivation(attempt.native);
+    activation_ = cleanup.uncertain || attempt.uncertain_acquisition ? Activation::Faulted
+                                                                     : Activation::Inactive;
+  }
+  return FAILED(result) ? result : E_FAIL;
 }
 void Service::InvalidateForLifecycle(diagnostics::LifecycleCause cause) {
   lifecycle_.Record(diagnostics::LifecycleKind::LifecycleInvalidation,
@@ -1039,56 +1159,34 @@ void Service::Maintain() noexcept {
 HRESULT Service::Deactivate() {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
-  if (activation_ != Activation::Active)
+  if (activation_ == Activation::Preparing) {
+    activation_ = Activation::Cancelling;
+    InvalidateForLifecycle(diagnostics::LifecycleCause::Deactivate);
+    mode_ = 0;
+    return S_OK;
+  }
+  if (!Active())
     return S_OK;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
-  activation_ = Activation::Deactivating;
-  struct Teardown {
-    Activation &state;
-    ~Teardown() { state = Activation::Inactive; }
-  } teardown{activation_};
+  activation_ = Activation::Draining;
   InvalidateForLifecycle(diagnostics::LifecycleCause::Deactivate);
+  auto native = std::move(*native_);
+  native_.reset();
   auto diagnostic_source = std::move(diagnostic_source_);
-  const auto diagnostic_client = diagnostic_client_;
-  diagnostic_client_ = TF_CLIENTID_NULL;
-  auto keys = std::move(keys_);
-  auto source = std::move(source_);
-  auto manager = std::move(manager_);
-  auto profiles_manager = std::move(profiles_manager_);
+  const auto diagnostic_client = std::exchange(diagnostic_client_, TF_CLIENTID_NULL);
   if (owned_)
     lifecycle_.Record(diagnostics::LifecycleKind::Detached, owned_->diagnostic_serial);
   auto owned = std::move(owned_);
-  const auto client = client_;
-  const auto thread_cookie = thread_cookie_;
-  const auto profile_cookie = profile_cookie_;
-  thread_cookie_ = profile_cookie_ = TF_INVALID_COOKIE;
-  client_ = TF_CLIENTID_NULL;
   mode_ = 0;
   StopMaintenance();
-  HRESULT result = S_OK;
-  try {
-    if (keys && client != TF_CLIENTID_NULL && FAILED(keys->UnadviseKeyEventSink(client)))
-      result = E_FAIL;
-  } catch (...) {
-    result = E_FAIL;
-  }
-  try {
-    if (source && thread_cookie != TF_INVALID_COOKIE && FAILED(source->UnadviseSink(thread_cookie)))
-      result = E_FAIL;
-  } catch (...) {
-    result = E_FAIL;
-  }
-  try {
-    if (source && profile_cookie != TF_INVALID_COOKIE &&
-        FAILED(source->UnadviseSink(profile_cookie)))
-      result = E_FAIL;
-  } catch (...) {
-    result = E_FAIL;
-  }
+  const auto cleanup = DrainActivation(native);
   if (diagnostic_source && diagnostic_client != TF_CLIENTID_NULL)
     UnregisterDiagnostics(diagnostic_source.Get(), diagnostic_client);
-  return result;
+  diagnostic_source.Reset();
+  owned.reset();
+  activation_ = cleanup.uncertain ? Activation::Faulted : Activation::Inactive;
+  return cleanup.error;
 }
 bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
   if (GetCurrentThreadId() != thread_)
@@ -1114,8 +1212,9 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
       diagnostics::Count(diagnostics_, Counter::Requested);
       diagnostics_.request_present = diagnostics_.session_present = 0;
       diagnostics_.request_result = diagnostics_.session_result = 0;
-      HRESULT request_result = context->RequestEditSession(
-          client_, request.Get(), TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+      HRESULT request_result =
+          context->RequestEditSession(native_ ? native_->client : TF_CLIENTID_NULL, request.Get(),
+                                      TF_ES_SYNC | TF_ES_READWRITE, &session_result);
       diagnostics_.request_present = diagnostics_.session_present = 1;
       diagnostics_.request_result = static_cast<uint32_t>(request_result);
       diagnostics_.session_result = static_cast<uint32_t>(session_result);
@@ -1146,126 +1245,153 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
   busy_ = false;
   return eaten;
 }
+Service::KeyAdmission::KeyAdmission(Service &service, ITfContext *target)
+    : owner(&service), context(target), epoch(service.activation_epoch_),
+      generation(service.generation_), mode(service.mode_) {
+  owner->key_admission_ = true;
+}
+Service::KeyAdmission::KeyAdmission(KeyAdmission &&other) noexcept
+    : owner(std::exchange(other.owner, nullptr)), context(other.context), epoch(other.epoch),
+      generation(other.generation), mode(other.mode), layout(other.layout) {
+  std::copy(std::begin(other.state), std::end(other.state), state);
+}
+Service::KeyAdmission::~KeyAdmission() {
+  if (owner)
+    owner->key_admission_ = false;
+}
+bool Service::KeyAdmission::Dispatch(const kr_event &event) {
+  auto *service = std::exchange(owner, nullptr);
+  if (!service)
+    return false;
+  service->key_admission_ = false;
+  if (!service->SameActivation(epoch) || !service->Current(generation) || service->mode_ != mode ||
+      event.mode != mode) {
+    service->Refuse(Stage::Mode, event.mode != mode ? Cause::Predicate : Cause::Stale);
+    service->InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return false;
+  }
+  return service->HandleEvent(context, event);
+}
+std::optional<Service::KeyAdmission> Service::AdmitKey(ITfContext *context) {
+  if (busy_ || key_admission_ || observing_host_) {
+    Refuse(Stage::Key, Cause::Reentry);
+    Invalidate(owned_ != nullptr);
+    return std::nullopt;
+  }
+  if (!context) {
+    Refuse(Stage::Key, Cause::Missing);
+    return std::nullopt;
+  }
+  KeyAdmission admission(*this, context);
+  const auto generation = admission.generation;
+  const auto mode = admission.mode;
+  auto &state = admission.state;
+  if (!GetKeyboardState(state)) {
+    Refuse(Stage::Keyboard, Cause::Predicate);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  TF_INPUTPROCESSORPROFILE profile{};
+  ComPtr<ITfInputProcessorProfileMgr> manager = native_ ? native_->profiles : nullptr;
+  HRESULT profile_result = S_OK;
+  if (!Current(generation) || !manager ||
+      (profile_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) != S_OK ||
+      !Current(generation)) {
+    Refuse(Stage::Profile,
+           profile_result != S_OK ? Cause::Native
+           : !Active()            ? Cause::Inactive
+           : stopped_             ? Cause::Stopped
+           : !manager             ? Cause::Missing
+                                  : Cause::Stale,
+           profile_result != S_OK ? profile_result : S_OK);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  if (!ActiveProfile(profile, mode)) {
+    Cause cause = profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR ? Cause::WrongType
+                  : profile.clsid != service_id                          ? Cause::WrongService
+                  : !(profile.dwFlags & TF_IPP_FLAG_ACTIVE)              ? Cause::NotActive
+                                                                         : Cause::WrongProfile;
+    Refuse(Stage::Layout, cause);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  ComPtr<ITfInputProcessorProfileSubstituteLayout> substitute;
+  HRESULT result = manager->QueryInterface(IID_PPV_ARGS(&substitute));
+  if (result != S_OK || !Current(generation) || !substitute) {
+    Refuse(Stage::Layout,
+           result != S_OK         ? Cause::Native
+           : !Current(generation) ? Cause::Stale
+                                  : Cause::Missing,
+           result != S_OK ? result : S_OK);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  HKL actual = nullptr;
+  result = substitute->GetSubstituteKeyboardLayout(profile.clsid, profile.langid,
+                                                   profile.guidProfile, &actual);
+  if (result != S_OK || !Current(generation) || !actual) {
+    Refuse(Stage::Layout,
+           result != S_OK         ? Cause::Native
+           : !Current(generation) ? Cause::Stale
+                                  : Cause::Missing,
+           result != S_OK ? result : S_OK);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  HKL layout = ProfileLayout(profile, mode, actual);
+  if (!layout || !layouts_) {
+    Refuse(Stage::Layout, !layout ? Cause::Substitute : Cause::Missing);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  HKL loaded[64]{};
+  int count = layouts_(0, nullptr);
+  if (!Current(generation) || count <= 0 || count > 64) {
+    Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  int filled = layouts_(64, loaded);
+  if (!Current(generation) || filled != count) {
+    Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  int after = layouts_(0, nullptr);
+  if (!Current(generation) || after != count ||
+      std::find(loaded, loaded + count, layout) == loaded + count) {
+    Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
+    InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
+    return std::nullopt;
+  }
+  if (host_identity_.kind == host::Kind::PackagedNotepad &&
+      !native_field::KnownNotepad(host_identity_)) {
+    ObserveHost(context);
+    return std::nullopt;
+  }
+  admission.layout = layout;
+  return admission;
+}
 HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *eaten) {
   if (!eaten)
     return E_POINTER;
   *eaten = FALSE;
-  ComPtr<Service> self(this);
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
+  ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
   try {
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
-    if (busy_ || key_admission_ || observing_host_) {
-      Refuse(Stage::Key, Cause::Reentry);
-      Invalidate(owned_ != nullptr);
+    auto admission = AdmitKey(context);
+    if (!admission)
       return S_OK;
+    NativeKey translated = TranslateKey(key, flags, admission->layout, admission->state);
+    if (const auto *event = std::get_if<kr_event>(&translated)) {
+      *eaten = admission->Dispatch(*event);
+      if (*eaten)
+        diagnostics::Count(diagnostics_, Counter::Consumed);
     }
-    key_admission_ = true;
-    struct Admission {
-      bool &flag;
-      ~Admission() { flag = false; }
-    } admission{key_admission_};
-    const uint64_t generation = generation_;
-    const uint32_t mode = mode_;
-    BYTE state[256]{};
-    if (!GetKeyboardState(state)) {
-      Refuse(Stage::Keyboard, Cause::Predicate);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    TF_INPUTPROCESSORPROFILE profile{};
-    ComPtr<ITfInputProcessorProfileMgr> manager = profiles_manager_;
-    HRESULT profile_result = S_OK;
-    if (!Current(generation) || !manager ||
-        (profile_result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile)) != S_OK ||
-        !Current(generation)) {
-      Refuse(Stage::Profile,
-             profile_result != S_OK ? Cause::Native
-             : !Active()            ? Cause::Inactive
-             : stopped_             ? Cause::Stopped
-             : !manager             ? Cause::Missing
-                                    : Cause::Stale,
-             profile_result != S_OK ? profile_result : S_OK);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    if (!ActiveProfile(profile, mode)) {
-      Cause cause = profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR ? Cause::WrongType
-                    : profile.clsid != service_id                          ? Cause::WrongService
-                    : !(profile.dwFlags & TF_IPP_FLAG_ACTIVE)              ? Cause::NotActive
-                                                                           : Cause::WrongProfile;
-      Refuse(Stage::Layout, cause);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    ComPtr<ITfInputProcessorProfileSubstituteLayout> substitute;
-    HRESULT result = manager->QueryInterface(IID_PPV_ARGS(&substitute));
-    if (result != S_OK || !Current(generation) || !substitute) {
-      Refuse(Stage::Layout,
-             result != S_OK         ? Cause::Native
-             : !Current(generation) ? Cause::Stale
-                                    : Cause::Missing,
-             result != S_OK ? result : S_OK);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    HKL actual = nullptr;
-    result = substitute->GetSubstituteKeyboardLayout(profile.clsid, profile.langid,
-                                                     profile.guidProfile, &actual);
-    if (result != S_OK || !Current(generation) || !actual) {
-      Refuse(Stage::Layout,
-             result != S_OK         ? Cause::Native
-             : !Current(generation) ? Cause::Stale
-                                    : Cause::Missing,
-             result != S_OK ? result : S_OK);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    HKL layout = ProfileLayout(profile, mode, actual);
-    if (!layout || !layouts_) {
-      Refuse(Stage::Layout, !layout ? Cause::Substitute : Cause::Missing);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    HKL loaded[64]{};
-    int count = layouts_(0, nullptr);
-    if (!Current(generation) || count <= 0 || count > 64) {
-      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    int filled = layouts_(64, loaded);
-    if (!Current(generation) || filled != count) {
-      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    int after = layouts_(0, nullptr);
-    if (!Current(generation) || after != count ||
-        std::find(loaded, loaded + count, layout) == loaded + count) {
-      Refuse(Stage::Layout, !Current(generation) ? Cause::Stale : Cause::Substitute);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    if (host_identity_.kind == host::Kind::PackagedNotepad &&
-        !native_field::KnownNotepad(host_identity_)) {
-      ObserveHost(context);
-      return S_OK;
-    }
-    NativeKey translated = TranslateKey(key, flags, layout, state);
-    const auto *event = std::get_if<kr_event>(&translated);
-    if (!Current(generation) || (event && event->mode != mode)) {
-      Refuse(Stage::Mode, !Current(generation) ? Cause::Stale : Cause::Predicate);
-      InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
-      return S_OK;
-    }
-    if (!event)
-      return S_OK;
-    key_admission_ = false;
-    *eaten = HandleEvent(context, *event);
-    if (*eaten)
-      diagnostics::Count(diagnostics_, Counter::Consumed);
     return S_OK;
   } catch (...) {
     Refuse(Stage::Key, Cause::Exception);
@@ -1294,11 +1420,35 @@ HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
 HRESULT Service::OnKeyUp(ITfContext *c, WPARAM k, LPARAM l, BOOL *e) {
   return OnTestKeyUp(c, k, l, e);
 }
-HRESULT Service::OnPreservedKey(ITfContext *, REFGUID, BOOL *eaten) {
+HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
   if (!eaten)
     return E_POINTER;
   *eaten = FALSE;
-  return S_OK;
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
+  const auto command = std::find_if(commands.begin(), commands.end(),
+                                    [&](const CommandSpec &entry) { return entry.id == id; });
+  if (command == commands.end())
+    return S_OK;
+  ComPtr<Service> self(this);
+  DiagnosticCallback callback(*this);
+  try {
+    auto admission = AdmitKey(context);
+    if (!admission || !ExactCommandModifiers(admission->state))
+      return S_OK;
+    kr_event event{
+        static_cast<uint32_t>(command->intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE),
+        admission->mode,
+        KR_CTX_INELIGIBLE,
+        0,
+        {}};
+    *eaten = admission->Dispatch(event);
+    return S_OK;
+  } catch (...) {
+    Refuse(Stage::Key, Cause::Exception);
+    Invalidate(true);
+    return E_FAIL;
+  }
 }
 HRESULT Service::OnSetFocus(BOOL foreground) {
   DiagnosticCallback callback(*this);

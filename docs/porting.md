@@ -143,6 +143,15 @@ stop without retry or another character write. Controlled doubles cover selectio
 either native effect, clone gravity, exact selection styles, and fresh policy refusal.
 Actual Notepad selection preservation and Undo remain separate live gates.
 
+The Windows branch contains a bounded `PreserveKey` delivery candidate for manual conversion
+and reversal. Two exact left Ctrl + left Alt registrations belong to one activation. A provisional
+stack owner accounts for late successful registrations before rollback, and reactivation waits
+for the whole activation call and all captured releases. Unknown mandatory acquisition or cleanup
+effects fault the instance. Ordinary and preserved callbacks share native admission and the
+existing executor. A command GUID supplies no modifier, repeat, or document-authority facts.
+Actual Notepad delivery before termination remains unproved; see
+[the command contract](windows.md#manual-conversion-and-reversal).
+
 | Interface | Documented behavior | Obligation |
 |---|---|---|
 | [`ITfContext::RequestEditSession`](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfcontext-requesteditsession) | Separate request HRESULT and session result; sync and async grants differ | Check both; handle denial or deferral without a speculative edit or a wrongly eaten key |

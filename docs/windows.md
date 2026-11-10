@@ -290,6 +290,34 @@ using `ToUnicodeEx` without changing its keyboard state. Rust decides whether pu
 provisional word text or a finish request. PC backtick can therefore start `ёлка` as `` `krf ``,
 and `[jhjij` can convert to `хорошо`. Coalesced repeats remain finish-and-pass requests.
 
+This branch also contains a native command-delivery candidate for ordinary Notepad.
+Activation registers K and Z with `ITfKeystrokeMgr::PreserveKey`, using distinct stable GUIDs
+and exactly `TF_MOD_LCONTROL | TF_MOD_LALT` on keydown. Both registrations must return `S_OK`
+before the service becomes active. Failed or duplicate registrations grant no cleanup ownership.
+Cancellation accounts for each late success before rollback. All acquired pairs and mandatory
+sinks receive one independent cleanup attempt, even when another fails. Unknown acquisition
+or cleanup effects fault that service instance. `CONNECT_E_NOCONNECTION` from `UnpreserveKey`
+reports an anomaly but establishes absence, so it alone does not fault the instance.
+New activation waits until rollback, teardown, captured COM releases, and the whole prior
+`ActivateEx` call finish. Optional diagnostics and model startup retain their existing failure policy.
+
+`OnPreservedKey` shares ordinary-key admission for the exact active profile, dedicated substitute
+layout, complete loaded-layout set, and real thread keyboard state. Unknown GUIDs pass before
+these queries. Known commands require actual left Ctrl and left Alt, with no Shift, right Ctrl,
+right Alt, or Windows key. Caps Lock remains allowed. The callback dispatches a zero-text manual
+or reverse event through the same executor. It supplies no scan code or repeat count, and the
+adapter invents neither. Each repeated manual callback can convert the owned text again.
+Repeated reversal cannot reuse an expired receipt. Held-key delivery remains a native-client gate.
+The ordinary `KeyEntered` counter continues to count only ordinary-key callbacks.
+
+Controlled registration and callback tests do not prove delivery in ordinary Notepad.
+The decisive live gate requires the exact reviewed DLL, a fresh owned `ghbdtn`, and the original
+left Ctrl + left Alt + K chord with no intervening focus or source action. Delivery must precede
+composition termination and produce one verified write, exact `привет` without Space, the end
+caret, and zero Unknown effects. Reversal and the remaining application gates follow separately.
+Absent, late, or unusable delivery rejects this candidate. A callback after termination cannot
+recover the committed word or establish new editing authority.
+
 Commands use the same owned composition, exact range/text/caret checks, readback, and Rust
 acknowledgement as fixture correction. A successful acknowledged command can consume its key
 without writing, including manual conversion with no word or reversal with no receipt.

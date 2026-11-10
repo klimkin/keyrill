@@ -3,6 +3,16 @@
 #include <algorithm>
 
 namespace keyrill {
+const std::array<CommandSpec, 2> commands{{
+    {{0xd7abce42, 0xc8a9, 0x4a43, {0x99, 0x0a, 0x4a, 0x8d, 0x6c, 0x01, 0x1e, 0xbb}},
+     {'K', TF_MOD_LCONTROL | TF_MOD_LALT},
+     ManualIntent::Convert,
+     L"Keyrill manual conversion"},
+    {{0x16531b70, 0x516e, 0x4dfb, {0x9f, 0x18, 0xcb, 0x76, 0x0d, 0xe5, 0x90, 0xb4}},
+     {'Z', TF_MOD_LCONTROL | TF_MOD_LALT},
+     ManualIntent::Reverse,
+     L"Keyrill reversal"},
+}};
 static bool Modifier(WPARAM key) {
   switch (key) {
   case VK_SHIFT:
@@ -38,6 +48,12 @@ static bool Printable(const wchar_t *text, int count) {
   }
   return true;
 }
+bool ExactCommandModifiers(const BYTE (&state)[256]) noexcept {
+  const auto down = [&](int code) { return (state[code] & 0x80) != 0; };
+  return down(VK_LCONTROL) && down(VK_LMENU) && !down(VK_RCONTROL) && !down(VK_RMENU) &&
+         !down(VK_SHIFT) && !down(VK_LSHIFT) && !down(VK_RSHIFT) && !down(VK_LWIN) &&
+         !down(VK_RWIN);
+}
 NativeKey TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)[256]) {
   if (Modifier(key))
     return ModifierOnly{};
@@ -53,11 +69,12 @@ NativeKey TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)
   bool windows = down(VK_LWIN) || down(VK_RWIN);
   bool command = down(VK_CONTROL) || down(VK_LCONTROL) || down(VK_RCONTROL) || down(VK_MENU) ||
                  down(VK_LMENU) || down(VK_RMENU) || windows;
-  if (down(VK_LCONTROL) && down(VK_LMENU) && !down(VK_RCONTROL) && !down(VK_RMENU) && !shift &&
-      !windows && (key == 'K' || key == 'Z')) {
-    event.role = key == 'K' ? KR_MANUAL : KR_REVERSE;
-    return event;
-  }
+  if (ExactCommandModifiers(state))
+    for (const auto &entry : commands)
+      if (key == entry.key.uVKey) {
+        event.role = entry.intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE;
+        return event;
+      }
   if (command)
     return event;
   if (!shift && (key == VK_BACK || key == VK_ESCAPE)) {

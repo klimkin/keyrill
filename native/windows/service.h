@@ -94,25 +94,66 @@ private:
   ULONG references_ = 1;
   DWORD thread_ = GetCurrentThreadId();
   uint64_t generation_ = 1;
-  enum class Activation { Inactive, Active, Deactivating };
+  enum class Activation { Inactive, Preparing, Cancelling, Active, Draining, Faulted };
+  struct ActivationEpoch {
+    uint64_t value;
+    bool operator==(const ActivationEpoch &) const = default;
+  };
+  struct ActivationResources {
+    ComPtr<ITfThreadMgr> manager;
+    ComPtr<ITfSource> source;
+    ComPtr<ITfKeystrokeMgr> keys;
+    ComPtr<ITfInputProcessorProfileMgr> profiles;
+    TfClientId client = TF_CLIENTID_NULL;
+    DWORD thread_cookie = TF_INVALID_COOKIE;
+    DWORD profile_cookie = TF_INVALID_COOKIE;
+    bool key_sink = false;
+    size_t command_prefix = 0;
+  };
+  struct ActivationAttempt {
+    ActivationEpoch epoch;
+    ActivationResources native;
+    bool uncertain_acquisition = false;
+  };
+  struct CleanupResult {
+    HRESULT error = S_OK;
+    bool uncertain = false;
+    void Record(HRESULT result, bool absent = false) noexcept;
+  };
+  struct KeyAdmission {
+    Service *owner;
+    ITfContext *context;
+    ActivationEpoch epoch;
+    uint64_t generation;
+    uint32_t mode;
+    HKL layout = nullptr;
+    BYTE state[256]{};
+    KeyAdmission(Service &, ITfContext *);
+    KeyAdmission(KeyAdmission &&) noexcept;
+    KeyAdmission(const KeyAdmission &) = delete;
+    KeyAdmission &operator=(const KeyAdmission &) = delete;
+    ~KeyAdmission();
+    bool Dispatch(const kr_event &);
+  };
+  bool Preparing(ActivationEpoch) const;
+  bool SameActivation(ActivationEpoch) const;
+  HRESULT AcquireActivation(ActivationAttempt &);
+  CleanupResult DrainActivation(ActivationResources &) noexcept;
+  std::optional<KeyAdmission> AdmitKey(ITfContext *);
   Activation activation_ = Activation::Inactive;
+  ActivationEpoch activation_epoch_{0};
+  bool activation_call_open_ = false;
+  std::optional<ActivationResources> native_;
   bool Active() const { return activation_ == Activation::Active; }
   bool busy_ = false;
   bool key_admission_ = false;
   bool stopped_ = false;
   uint32_t mode_ = 0;
-  TfClientId client_ = TF_CLIENTID_NULL;
   kr_engine *engine_ = nullptr;
   std::unique_ptr<Owned> owned_;
-  ComPtr<ITfThreadMgr> manager_;
-  ComPtr<ITfSource> source_;
-  ComPtr<ITfKeystrokeMgr> keys_;
-  ComPtr<ITfInputProcessorProfileMgr> profiles_manager_;
   const ComPtr<ITfInputProcessorProfileMgr> profile_dependency_;
   const decltype(&GetKeyboardLayoutList) layouts_;
   const native_field::Source *const field_source_;
-  DWORD thread_cookie_ = TF_INVALID_COOKIE;
-  DWORD profile_cookie_ = TF_INVALID_COOKIE;
   uint32_t diagnostic_depth_ = 0;
   diagnostics::Snapshot diagnostics_;
   diagnostics::LifecycleJournal lifecycle_;

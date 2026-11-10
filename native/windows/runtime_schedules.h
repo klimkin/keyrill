@@ -141,7 +141,7 @@ void RuntimeWindowReentrySchedules() {
   const bool called = runtime_creating == nullptr;
   runtime_creating = nullptr;
   WNDCLASSW remaining{};
-  Require(activated == S_OK && called && runtime_reentry_result == S_OK &&
+  Require(FAILED(activated) && called && runtime_reentry_result == S_OK &&
               !DiagnosticSnapshot(*h.service.Get()).active &&
               InterlockedCompareExchange(&vocabulary::worker_count, 0, 0) == 0 &&
               !GetClassInfoW(GetModuleHandleW(nullptr), L"KeyrillSnapshotMaintenance", &remaining),
@@ -150,11 +150,13 @@ void RuntimeWindowReentrySchedules() {
   runtime_reentry_manager = &h.manager;
   runtime_reactivation_result = E_PENDING;
   hook = SetWindowsHookExW(WH_CBT, RuntimeCreationHook, nullptr, GetCurrentThreadId());
-  Require(hook && h.service->Activate(&h.manager, 42) == S_OK && UnhookWindowsHookEx(hook),
-          "creation schedule deactivates and starts a newer activation");
-  Require(!runtime_creating && runtime_reactivation_result == S_OK &&
-              DiagnosticSnapshot(*h.service.Get()).active,
-          "stale creation preserves newer activation authority");
+  Require(hook && FAILED(h.service->Activate(&h.manager, 42)) && UnhookWindowsHookEx(hook),
+          "creation schedule cancels the whole activation frame");
+  Require(!runtime_creating && runtime_reactivation_result == E_INVALIDARG &&
+              !DiagnosticSnapshot(*h.service.Get()).active,
+          "creation cannot overlap a newer activation before captured resources drain");
+  Require(h.service->Activate(&h.manager, 42) == S_OK,
+          "activation resumes only after the cancelled creation frame drains");
   const auto ready_from_timer = [&] {
     RuntimeWait(
         [&] {
