@@ -126,10 +126,11 @@ Notepad. First live acceptance still requires the exact reviewed DLL loaded by a
 Notepad process, a nonnull owned composition, exact returned ranges and readback, an independent
 full public document/caret oracle and zero Unknown effects. Correction, retained reversal,
 manual conversion, model/vocabulary behavior, continuation, Undo, focus, tab, source and close
-remain separate live gates. Unchanged FINISH now performs one exact owned-range replacement
-before ending the composition. Controlled tests preserve moved carets and noncollapsed selections,
-but fake `SetText` does not move selection. Actual Notepad selection preservation and Undo remain
-unproven. The mapping of a platform-requested focus-loss commit also remains a live gate.
+remain separate live gates. Unchanged FINISH performs one exact owned-range replacement
+before ending the composition and preserves the original full selection. Controlled tests cover
+selection movement by replacement, composition end, or both, including clone gravity, moved carets,
+noncollapsed selections, and active-end style. Actual Notepad selection preservation and Undo
+remain unproven. The mapping of a platform-requested focus-loss commit also remains a live gate.
 Focus and termination notifications grant no new write authority or saved-text writeback.
 
 For an unadmitted Notepad version, after the existing source and loaded-layout checks, the first
@@ -429,9 +430,15 @@ text, and caret after the one permitted `SetText` call. Each MARK or FINISH that
 replacement performs one exact owned-range `SetText`, including an unchanged finish.
 `EndComposition` removes the composing property and is a separate effect, not a second character
 write. Unchanged finish requires no expected end caret and does not force selection collapse.
-Changing finish retains its caret checks and verified end-caret update. Finish then checks the
-retained exact range's text and extent and verifies that no composition remains before
-acknowledging Rust. A replan
+It captures the selection's exact ACP start, length, and style before replacement, and refuses
+preparation drift without recapturing. After verified replacement and composition end, it compares
+the actual full selection with that immutable value. If necessary, it reconstructs a private
+range clone using checked `ShiftEnd` and `ShiftStart` metadata operations, then calls `SetSelection`
+once. The clone grants no character access. Partial shifts or failed verification stop with an
+Unknown outcome and no retry. Fresh policy guards the exact owned text range and each selection
+effect separately. Changing finish retains its caret checks and verified end-caret update.
+Finish checks the retained exact range's text and extent and verifies that no composition remains
+after selection callbacks, then verifies the final selection before acknowledging Rust. A replan
 reacquires the actual caret and boundary, rather than inheriting the finished mark's boundary.
 FINISH followed by a replanned MARK may perform two character writes in one request, each in a
 distinct plan and composition. Controlled operation traces attribute both writes by request

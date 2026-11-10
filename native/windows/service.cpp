@@ -169,15 +169,12 @@ private:
     return Check(start >= 0 && length >= 0 && start <= std::numeric_limits<LONG>::max() - length);
   }
   bool Selection(TfEditCookie cookie, ComPtr<ITfRange> &range, LONG &caret, bool collapsed = true) {
-    Observe observe(*this, Stage::Selection);
-    TF_SELECTION selection{};
-    ULONG fetched = 0;
-    HRESULT result = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    range.Attach(selection.range);
-    if (!Good(result) || !Check(fetched == 1 && range && !selection.style.fInterimChar))
+    auto selection = ObserveSelection(cookie, collapsed);
+    if (!selection)
       return false;
-    LONG length = 0;
-    return Extent(range.Get(), caret, length) && Check(!collapsed || length == 0);
+    range = selection->range;
+    caret = selection->value.start;
+    return true;
   }
   bool Disabled(IUnknown *target, REFGUID id, Stage stage) {
     Observe observe(*this, stage);
@@ -253,6 +250,22 @@ private:
     ComPtr<ITfRange> range;
     LONG caret;
   };
+  struct SelectionValue {
+    LONG start, length;
+    TF_SELECTIONSTYLE style;
+    bool operator==(const SelectionValue &other) const {
+      return start == other.start && length == other.length && style.ase == other.style.ase &&
+             style.fInterimChar == other.style.fInterimChar;
+    }
+  };
+  struct SelectionObservation {
+    ComPtr<ITfRange> range;
+    SelectionValue value;
+  };
+  struct FinishSelection {
+    SelectionValue original;
+    ComPtr<ITfRange> carrier;
+  };
   bool AllowedRange(TfEditCookie cookie, ITfRange *range,
                     const native_field::FieldIdentity &expected) {
     const auto field = FreshFieldIdentity();
@@ -265,8 +278,8 @@ private:
     return WritableContext() && OrdinaryScope(cookie, range, expected.kind).has_value() &&
            Check(FreshFieldIdentity() == field && Alive(), Cause::Stale);
   }
-  std::optional<AdmittedSelection> AcquireAdmittedSelection(TfEditCookie cookie,
-                                                            bool require_collapsed) {
+  std::optional<SelectionObservation> ObserveSelection(TfEditCookie cookie,
+                                                       bool require_collapsed) {
     Observe observe(*this, Stage::Focus);
     const auto field = FreshFieldIdentity();
     if (!field || (field_ && !Check(field == field_)))
@@ -288,10 +301,67 @@ private:
       return std::nullopt;
     LONG caret = 0, length = 0;
     if (!Extent(range.Get(), caret, length) || !Check(!require_collapsed || length == 0) ||
+        !AllowedRange(cookie, range.Get(), *field) ||
         !Check(FreshFieldIdentity() == field && Alive(), Cause::Stale))
       return std::nullopt;
     field_ = field;
-    return AdmittedSelection{*field, range, caret};
+    return SelectionObservation{range, {caret, length, selection.style}};
+  }
+  std::optional<AdmittedSelection> AcquireAdmittedSelection(TfEditCookie cookie,
+                                                            bool require_collapsed) {
+    auto selection = ObserveSelection(cookie, require_collapsed);
+    if (!selection)
+      return std::nullopt;
+    return AdmittedSelection{*field_, selection->range, selection->value.start};
+  }
+  bool SelectionMatches(TfEditCookie cookie, const SelectionValue &expected) {
+    auto selection = ObserveSelection(cookie, false);
+    return selection && Check(selection->value == expected);
+  }
+  std::optional<FinishSelection> CaptureFinishSelection(TfEditCookie cookie) {
+    auto selection = ObserveSelection(cookie, false);
+    if (!selection)
+      return std::nullopt;
+    ComPtr<ITfRange> carrier;
+    LONG start = 0, length = 0;
+    if (!Exact(selection->range->Clone(&carrier)) || !Check(carrier != nullptr, Cause::Missing) ||
+        !Extent(carrier.Get(), start, length) ||
+        !Check(start == selection->value.start && length == selection->value.length))
+      return std::nullopt;
+    return FinishSelection{selection->value, carrier};
+  }
+  bool PreserveFinishSelection(TfEditCookie cookie, const FinishSelection &saved) {
+    auto selection = ObserveSelection(cookie, false);
+    if (!selection)
+      return false;
+    if (selection->value == saved.original)
+      return true;
+    // Clones can move with replacement gravity. Only the saved numeric extent is the target.
+    LONG start = 0, length = 0, shifted = 0;
+    ITfRange *carrier = saved.carrier.Get();
+    const LONG end = saved.original.start + saved.original.length;
+    if (!Extent(carrier, start, length) || !field_ || !AllowedRange(cookie, carrier, *field_))
+      return false;
+    LONG amount = end - (start + length);
+    if (amount &&
+        (!Exact(carrier->ShiftEnd(cookie, amount, &shifted, nullptr)) || !Check(shifted == amount)))
+      return false;
+    if (!Extent(carrier, start, length) || !Check(start + length == end) || !field_ ||
+        !AllowedRange(cookie, carrier, *field_))
+      return false;
+    amount = saved.original.start - start;
+    if (amount && (!Exact(carrier->ShiftStart(cookie, amount, &shifted, nullptr)) ||
+                   !Check(shifted == amount)))
+      return false;
+    if (!Extent(carrier, start, length) ||
+        !Check(start == saved.original.start && length == saved.original.length))
+      return false;
+    ComPtr<ITfContextComposition> cc;
+    if (!NoForeign(cookie, carrier, cc) || !field_ || !AllowedRange(cookie, carrier, *field_))
+      return false;
+    TF_SELECTION restored{carrier, saved.original.style};
+    return Exact(context_->SetSelection(cookie, 1, &restored)) &&
+           SelectionMatches(cookie, saved.original);
   }
   bool NoForeign(TfEditCookie, ITfRange *, ComPtr<ITfContextComposition> &cc) {
     Observe observe(*this, Stage::Foreign);
@@ -406,7 +476,13 @@ private:
       if (!Alive() || !OwnedRange(cookie, expected, true, range))
         return false;
     }
-    if (!field_ || !AllowedRange(cookie, range.Get(), *field_))
+    const bool preserve_selection = plan.action == KR_FINISH && desired == expected;
+    const auto original =
+        preserve_selection ? CaptureFinishSelection(cookie) : std::optional<FinishSelection>{};
+    if (preserve_selection && (!original || !OwnedRange(cookie, expected, false, range)))
+      return false;
+    if ((original && !SelectionMatches(cookie, original->original)) || !field_ ||
+        !AllowedRange(cookie, range.Get(), *field_))
       return false;
     diagnostics::Count(owner_.diagnostics_, Counter::Attempted);
     wrote_ = true;
@@ -460,6 +536,13 @@ private:
         ComPtr<ITfRange> verified_caret;
         LONG position = 0;
         if (!Selection(cookie, verified_caret, position) || position != start + length)
+          return false;
+      }
+      if (original) {
+        if (!PreserveFinishSelection(cookie, *original) ||
+            !Extent(actual.Get(), finished_start, finished_length) || finished_start != start ||
+            finished_length != length || !Read(cookie, actual.Get(), desired) ||
+            !NoForeign(cookie, actual.Get(), cc) || !SelectionMatches(cookie, original->original))
           return false;
       }
       owner_.owned_.reset();

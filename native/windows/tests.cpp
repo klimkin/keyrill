@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <thread>
 #include <vector>
@@ -350,6 +351,7 @@ struct Range final : ITfRangeACP {
   HRESULT STDMETHODCALLTYPE GetText(TfEditCookie, DWORD, WCHAR *, ULONG, ULONG *) override;
   HRESULT STDMETHODCALLTYPE SetText(TfEditCookie, DWORD, const WCHAR *, LONG) override;
   HRESULT STDMETHODCALLTYPE ShiftStart(TfEditCookie, LONG, LONG *, const TF_HALTCOND *) override;
+  HRESULT STDMETHODCALLTYPE ShiftEnd(TfEditCookie, LONG, LONG *, const TF_HALTCOND *) override;
   HRESULT STDMETHODCALLTYPE Collapse(TfEditCookie, TfAnchor) override;
   HRESULT STDMETHODCALLTYPE Clone(ITfRange **) override;
   HRESULT STDMETHODCALLTYPE GetContext(ITfContext **) override;
@@ -358,7 +360,6 @@ struct Range final : ITfRangeACP {
   STUB(GetFormattedText, (TfEditCookie, IDataObject **));
   STUB(GetEmbedded, (TfEditCookie, REFGUID, REFIID, IUnknown **));
   STUB(InsertEmbedded, (TfEditCookie, DWORD, IDataObject *));
-  STUB(ShiftEnd, (TfEditCookie, LONG, LONG *, const TF_HALTCOND *));
   STUB(ShiftStartToRange, (TfEditCookie, ITfRange *, TfAnchor));
   STUB(ShiftEndToRange, (TfEditCookie, ITfRange *, TfAnchor));
   STUB(ShiftStartRegion, (TfEditCookie, TfShiftDir, BOOL *));
@@ -454,6 +455,7 @@ struct Document final : ITfContext,
   Document *range_context = nullptr;
   InputScope scope = IS_DEFAULT;
   ApplicationScopeProperty application_scope;
+  std::optional<Span> excluded_scope;
   bool disabled = false;
   bool empty_disabled = false;
   bool queried_empty = false;
@@ -480,6 +482,18 @@ struct Document final : ITfContext,
   int reads = 0, writes = 0, starts = 0, ends = 0;
   int max_request_writes = 0;
   int request_ordinal = 0;
+  struct FinishSelection {
+    int request;
+    Span span;
+    TF_SELECTIONSTYLE style;
+  };
+  std::optional<FinishSelection> finish_selection;
+  std::vector<std::weak_ptr<Span>> clones;
+  std::vector<Span> text_reads;
+  bool move_clones = false;
+  LONG shift_start_limit = std::numeric_limits<LONG>::max();
+  LONG shift_end_limit = std::numeric_limits<LONG>::max();
+  HRESULT shift_start_result = S_OK, shift_end_result = S_OK;
   std::vector<OperationTrace> operations;
   int references = 1;
   ComPtr<Composition> composition;
@@ -557,9 +571,21 @@ struct Document final : ITfContext,
   HRESULT STDMETHODCALLTYPE SetSelection(TfEditCookie, ULONG, const TF_SELECTION *value) override {
     Call("SetSelection");
     auto *range = static_cast<Range *>(value->range);
-    Require(range->span->length == 0, "no temporary selection of document text");
+    if (!active_composition) {
+      Require(finish_selection && finish_selection->request == request_ordinal &&
+                  !operations.empty() && operations.back().operation == NativeOperation::End &&
+                  operations.back().request == request_ordinal &&
+                  range->span->start == finish_selection->span.start &&
+                  range->span->length == finish_selection->span.length &&
+                  value->style.ase == finish_selection->style.ase &&
+                  value->style.fInterimChar == finish_selection->style.fInterimChar,
+              "only exact unchanged FINISH selection restoration after EndComposition");
+    } else {
+      Require(range->span->length == 0, "no temporary selection of document text");
+    }
     caret = range->span->start;
-    selection_length = 0;
+    selection_length = range->span->length;
+    selection_style = value->style;
     Call("SetSelection.after");
     return selection_result;
   }
@@ -596,9 +622,13 @@ struct Document final : ITfContext,
     }
     return application_scope.result;
   }
-  HRESULT STDMETHODCALLTYPE GetValue(TfEditCookie, ITfRange *, VARIANT *out) override {
+  HRESULT STDMETHODCALLTYPE GetValue(TfEditCookie, ITfRange *range, VARIANT *out) override {
     Call("scope.GetValue");
     VariantInit(out);
+    const auto span = static_cast<Range *>(range)->span;
+    if (excluded_scope && span->start == excluded_scope->start &&
+        span->length == excluded_scope->length)
+      return E_ACCESSDENIED;
     out->vt = application_scope.value_type;
     if (out->vt == VT_UNKNOWN && application_scope.value_present) {
       out->punkVal = static_cast<ITfInputScope *>(this);
@@ -711,6 +741,7 @@ HRESULT Range::QueryInterface(REFIID id, void **out) {
 HRESULT Range::GetText(TfEditCookie, DWORD, WCHAR *text, ULONG capacity, ULONG *count) {
   document.Call("GetText");
   ++document.reads;
+  document.text_reads.push_back(*span);
   if (span->start < 0 || span->length < 0 ||
       span->start + span->length > static_cast<LONG>(document.text.size()))
     return E_FAIL;
@@ -733,8 +764,18 @@ HRESULT Range::SetText(TfEditCookie, DWORD, const WCHAR *text, LONG length) {
           "each request writes a composition at most once per plan");
   document.operations.push_back({document.request_ordinal, document.starts,
                                  NativeOperation::SetText, span->start, span->length, length});
+  document.finish_selection.reset();
+  if (length == span->length && document.text.compare(span->start, span->length, text, length) == 0)
+    document.finish_selection =
+        Document::FinishSelection{document.request_ordinal,
+                                  {document.caret, document.selection_length},
+                                  document.selection_style};
   document.text.replace(span->start, span->length, text, length);
   span->length = length;
+  if (document.move_clones)
+    for (auto &clone : document.clones)
+      if (auto moved = clone.lock())
+        *moved = {static_cast<LONG>(document.text.size()), 0};
   document.Call("SetText.after");
   return document.write_result;
 }
@@ -752,10 +793,26 @@ HRESULT Range::GetExtent(LONG *start, LONG *length) {
 }
 HRESULT Range::ShiftStart(TfEditCookie, LONG amount, LONG *shift, const TF_HALTCOND *) {
   document.Call("ShiftStart");
-  *shift = std::max(amount, -span->start);
+  const LONG end = span->start + span->length;
+  *shift = std::clamp(
+      amount, -std::min(span->start, document.shift_start_limit),
+      std::min(static_cast<LONG>(document.text.size()) - span->start, document.shift_start_limit));
   span->start += *shift;
-  span->length -= *shift;
-  return S_OK;
+  span->length = std::max(end - span->start, 0L);
+  document.Call("ShiftStart.after");
+  return document.shift_start_result;
+}
+HRESULT Range::ShiftEnd(TfEditCookie, LONG amount, LONG *shift, const TF_HALTCOND *) {
+  document.Call("ShiftEnd");
+  const LONG end = span->start + span->length;
+  *shift =
+      std::clamp(amount, -std::min(end, document.shift_end_limit),
+                 std::min(static_cast<LONG>(document.text.size()) - end, document.shift_end_limit));
+  const LONG next_end = end + *shift;
+  span->start = std::min(span->start, next_end);
+  span->length = next_end - span->start;
+  document.Call("ShiftEnd.after");
+  return document.shift_end_result;
 }
 HRESULT Range::Collapse(TfEditCookie, TfAnchor anchor) {
   document.Call("Collapse");
@@ -766,7 +823,10 @@ HRESULT Range::Collapse(TfEditCookie, TfAnchor anchor) {
 }
 HRESULT Range::Clone(ITfRange **out) {
   document.Call("Clone");
-  *out = new Range(document, span->start, span->length);
+  auto *clone = new Range(document, span->start, span->length);
+  document.clones.emplace_back(clone->span);
+  *out = clone;
+  document.Call("Clone.after");
   return S_OK;
 }
 HRESULT Composition::QueryInterface(REFIID id, void **out) {
@@ -4819,6 +4879,367 @@ bool UnchangedFinishSelectionEffects() {
   }
   return passed;
 }
+void FinishSelectionGravity() {
+  const std::wstring corrected = L"\x043f\x0440\x0438\x0432\x0435\x0442 ";
+  for (bool gravity : {false, true})
+    for (const auto target : {Span{14, 0}, Span{3, 0}, Span{9, 3}, Span{6, 10}, Span{0, 20}})
+      for (auto active : {TF_AE_NONE, TF_AE_START, TF_AE_END}) {
+        NotepadFieldSource ordinary;
+        Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+        h.Type(L"ghbdtn ");
+        h.a.caret = target.start;
+        h.a.selection_length = target.length;
+        h.a.selection_style = {active, FALSE};
+        h.a.move_clones = gravity;
+        const auto writes = h.a.writes, ends = h.a.ends, starts = h.a.starts;
+        const auto selections = h.a.calls["SetSelection"];
+        const auto reads = h.a.text_reads.size();
+        h.a.hook = [&](const char *call) {
+          if (!strcmp(call, "SetText.after") || !strcmp(call, "EndComposition.after")) {
+            h.a.caret = 7;
+            h.a.selection_length = 0;
+            h.a.selection_style = {TF_AE_NONE, FALSE};
+          }
+        };
+        const kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+        Require(!h.service->HandleEvent(&h.a, finish) && h.a.writes == writes + 1 &&
+                    h.a.ends == ends + 1 && h.a.starts == starts && !h.a.active_composition &&
+                    !h.service->stopped() && h.a.caret == target.start &&
+                    h.a.selection_length == target.length && h.a.selection_style.ase == active &&
+                    !h.a.selection_style.fInterimChar &&
+                    h.a.calls["SetSelection"] == selections + 1,
+                "both finish effects preserve exact selection and style despite clone gravity");
+        h.Oracle(corrected.c_str(), target.start);
+        Require(std::all_of(h.a.text_reads.begin() + reads, h.a.text_reads.end(),
+                            [](const Span &span) { return span.start == 7 && span.length == 7; }),
+                "selection preservation never reads characters outside the owned finished range");
+      }
+  NotepadFieldSource ordinary;
+  Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+  h.Type(L"hello");
+  const auto selections = h.a.calls["SetSelection"];
+  Require(!h.Key(L'!', false) && h.a.calls["SetSelection"] == selections,
+          "matching unchanged FINISH selection needs no selection effect");
+  h.Oracle(L"hello", 12);
+}
+void FinishSelectionFailures() {
+  struct Failure {
+    const char *boundary;
+    int kind;
+    bool attempted;
+  };
+  const Failure failures[] = {{"Clone.after", 0, false},
+                              {"Clone.after", 1, false},
+                              {"Clone.after", 2, false},
+                              {"Clone.after", 3, false},
+                              {"Clone.after", 4, false},
+                              {"Clone.after", 5, false},
+                              {"ShiftEnd", 6, true},
+                              {"ShiftStart", 7, true},
+                              {"ShiftEnd", 8, true},
+                              {"ShiftStart", 9, true},
+                              {"ShiftEnd", 10, true},
+                              {"ShiftStart", 11, true},
+                              {"SetSelection.after", 12, true},
+                              {"SetSelection.after", 13, true},
+                              {"SetSelection.after", 14, true},
+                              {"SetSelection.after", 15, true},
+                              {"SetSelection.after", 16, true},
+                              {"SetSelection.after", 17, true},
+                              {"SetSelection.after", 18, true},
+                              {"SetSelection.after", 19, true},
+                              {"GetSelection", 20, false},
+                              {"GetSelection", 21, false},
+                              {"GetSelection", 22, false},
+                              {"GetSelection", 23, false},
+                              {"GetSelection", 24, false},
+                              {"GetSelection", 25, false},
+                              {"ShiftEnd.after", 26, true},
+                              {"ShiftStart.after", 27, true},
+                              {"SetSelection.after", 28, true},
+                              {"SetSelection.after", 29, true},
+                              {"SetSelection.after", 30, true}};
+  for (const auto failure : failures) {
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"ghbdtn ");
+    h.a.caret = 6;
+    h.a.selection_length = 10;
+    h.a.selection_style = {TF_AE_START, FALSE};
+    h.a.move_clones = true;
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    const auto writes = h.a.writes, ends = h.a.ends, starts = h.a.starts;
+    const auto selections = h.a.calls["SetSelection"];
+    const auto selection_queries = h.a.calls["GetSelection"];
+    const auto reads = h.a.text_reads.size();
+    bool injected = false;
+    int excluded_reads = -1;
+    h.a.hook = [&](const char *call) {
+      if (!strcmp(call, "EndComposition.after")) {
+        h.a.caret = 7;
+        h.a.selection_length = 0;
+        h.a.selection_style = {TF_AE_NONE, FALSE};
+      }
+      if (injected || strcmp(call, failure.boundary) ||
+          (failure.kind >= 20 && failure.kind <= 25 &&
+           h.a.calls["GetSelection"] != selection_queries + 2))
+        return;
+      injected = true;
+      switch (failure.kind) {
+      case 0:
+        ++h.a.caret;
+        break;
+      case 1:
+        --h.a.selection_length;
+        break;
+      case 2:
+        h.a.selection_style.ase = TF_AE_END;
+        break;
+      case 3:
+        h.a.clones.back().lock()->start = 5;
+        break;
+      case 4:
+        h.service->OnPushContext(&h.b);
+        break;
+      case 5:
+        h.a.range_context = &h.b;
+        break;
+      case 6:
+        h.a.shift_end_limit = 1;
+        break;
+      case 7:
+        h.a.shift_start_limit = 1;
+        break;
+      case 8:
+        h.a.shift_end_result = E_FAIL;
+        break;
+      case 9:
+        h.a.shift_start_result = E_FAIL;
+        break;
+      case 10:
+        h.a.shift_end_result = S_FALSE;
+        break;
+      case 11:
+        h.a.shift_start_result = S_FALSE;
+        break;
+      case 12:
+        h.a.selection_result = E_FAIL;
+        break;
+      case 13:
+        h.a.selection_style.ase = TF_AE_END;
+        break;
+      case 14:
+        h.a.selection_style.fInterimChar = TRUE;
+        break;
+      case 15:
+        ++h.a.caret;
+        break;
+      case 16:
+        h.a.foreign = true;
+        break;
+      case 17:
+        h.a.status = TF_SD_READONLY;
+        excluded_reads = h.a.reads;
+        break;
+      case 18:
+        h.a.scope = IS_PRIVATE;
+        excluded_reads = h.a.reads;
+        break;
+      case 19:
+        h.service->OnPushContext(&h.b);
+        excluded_reads = h.a.reads;
+        break;
+      case 20:
+        h.a.selection_query_result = S_FALSE;
+        break;
+      case 21:
+        h.a.selection_query_result = E_FAIL;
+        break;
+      case 22:
+        h.a.selection_fetched = 2;
+        break;
+      case 23:
+        h.a.selection_present = false;
+        break;
+      case 24:
+        h.a.selection_style.fInterimChar = TRUE;
+        break;
+      case 25:
+        h.a.selection_style.ase = static_cast<TfActiveSelEnd>(99);
+        break;
+      case 26:
+      case 27:
+        h.a.foreign = true;
+        break;
+      case 28:
+        h.a.selection_result = S_FALSE;
+        break;
+      case 29:
+        ++h.a.composition->span->length;
+        break;
+      case 30:
+        h.a.text[7] = L'!';
+        break;
+      }
+    };
+    Require(!h.Key(L'x', false) && injected && h.service->stopped() &&
+                h.a.writes == writes + (failure.attempted ? 1 : 0) &&
+                h.a.ends == ends + (failure.attempted ? 1 : 0) && h.a.starts == starts &&
+                h.a.calls["SetSelection"] ==
+                    selections +
+                        ((failure.kind >= 12 && failure.kind < 20) || failure.kind >= 28 ? 1 : 0),
+            "selection failure refuses before write or stops unknown without replan or retry");
+    const auto after = DiagnosticSnapshot(*h.service.Get());
+    constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+    constexpr auto refused = static_cast<size_t>(diagnostics::Counter::Refused);
+    Require(after.counts[unknown] == before.counts[unknown] + (failure.attempted ? 1 : 0) &&
+                after.counts[refused] == before.counts[refused] + (failure.attempted ? 0 : 1),
+            "selection failure acknowledges the exact attempted or refused outcome once");
+    if (excluded_reads >= 0)
+      Require(h.a.reads == excluded_reads,
+              "restoration callback exclusion forbids character reads");
+    Require(h.a.text == (failure.kind == 30
+                             ? L"prefix !\x0440\x0438\x0432\x0435\x0442 suffix"
+                             : L"prefix \x043f\x0440\x0438\x0432\x0435\x0442 suffix") &&
+                h.b.text == L"prefix suffix" && h.b.caret == 7 && h.b.selection_length == 0 &&
+                std::all_of(h.a.text_reads.begin() + reads, h.a.text_reads.end(),
+                            [](const Span &span) { return span.start == 7 && span.length == 7; }),
+            "failed preservation never addresses selection characters or changes either document");
+    const auto final_reads = h.a.reads, final_selections = h.a.calls["SetSelection"];
+    h.a.hook = nullptr;
+    Require(!h.Key(L'y', false) && h.a.reads == final_reads && h.a.starts == starts &&
+                h.a.writes == writes + (failure.attempted ? 1 : 0) &&
+                h.a.calls["SetSelection"] == final_selections,
+            "later input cannot replay or repair failed selection preservation");
+  }
+}
+void FinishSelectionPolicyBoundaries() {
+  const kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+  const auto prepare = [](Harness &h) {
+    h.Type(L"ghbdtn ");
+    h.a.caret = 6;
+    h.a.selection_length = 10;
+    h.a.selection_style = {TF_AE_START, FALSE};
+    h.a.move_clones = true;
+    h.a.trace.clear();
+  };
+  const auto move_selection = [](Document &document, const char *call) {
+    if (!strcmp(call, "EndComposition.after")) {
+      document.caret = 7;
+      document.selection_length = 0;
+      document.selection_style = {TF_AE_NONE, FALSE};
+    }
+  };
+  for (const char *effect :
+       {"SetText.before", "ShiftEnd", "ShiftStart", "SetSelection", "GetText"}) {
+    size_t preparation = 0;
+    {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      prepare(h);
+      h.a.hook = [&](const char *call) { move_selection(h.a, call); };
+      Require(!h.service->HandleEvent(&h.a, finish) && !h.service->stopped(),
+              "positive selection policy schedule reaches verified FINISH");
+      auto found = !strcmp(effect, "GetText")
+                       ? std::find(h.a.trace.rbegin(), h.a.trace.rend(), effect).base() - 1
+                       : std::find(h.a.trace.begin(), h.a.trace.end(), effect);
+      Require(found != h.a.trace.end(), "selection preservation reaches protected operation");
+      while (found != h.a.trace.begin() && *found != "GetExtent")
+        --found;
+      Require(*found == "GetExtent", "selection effect has native metadata preparation");
+      preparation = static_cast<size_t>(found - h.a.trace.begin());
+    }
+    for (int policy = 0; policy != 8; ++policy) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      prepare(h);
+      const auto before = DiagnosticSnapshot(*h.service.Get());
+      const auto initial_writes = h.a.writes;
+      bool injected = false;
+      int reads = -1, writes = -1, starts = -1, ends = -1, selections = -1;
+      h.a.hook = [&](const char *call) {
+        move_selection(h.a, call);
+        if (injected || h.a.trace.size() != preparation + 1)
+          return;
+        injected = true;
+        reads = h.a.reads;
+        writes = h.a.writes;
+        starts = h.a.starts;
+        ends = h.a.ends;
+        selections = h.a.calls["SetSelection"];
+        switch (policy) {
+        case 0:
+          h.a.status = TF_SD_READONLY;
+          break;
+        case 1:
+          h.a.disabled = true;
+          break;
+        case 2:
+          h.a.empty_disabled = true;
+          break;
+        case 3:
+          h.manager.disabled = true;
+          break;
+        case 4:
+          h.a.scope = IS_PRIVATE;
+          break;
+        case 5:
+          h.a.application_scope.value_result = E_ACCESSDENIED;
+          break;
+        case 6:
+          ordinary.facts.field.style |= ES_READONLY;
+          break;
+        case 7:
+          h.service->OnPushContext(&h.b);
+          break;
+        }
+      };
+      Require(!h.service->HandleEvent(&h.a, finish) && injected && h.service->stopped() &&
+                  h.a.reads == reads && h.a.writes == writes && h.a.starts == starts &&
+                  h.a.ends == ends && h.a.calls["SetSelection"] == selections,
+              "fresh selection policy loss prevents every later character read or native effect");
+      const auto after = DiagnosticSnapshot(*h.service.Get());
+      constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+      constexpr auto refused = static_cast<size_t>(diagnostics::Counter::Refused);
+      const bool attempted = writes > initial_writes;
+      Require(after.counts[unknown] == before.counts[unknown] + (attempted ? 1 : 0) &&
+                  after.counts[refused] == before.counts[refused] + (attempted ? 0 : 1),
+              "selection policy drift retains the exact refused or unknown acknowledgement");
+      h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", h.a.caret);
+      h.a.hook = nullptr;
+      Require(!h.Key(L'y', false) && h.a.reads == reads && h.a.writes == writes &&
+                  h.a.starts == starts && h.a.ends == ends &&
+                  h.a.calls["SetSelection"] == selections,
+              "selection policy loss forbids later readback replay repair or replan");
+    }
+  }
+}
+void FinishSelectionOwnedScope() {
+  NotepadFieldSource ordinary;
+  Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+  h.Type(L"ghbdtn ");
+  h.a.caret = 6;
+  h.a.selection_length = 10;
+  const auto writes = h.a.writes, ends = h.a.ends, queries = h.a.calls["GetSelection"];
+  const auto before = DiagnosticSnapshot(*h.service.Get());
+  int reads = -1;
+  h.a.hook = [&](const char *call) {
+    if (!strcmp(call, "GetSelection") && h.a.calls["GetSelection"] == queries + 3) {
+      h.a.excluded_scope = Span{7, 7};
+      reads = h.a.reads;
+    }
+  };
+  Require(!h.Key(L'x', false) && reads >= 0 && h.a.reads == reads && h.a.writes == writes &&
+              h.a.ends == ends && h.a.starts == 1 && h.a.active_composition && h.service->stopped(),
+          "ordinary original selection cannot authorize an excluded owned write range");
+  const auto after = DiagnosticSnapshot(*h.service.Get());
+  constexpr auto unknown = static_cast<size_t>(diagnostics::Counter::Unknown);
+  constexpr auto refused = static_cast<size_t>(diagnostics::Counter::Refused);
+  Require(after.counts[unknown] == before.counts[unknown] &&
+              after.counts[refused] == before.counts[refused] + 1 && h.a.selection_length == 10,
+          "owned-range scope drift refuses before write and preserves exact original selection");
+  h.Oracle(L"\x043f\x0440\x0438\x0432\x0435\x0442 ", 6);
+}
 void WritablePolicyResults() {
   for (const auto result : {S_FALSE, E_FAIL}) {
     NotepadFieldSource ordinary;
@@ -5728,6 +6149,10 @@ int wmain(int argc, wchar_t **argv) {
   FinishContractRegressions();
   puts("RUN unchanged finish client selection effects");
   const bool unchanged_finish_selection = UnchangedFinishSelectionEffects();
+  FinishSelectionGravity();
+  FinishSelectionFailures();
+  FinishSelectionPolicyBoundaries();
+  FinishSelectionOwnedScope();
   WritablePolicyResults();
   FinishReplacementFailures();
   EmptyStartExclusion();

@@ -136,8 +136,12 @@ The Windows executor replaces the exact owned range once for each MARK or FINISH
 replacement. An unchanged FINISH has no expected end-caret requirement and does not force
 selection collapse. `EndComposition` is a separate composing-property effect. A FINISH followed
 by a replanned MARK may write twice in one request while preserving one character write per
-plan. Controlled doubles prove that accounting and fresh policy refusal. Their `SetText` does
-not move selection, so actual Notepad selection preservation and Undo remain separate live gates.
+plan. An unchanged FINISH captures immutable selection coordinates and style before its write,
+then verifies and, if needed, restores that complete selection after replacement and composition
+end. Restoration uses a metadata-only range clone and at most one `SetSelection`; failed checks
+stop without retry or another character write. Controlled doubles cover selection movement by
+either native effect, clone gravity, exact selection styles, and fresh policy refusal.
+Actual Notepad selection preservation and Undo remain separate live gates.
 
 | Interface | Documented behavior | Obligation |
 |---|---|---|
