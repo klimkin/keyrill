@@ -4705,6 +4705,120 @@ void FinishContractRegressions() {
   }
   Require(passed, "FINISH contract regression aggregate");
 }
+bool UnchangedFinishSelectionEffects() {
+  bool passed = true;
+  const std::wstring corrected = L"\x043f\x0440\x0438\x0432\x0435\x0442 ";
+  const std::wstring document = L"prefix " + corrected + L"suffix";
+  struct Selection {
+    const char *name;
+    LONG start, length;
+    TfActiveSelEnd active;
+  };
+  const Selection selections[] = {
+      {"end-caret", 14, 0, TF_AE_NONE},         {"moved-caret", 11, 0, TF_AE_NONE},
+      {"outside-caret", 3, 0, TF_AE_NONE},      {"inside-selection", 9, 3, TF_AE_START},
+      {"crossing-selection", 6, 10, TF_AE_END}, {"whole-document-selection", 0, 20, TF_AE_START}};
+  const auto print_document = [](const char *label, const std::wstring &text) {
+    fprintf(stderr, "%s UTF-16=", label);
+    for (wchar_t unit : text)
+      fprintf(stderr, "%04x ", static_cast<unsigned>(unit));
+    fputc('\n', stderr);
+  };
+  for (const char *boundary : {"none", "SetText.after", "EndComposition.after"}) {
+    for (const auto &selection : selections) {
+      NotepadFieldSource ordinary;
+      Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+      h.Type(L"ghbdtn ");
+      h.Oracle(corrected.c_str(), 14);
+      h.a.caret = selection.start;
+      h.a.selection_length = selection.length;
+      h.a.selection_style = {selection.active, FALSE};
+      const auto writes = h.a.writes, ends = h.a.ends, starts = h.a.starts;
+      bool moved = false;
+      h.a.hook = [&](const char *call) {
+        if (!moved && strcmp(call, boundary) == 0) {
+          moved = true;
+          h.a.caret = 7;
+          h.a.selection_length = 0;
+          h.a.selection_style = {TF_AE_NONE, FALSE};
+        }
+      };
+      const kr_event finish{KR_FINISH_REQUEST, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+      const bool eaten = h.service->HandleEvent(&h.a, finish);
+      const bool matched =
+          !eaten && h.a.text == document && h.a.caret == selection.start &&
+          h.a.selection_length == selection.length && h.a.selection_style.ase == selection.active &&
+          !h.a.selection_style.fInterimChar && h.a.writes == writes + 1 && h.a.ends == ends + 1 &&
+          h.a.starts == starts && !h.a.active_composition && !h.service->stopped() &&
+          moved == (strcmp(boundary, "none") != 0) && h.b.text == L"prefix suffix" &&
+          h.b.caret == 7 && h.b.selection_length == 0;
+      fprintf(stderr,
+              "%s unchanged FINISH %s %s selection expected=%ld/%ld/%u/0 actual=%ld/%ld/%u/%d; "
+              "owned SetText expected=1 actual=%d; EndComposition expected=1 actual=%d; "
+              "document matched=%d; eaten expected=0 actual=%d; stopped expected=0 actual=%d\n",
+              matched ? "PASS" : "FAIL", boundary, selection.name, selection.start,
+              selection.length, static_cast<unsigned>(selection.active), h.a.caret,
+              h.a.selection_length, static_cast<unsigned>(h.a.selection_style.ase),
+              h.a.selection_style.fInterimChar, h.a.writes - writes, h.a.ends - ends,
+              h.a.text == document, eaten, h.service->stopped());
+      if (h.a.text != document) {
+        print_document("expected", document);
+        print_document("actual", h.a.text);
+      }
+      passed = matched && passed;
+    }
+    NotepadFieldSource ordinary;
+    Harness h(nullptr, GetKeyboardLayoutList, &ordinary);
+    h.Type(L"ghbdtn ");
+    h.Oracle(corrected.c_str(), 14);
+    const auto writes = h.a.writes, ends = h.a.ends, starts = h.a.starts;
+    bool moved = false;
+    h.a.hook = [&](const char *call) {
+      if (!moved && h.a.starts == starts && strcmp(call, boundary) == 0) {
+        moved = true;
+        h.a.caret = 7;
+        h.a.selection_length = 0;
+      }
+    };
+    const bool eaten = h.Key(L'x', false);
+    const std::wstring continued = L"prefix " + corrected + L"xsuffix";
+    std::vector<OperationTrace> operations;
+    std::copy_if(
+        h.a.operations.begin(), h.a.operations.end(), std::back_inserter(operations),
+        [&](const OperationTrace &operation) { return operation.request == h.a.request_ordinal; });
+    const bool ordered =
+        operations.size() == 4 && operations[0].operation == NativeOperation::SetText &&
+        operations[0].composition == starts && operations[0].start == 7 &&
+        operations[0].length == 7 && operations[0].replacement_length == 7 &&
+        operations[1].operation == NativeOperation::End && operations[1].composition == starts &&
+        operations[2].operation == NativeOperation::Start &&
+        operations[2].composition == starts + 1 && operations[2].start == 14 &&
+        operations[2].length == 0 && operations[3].operation == NativeOperation::SetText &&
+        operations[3].composition == starts + 1 && operations[3].start == 14 &&
+        operations[3].length == 0 && operations[3].replacement_length == 1;
+    const bool matched = eaten && ordered && h.a.text == continued && h.a.caret == 15 &&
+                         h.a.selection_length == 0 && h.a.writes == writes + 2 &&
+                         h.a.ends == ends + 1 && h.a.starts == starts + 1 &&
+                         h.a.active_composition && h.a.composition->span->start == 14 &&
+                         h.a.composition->span->length == 1 && !h.service->stopped() &&
+                         moved == (strcmp(boundary, "none") != 0) && h.b.text == L"prefix suffix" &&
+                         h.b.caret == 7 && h.b.selection_length == 0;
+    fprintf(stderr,
+            "%s unchanged FINISH continuation %s document matched=%d; caret expected=15/0 "
+            "actual=%ld/%ld; new mark expected=14/1 actual=%ld/%ld; "
+            "writes expected=2 actual=%d; EndComposition expected=1 actual=%d; "
+            "ordered=%d; eaten expected=1 actual=%d\n",
+            matched ? "PASS" : "FAIL", boundary, h.a.text == continued, h.a.caret,
+            h.a.selection_length, h.a.composition->span->start, h.a.composition->span->length,
+            h.a.writes - writes, h.a.ends - ends, ordered, eaten);
+    if (h.a.text != continued) {
+      print_document("expected", continued);
+      print_document("actual", h.a.text);
+    }
+    passed = matched && passed;
+  }
+  return passed;
+}
 void WritablePolicyResults() {
   for (const auto result : {S_FALSE, E_FAIL}) {
     NotepadFieldSource ordinary;
@@ -5612,6 +5726,8 @@ int wmain(int argc, wchar_t **argv) {
   NotepadFieldDriftBeforeText();
   puts("RUN Notepad replan admission");
   FinishContractRegressions();
+  puts("RUN unchanged finish client selection effects");
+  const bool unchanged_finish_selection = UnchangedFinishSelectionEffects();
   WritablePolicyResults();
   FinishReplacementFailures();
   EmptyStartExclusion();
@@ -5652,6 +5768,8 @@ int wmain(int argc, wchar_t **argv) {
   RuntimeServiceSchedules();
   DestroyWindow(controlled_root);
   CoUninitialize();
+  Require(unchanged_finish_selection,
+          "unchanged FINISH preserves selection and continuation aggregate");
   puts("Controlled same-service COM schedules passed. No registration or physical TSF routing "
        "tested.");
   return 0;
