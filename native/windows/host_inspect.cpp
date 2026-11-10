@@ -1,4 +1,5 @@
 #include "host_build.h"
+#include "host_inspect_options.h"
 #include "host_probe.h"
 #include "host_threads.h"
 #include <cstdio>
@@ -10,16 +11,6 @@
 using namespace keyrill;
 using Microsoft::WRL::ComPtr;
 namespace {
-bool Number(const wchar_t *text, DWORD &value) {
-  wchar_t *end = nullptr;
-  if (!text || !*text || *text == L'-' || *text == L'+')
-    return false;
-  const auto parsed = wcstoul(text, &end, 10);
-  if (!end || *end || parsed == 0 || parsed == MAXDWORD)
-    return false;
-  value = parsed;
-  return true;
-}
 std::vector<DWORD> Threads(DWORD pid) {
   std::vector<DWORD> result;
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -39,7 +30,8 @@ std::vector<DWORD> Threads(DWORD pid) {
   CloseHandle(snapshot);
   return result;
 }
-void Print(const host::Identity &id, probe::Availability state, const probe::Payload &words) {
+void Print(const host::Identity &id, probe::Availability state, const probe::Payload &words,
+           const inspection::BuildDigest &expected) {
   const char *labels[] = {"Available", "Missing", "Busy", "Incompatible", "Stale"};
   printf("thread=%lu availability=%s", id.thread, labels[static_cast<size_t>(state)]);
   if (state == probe::Availability::Available) {
@@ -54,7 +46,7 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
       return s.counts[static_cast<size_t>(counter)];
     };
     printf(" instance=%lu kind=%u build_match=%u build=", value.instance,
-           static_cast<unsigned>(value.kind), value.build == probe::build_digest);
+           static_cast<unsigned>(value.kind), value.build == expected);
     for (auto part : value.build)
       printf("%08x", part);
     printf(" reason=%s result=%08x focus=%u scope=%u request=%08x session=%08x"
@@ -162,22 +154,20 @@ void NativeMetadata(DWORD pid, const std::vector<DWORD> &threads) {
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   setvbuf(stdout, nullptr, _IONBF, 0);
-  if (argc == 2 && wcscmp(argv[1], L"build") == 0) {
+  inspection::Options options;
+  if (!inspection::ParseOptions(argc, argv, options)) {
+    puts("Usage: KeyrillHostInspect build | host|service|public-empty PID"
+         " [--arm-seconds 1..3600] [--expect-server-build SHA256]");
+    return 2;
+  }
+  if (options.command == inspection::Command::Build) {
     for (auto part : probe::build_digest)
       printf("%08x", part);
     puts("");
     return 0;
   }
-  DWORD pid = 0, seconds = 0;
-  if (argc < 3 || argc > 5 || !Number(argv[2], pid) ||
-      (wcscmp(argv[1], L"host") && wcscmp(argv[1], L"service") &&
-       wcscmp(argv[1], L"public-empty")) ||
-      (argc != 3 &&
-       (argc != 5 || wcscmp(argv[1], L"service") || wcscmp(argv[3], L"--arm-seconds") ||
-        !Number(argv[4], seconds) || seconds > 3600))) {
-    puts("Usage: KeyrillHostInspect build | host|service|public-empty PID [--arm-seconds 1..3600]");
-    return 2;
-  }
+  const DWORD pid = options.pid, seconds = options.seconds;
+  const auto expected = options.expected_build.value_or(probe::build_digest);
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
   host::Identity id;
   if (!process || !host::Capture(process, pid, 0, id) || id.kind == host::Kind::Unknown ||
@@ -191,12 +181,12 @@ int wmain(int argc, wchar_t **argv) {
   printf("pid=%lu started=%016llx kind=%u version=%u.%u.%u.%u threads=%zu\n", pid, id.started,
          static_cast<unsigned>(id.kind), id.version[0], id.version[1], id.version[2], id.version[3],
          threads.size());
-  if (wcscmp(argv[1], L"host") == 0) {
+  if (options.command == inspection::Command::Host) {
     NativeMetadata(pid, threads);
     CloseHandle(process);
     return threads.empty() ? 1 : 0;
   }
-  if (wcscmp(argv[1], L"public-empty") == 0) {
+  if (options.command == inspection::Command::PublicEmpty) {
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool matched = SUCCEEDED(initialized) && Empty(pid);
     if (SUCCEEDED(initialized))
@@ -204,8 +194,15 @@ int wmain(int argc, wchar_t **argv) {
     CloseHandle(process);
     return matched ? 0 : 1;
   }
-  std::vector<std::unique_ptr<probe::ArmedPage>> armed;
+  printf("observer_native_build=");
+  for (auto part : probe::build_digest)
+    printf("%08x", part);
+  printf(" expected_service_build=");
+  for (auto part : expected)
+    printf("%08x", part);
+  printf(" expected_explicit=%u\n", options.expected_build.has_value());
   std::vector<inspection::ThreadCheck> live_threads;
+  std::vector<std::unique_ptr<probe::ArmedPage>> armed;
   if (threads.empty()) {
     CloseHandle(process);
     return 1;
@@ -268,12 +265,12 @@ int wmain(int argc, wchar_t **argv) {
                          : seconds ? armed[i]->Read(payload)
                                    : Existing(id, payload);
       if (!iteration || payload != previous[i] || state != previous_states[i])
-        Print(id, state, payload);
+        Print(id, state, payload, expected);
       previous[i] = payload;
       previous_states[i] = state;
       probe::Snapshot decoded;
       available |= state == probe::Availability::Available && probe::Decode(payload, decoded) &&
-                   decoded.build == probe::build_digest;
+                   decoded.build == expected;
     }
     if (iteration < seconds)
       Sleep(1000);

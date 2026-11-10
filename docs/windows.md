@@ -104,6 +104,7 @@ KeyrillHostInspect.exe build
 KeyrillHostInspect.exe host TARGET_PID
 KeyrillHostInspect.exe service TARGET_PID --arm-seconds 120
 KeyrillHostInspect.exe service TARGET_PID
+KeyrillHostInspect.exe service TARGET_PID --arm-seconds 120 --expect-server-build REVIEWED_SERVER_SHA256
 KeyrillHostInspect.exe public-empty TARGET_PID
 ```
 
@@ -119,7 +120,14 @@ TID, owner, Win32 error and thread/process wait results alongside the target PID
 There is no automatic snapshot refresh or retry.
 The ordinary `service` command opens existing pages with read access only. A missing, busy,
 stale, incompatible or inaccessible observation does not establish service inactivity.
-`build_match=1` compares the reported native-source digest with this inspector's digest.
+By default, `build_match=1` compares the published `build` digest with this inspector's digest.
+An updated observer can inspect a separately reviewed installed server with the service-only
+`--expect-server-build` option. It requires exactly 64 hexadecimal characters, accepts either
+letter case and compares canonical 32-bit words. The service header prints `observer_native_build`,
+`expected_service_build` and whether that expectation was explicit. Each available publication
+prints its actual `build` digest. `build_match` and successful availability then require that
+actual digest to equal the expected server digest. The observer's own build command remains
+unchanged, and the option does not bypass protocol, identity or payload validation.
 Check the actual loaded DLL's identity separately. Registry agreement is insufficient.
 
 `public-empty` requires the focused UIA element to belong to the target process, be enabled,
