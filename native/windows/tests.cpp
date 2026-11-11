@@ -4520,7 +4520,7 @@ void HostPublicationEquivalence() {
     Require(Preserved(h, 'K'), "equivalence manual command consumed");
     h.Oracle(L"ghbdtn ", 14);
     Require(Preserved(h, 'Z'), "equivalence reverse command consumed");
-    h.Oracle(L"привет ", 14);
+    h.Oracle(L"ghbdtn ", 14);
     Require(h.a.writes == writes + 2 && h.a.composition.Get() == composition && h.a.starts == 1 &&
                 h.a.ends == 0 && h.a.max_request_writes == 1,
             "equivalence commands preserve ownership and one write per plan");
