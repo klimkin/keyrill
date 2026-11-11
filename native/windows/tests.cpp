@@ -4543,6 +4543,17 @@ void HostPublicationEquivalence() {
                 probe::Decode(payload, decoded) &&
                 decoded.metadata.reason == host::Reason::Unobserved,
             "lifecycle invalidation expires cached metadata");
+    KeyboardState keyboard;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    Preserved(h, 'K');
+    Require(armed.Read(payload) == probe::Availability::Available,
+            "known preserved command publishes through actual Service mapping");
+    const DWORD observation_count = payload.size() > 179 ? payload[179] : 0;
+    if (!observation_count)
+      fprintf(stderr, "command observation mismatch: expected at least 2 records, actual %lu\n",
+              observation_count);
+    Require(observation_count >= 2, "known command publishes arrival and progress observations");
   }
   probe::Payload payload;
   Require(armed.Read(payload) == probe::Availability::Missing,
