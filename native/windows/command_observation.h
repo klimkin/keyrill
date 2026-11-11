@@ -269,4 +269,4 @@ inline bool Valid(const ObservationWindow &window, const LifecycleSnapshot &life
   }
   return true;
 }
-} // namespace keyrill::diagnostics
+}

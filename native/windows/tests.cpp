@@ -4510,13 +4510,34 @@ void HostMetadataSchedules() {
 }
 void HostPublicationEquivalence() {
   diagnostics::SnapshotV2 baseline;
+  diagnostics::SnapshotV2 command_baseline;
+  const auto run_commands = [](Harness &h) {
+    KeyboardState keyboard;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    auto *composition = h.a.composition.Get();
+    const int writes = h.a.writes;
+    Require(Preserved(h, 'K'), "equivalence manual command consumed");
+    h.Oracle(L"ghbdtn ", 14);
+    Require(Preserved(h, 'Z'), "equivalence reverse command consumed");
+    h.Oracle(L"привет ", 14);
+    Require(h.a.writes == writes + 2 && h.a.composition.Get() == composition && h.a.starts == 1 &&
+                h.a.ends == 0 && h.a.max_request_writes == 1,
+            "equivalence commands preserve ownership and one write per plan");
+    diagnostics::SnapshotV2 snapshot;
+    Require(h.service->Copy(sizeof(snapshot), diagnostics::version_v2, &snapshot) == S_OK,
+            "equivalence command snapshot copies through frozen COM V2");
+    return snapshot;
+  };
   {
-    Harness h;
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
     h.Type(L"ghbdtn");
     Require(h.Key(L' '), "baseline boundary consumed");
     h.Oracle(L"привет ", 14);
     Require(h.service->Copy(sizeof(baseline), diagnostics::version_v2, &baseline) == S_OK,
             "unarmed service snapshot");
+    command_baseline = run_commands(h);
   }
   host::Identity identity;
   Require(host::Capture(GetCurrentProcess(), GetCurrentProcessId(), GetCurrentThreadId(), identity),
@@ -4524,7 +4545,8 @@ void HostPublicationEquivalence() {
   probe::ArmedPage armed;
   Require(armed.Create(identity), "proof service optional mapping armed");
   {
-    Harness h;
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
     h.Type(L"ghbdtn");
     Require(h.Key(L' '), "armed boundary consumed identically");
     h.Oracle(L"привет ", 14);
@@ -4539,6 +4561,14 @@ void HostPublicationEquivalence() {
                 decoded.service.lifecycle == current.lifecycle &&
                 decoded.service.lifecycle.owned_present && decoded.service.lifecycle.owned_serial,
             "outermost production callback publishes exact service and owned serial");
+    const auto commands = run_commands(h);
+    Require(commands.base == command_baseline.base &&
+                commands.lifecycle == command_baseline.lifecycle &&
+                armed.Read(payload) == probe::Availability::Available &&
+                probe::Decode(payload, decoded) && decoded.service.base == commands.base &&
+                decoded.service.lifecycle == commands.lifecycle && decoded.observations.count == 4,
+            "armed and unarmed manual commands have exact old snapshots and actual mapped "
+            "observations");
     h.service->OnSetFocus(FALSE);
     Require(armed.Read(payload) == probe::Availability::Available &&
                 probe::Decode(payload, decoded) &&
