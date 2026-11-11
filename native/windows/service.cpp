@@ -1744,6 +1744,7 @@ HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
 HRESULT Service::OnSetFocus(BOOL foreground) {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
+  RevokeRelease();
   DiagnosticCallback callback(*this);
   if (!foreground)
     InvalidateForLifecycle(diagnostics::LifecycleCause::ForegroundLost);
