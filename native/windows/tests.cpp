@@ -1674,6 +1674,46 @@ bool Preserved(Harness &h, UINT key) {
           "preserved command callback contains native failures");
   return eaten != FALSE;
 }
+void CommandRetentionRegression() {
+  ProfileManager profile;
+  Harness h(&profile, ProofLayouts);
+  KeyboardState keyboard;
+  keyboard.Type(h, "GHBDTN");
+  auto *composition = h.a.composition.Get();
+  const auto observer =
+      std::find_if(h.manager.preserved_keys.begin(), h.manager.preserved_keys.end(),
+                   [](const auto &entry) { return entry.binding.key.uVKey == VK_MENU; });
+  const bool registered = observer != h.manager.preserved_keys.end();
+  keyboard.Set(VK_LCONTROL, 0x80);
+  keyboard.Set(VK_LMENU, 0x80);
+  if (registered) {
+    const auto reads = h.a.reads;
+    Require(!Preserved(h, VK_MENU) && h.a.reads == reads,
+            "registered Alt observer declines without reading text");
+  }
+  const auto writes = h.a.writes;
+  Require(Preserved(h, 'K'), "retention candidate converts through the registered command");
+  h.Oracle(L"привет", 13);
+  Require(h.a.writes == writes + 1 && h.a.composition.Get() == composition &&
+              h.a.active_composition,
+          "retention regression starts with exactly one write in the original owned composition");
+  keyboard.Set(VK_LMENU, 0);
+  const auto reads = h.a.reads;
+  const auto requests = h.a.calls["RequestEditSession"];
+  BOOL eaten = FALSE;
+  Require(h.manager.key_sink->OnKeyUp(&h.a, VK_MENU, 0xc0000001, &eaten) == S_OK,
+          "direct actual release returns normally");
+  if (!registered || !eaten)
+    fprintf(
+        stderr,
+        "FAIL: witnessed command release expected observer=1 eaten=1 actual observer=%d eaten=%d\n",
+        registered, eaten != FALSE);
+  Require(h.a.reads == reads && h.a.writes == writes + 1 &&
+              h.a.calls["RequestEditSession"] == requests,
+          "release never reads text or requests an edit");
+  Require(registered && eaten,
+          "witnessed command retains its owned mark through actual Alt release");
+}
 void PreservedDispatchSchedules() {
   for (const auto &entry : profiles) {
     ProfileManager profile;
@@ -7275,6 +7315,7 @@ int wmain(int argc, wchar_t **argv) {
           "unchanged FINISH preserves selection and continuation aggregate");
   puts("Existing controlled same-service COM schedules passed.");
   puts("RUN activation-registered preserved command sequences");
+  CommandRetentionRegression();
   const bool preserved_commands = PreservedCommandSequences();
   PreservedActivationSchedules();
   PreservedDispatchSchedules();
