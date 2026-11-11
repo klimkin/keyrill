@@ -1751,6 +1751,46 @@ void Witness(Harness &h, KeyboardState &keyboard) {
               h.a.calls["RequestEditSession"] == requests,
           "preserved observer always declines without text access or an edit session");
 }
+void CommandRetentionFocusGainSchedules() {
+  bool consumed[2]{};
+  for (int scenario = 0; scenario != 2; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    auto *composition = h.a.composition.Get();
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    const auto writes = h.a.writes;
+    Require(Preserved(h, 'K'), "focus gain schedule starts from a verified witnessed command");
+    h.Oracle(L"привет", 13);
+    Require(h.a.writes == writes + 1 && h.a.composition.Get() == composition &&
+                h.a.active_composition,
+            "focus gain schedule retains the original composition after one command write");
+    bool nested = false;
+    if (scenario == 0) {
+      Require(h.service->OnSetFocus(TRUE) == S_OK, "direct foreground gain returns normally");
+    } else {
+      profile.hook = [&](const char *name) {
+        if (std::string(name) == "GetActiveProfile" && !std::exchange(nested, true))
+          Require(h.service->OnSetFocus(TRUE) == S_OK,
+                  "foreground gain during release validation returns normally");
+      };
+    }
+    keyboard.Set(VK_LMENU, 0);
+    consumed[scenario] = RetentionRelease(h);
+    profile.hook = nullptr;
+    Require(scenario == 0 || nested, "release authority query delivers reentrant foreground gain");
+    fprintf(stderr, "foreground gain %s release expected eaten=0 actual eaten=%d\n",
+            scenario == 0 ? "direct" : "reentrant", consumed[scenario]);
+    h.Oracle(L"привет", 13);
+    Require(h.a.writes == writes + 1 && h.a.composition.Get() == composition &&
+                h.a.active_composition,
+            "foreground gain and release preserve the verified owned document");
+  }
+  Require(!consumed[0] && !consumed[1],
+          "direct and reentrant foreground gain expire witnessed release permission");
+}
 void CommandRetentionSchedules() {
   for (bool ordinary : {false, true}) {
     for (bool ctrl_first : {false, true}) {
@@ -7686,6 +7726,7 @@ int wmain(int argc, wchar_t **argv) {
   puts("Existing controlled same-service COM schedules passed.");
   puts("RUN activation-registered preserved command sequences");
   CommandRetentionRegression();
+  CommandRetentionFocusGainSchedules();
   CommandRetentionSchedules();
   const bool preserved_commands = PreservedCommandSequences();
   PreservedActivationSchedules();
