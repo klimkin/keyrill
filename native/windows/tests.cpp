@@ -4561,12 +4561,13 @@ void HostPublicationEquivalence() {
                 decoded.service.lifecycle == current.lifecycle &&
                 decoded.service.lifecycle.owned_present && decoded.service.lifecycle.owned_serial,
             "outermost production callback publishes exact service and owned serial");
-    const auto commands = run_commands(h);
-    Require(commands.base == command_baseline.base &&
-                commands.lifecycle == command_baseline.lifecycle &&
+    const auto command_snapshot = run_commands(h);
+    Require(command_snapshot.base == command_baseline.base &&
+                command_snapshot.lifecycle == command_baseline.lifecycle &&
                 armed.Read(payload) == probe::Availability::Available &&
-                probe::Decode(payload, decoded) && decoded.service.base == commands.base &&
-                decoded.service.lifecycle == commands.lifecycle && decoded.observations.count == 4,
+                probe::Decode(payload, decoded) && decoded.service.base == command_snapshot.base &&
+                decoded.service.lifecycle == command_snapshot.lifecycle &&
+                decoded.observations.count == 4,
             "armed and unarmed manual commands have exact old snapshots and actual mapped "
             "observations");
     h.service->OnSetFocus(FALSE);
