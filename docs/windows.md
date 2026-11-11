@@ -242,7 +242,7 @@ owned-composition and physical application acceptance under the bounded contract
 
 ### Observation protocol
 
-Protocol v2 uses a local-session page named by protocol, PID, process creation time and TID.
+Protocol v3 uses a local-session page named by protocol, PID, process creation time and TID.
 Arming refuses an existing object and gives mapping read/write rights only to the current logon
 SID through an explicit protected DACL. The publisher opens only an already armed page.
 An atomic nonblocking claim allows one service instance per thread page. A page-resident,
@@ -257,10 +257,10 @@ refusal, activation and callback counters, the existing V2 lifecycle journal and
 runtime policy/readiness and a deterministic SHA-256 digest of the Windows native sources.
 Decoding validates enums and the existing service and lifecycle invariants.
 
-The protocol-2 payload has 512 DWORDs in the same 4096-byte page. Its first 177 words keep the
+The protocol-3 payload has 512 DWORDs in the same 4096-byte page. Its first 177 words keep the
 existing field order. Three observation header words hold sequence, saturation, and count.
 Thirty-two ten-word rows follow, leaving twelve required-zero words after word 499. The
-versioned mapping name isolates this layout from frozen protocol 1, whose 192-word payload
+versioned mapping name isolates this layout from frozen protocol 2 and protocol 1, whose 192-word payload
 has fifteen required-zero words after its 177 fields. COM V1 remains 220 bytes. COM V2 and
 the status codecs retain their existing contracts.
 
@@ -271,7 +271,10 @@ numeric tags. Command kinds 1 through 6 mean arrival, admission refusal, exact-m
 refusal, stale-dispatch refusal, executor dispatch, and callback exception. Kind 7 means
 release. Route 1 means ordinary and 2 means preserved. Intent 1 means convert and 2 means
 reverse. Command rows have zero release delivery. Release rows have zero route, intent, and
-command ID. Release class 1 through 6 means left Ctrl, right Ctrl, left Alt, right Alt,
+command ID in protocol 2. Protocol 3 uses release row word 5 for the Boolean disposition and
+word 6 for authority validation, with 0 unchecked, 1 matched and 2 refused. Word 7 stays zero.
+Validation covers the receiving canonical context, current source, focus and native field metadata.
+Release class 1 through 6 means left Ctrl, right Ctrl, left Alt, right Alt,
 unresolved Ctrl, and unresolved Alt. Delivery 1 means TEST and 2 means ACTUAL.
 
 Modifier knowledge zero means unknown. Known knowledge is `0x100 | mask`, with bits 0 through
@@ -281,7 +284,18 @@ left, and right Shift. Any Windows combines left and right Windows. Caps Lock, t
 native pointers, and raw flags have no observation fields. Generic Ctrl and Alt releases use
 their extended bit to choose left or right. Explicit sided arguments whose extended bit
 contradicts that side produce the matching unresolved class. TEST and ACTUAL release methods
-record independently and return their existing pass disposition.
+record independently. A matching witnessed command can predict or consume its Alt release as
+described below. Other releases pass.
+
+Kind 8 records the Alt observer, with word 8 equal to 1 for arrival, 2 for admission and 3 for
+refusal. Its other four body words are zero. Kind 9 records executor completion, using the
+command route, intent and arrival ID in words 5 through 7. Word 8 is the Boolean witness
+captured at dispatch. Word 9 is 1 for refusal, 2 for unknown effect, 3 for an acknowledged
+no-write reservation and 4 for a verified retained manual MARK. These records never grant
+runtime authority. A completion is separate from release permission, which can be cancelled
+by reentry even when the command's verified write succeeds. All records keep the fixed row
+capacity. The decoder rejects invalid tags, malformed Boolean values, contradictory release
+validation, duplicate completion and inconsistent retained command identity.
 
 A preserved arrival has unknown modifiers. It permits admission refusal, exact-modifier
 refusal, stale dispatch, executor dispatch, or an actual outer callback exception. An ordinary
@@ -293,7 +307,8 @@ and commits its output only after every field and reserved word passes validatio
 
 The inspector prints `incomplete=1` for an arrival with no retained continuation and
 `arrival_evicted=1` for a continuation whose arrival left the window. `ExecutorDispatch`
-records entry into `HandleEvent`. Attempted, verified, refused, and unknown counters describe
+records entry into the existing executor. The separate completion record and attempted,
+verified, refused, and unknown counters describe
 the editing outcome. Each row samples owned-present separately from serial, including the
 existing allocation-saturation case where ownership has serial zero.
 
@@ -347,7 +362,8 @@ Backspace edits owned text only without Shift. Escape restores and finishes an o
 or finishes the word unchanged and passes through when no receipt exists.
 
 Ctrl, Alt, Shift, and Windows modifier downs pass after the existing profile and loaded-layout
-checks, without requesting an edit session or finishing the mark. Modifier keyups pass too.
+checks, without requesting an edit session or finishing the mark. Modifier keyups pass except
+for one validated left Alt release belonging to a witnessed successful command.
 An unmatched completed shortcut finishes a still-owned word and passes the original key.
 The translator accepts bounded printable UTF-16 from the verified EN or RU substitute layout
 using `ToUnicodeEx` without changing its keyboard state. Rust decides whether punctuation is
@@ -356,7 +372,8 @@ and `[jhjij` can convert to `хорошо`. Coalesced repeats remain finish-and-
 
 This branch also contains a native command-delivery candidate for ordinary Notepad.
 Activation registers K and Z with `ITfKeystrokeMgr::PreserveKey`, using distinct stable GUIDs
-and exactly `TF_MOD_LCONTROL | TF_MOD_LALT` on keydown. Both registrations must return `S_OK`
+and exactly `TF_MOD_LCONTROL | TF_MOD_LALT` on keydown. The same binding table registers an
+Alt-press observer with `VK_MENU` and `TF_MOD_IGNORE_ALL_MODIFIER`. All registrations must return `S_OK`
 before the service becomes active. Failed or duplicate registrations grant no cleanup ownership.
 Cancellation accounts for each late success before rollback. All acquired pairs and mandatory
 sinks receive one independent cleanup attempt, even when another fails. Unknown acquisition
@@ -374,11 +391,44 @@ adapter invents neither. Each repeated manual callback can convert the owned tex
 Repeated reversal cannot reuse an expired receipt. Held-key delivery remains a native-client gate.
 The ordinary `KeyEntered` counter continues to count only ordinary-key callbacks.
 
+The observer always returns FALSE. It revokes the preceding Alt cycle before native queries
+and can witness a new cycle only with a known left Alt press, active source, canonical receiving
+context, focused native field and current owned composition. It reads no text. A command
+without a witness still executes normally and cannot grant release permission.
+
+Only a verified retained manual MARK with successful Rust acknowledgement, completed synchronous
+request and session results, and unchanged authority can arm permission on that owned composition.
+An acknowledged no-write repeated reversal preserves only the identical permission captured
+at dispatch entry. Refusal, unknown effects, incomplete requests and cancellation revoke it.
+Callback-free private allocation identities bind the witness and permission. Diagnostic serials
+and counters supply no authority. Nested commands, observers and releases cancel an outer
+decision, including a release during execution or temporary COM cleanup.
+
+`OnTestKeyUp` predicts without spending. `OnKeyUp` validates independently and can consume one
+unambiguous left Alt release, including direct actual delivery without a test. Every actual
+Alt release closes its cycle. Ctrl and command-letter releases pass, and either modifier
+release order is supported. Source, focus, context, generation, ownership, termination,
+ordinary new input and fresh Alt presses expire permission. Release validation reads native
+metadata only, with no text query, composition readback, edit session, Rust plan or write.
+
+This candidate assumes a bounded host contract for packaged x64 Notepad 11.2607.14.0.
+Within unchanged source, context, generation and owned composition, either the witnessed
+cycle's actual release arrives, or a fresh observed Alt press or invalidation revokes it
+before a later cycle's release arrives. Missing both the original release and a later observer
+is indistinguishable and excluded. Controlled tests document that limit. An actual occurrence
+rejects this route. Observer delivery, ordering and normal bare-Alt menu behavior remain live
+gates. The combined observer and release intervention does not isolate which mechanism causes
+any eventual retention improvement.
+
 Controlled registration and callback tests do not prove delivery in ordinary Notepad.
 The decisive live gate requires the exact reviewed DLL, a fresh owned `ghbdtn`, and the original
 left Ctrl + left Alt + K chord with no intervening focus or source action. Delivery must precede
 composition termination and produce one verified write, exact `привет` without Space, the end
 caret, and zero Unknown effects. Reversal and the remaining application gates follow separately.
+The same owned composition must survive command release with no menu transition. Separate
+bare Alt must retain normal menu behavior after success, refusal, cancellation and focus or
+source changes. Both physical press and release orders, held commands and physical admission
+remain required. Controlled success and generated chords do not close these actual-client gates.
 Absent, late, or unusable delivery rejects this candidate. A callback after termination cannot
 recover the committed word or establish new editing authority.
 

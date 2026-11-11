@@ -78,6 +78,7 @@ public:
         diagnostics::Count(owner_.diagnostics_, Counter::Unknown);
       owner_.Invalidate(true);
       eaten = UnknownDisposition();
+      completion = wrote_ ? Service::Completion::Unknown : Service::Completion::Refused;
     }
     completed = true;
     diagnostics::Count(owner_.diagnostics_, Counter::SessionCompleted);
@@ -85,6 +86,7 @@ public:
   }
   bool completed = false;
   bool eaten = false;
+  Service::Completion completion = Service::Completion::Refused;
   bool attempted() const { return wrote_; }
   bool valid() const { return Alive(); }
   void Expire() { expired_ = true; }
@@ -441,6 +443,8 @@ private:
   }
   bool Apply(TfEditCookie cookie, const kr_plan &plan) {
     Observe observe(*this, Stage::Apply);
+    if (plan.action == KR_FINISH)
+      owner_.RevokeRelease();
     std::wstring expected(plan.expected, plan.expected + plan.expected_len);
     std::wstring desired(plan.mark, plan.mark + plan.mark_len);
     ComPtr<ITfRange> range;
@@ -546,6 +550,7 @@ private:
             !NoForeign(cookie, actual.Get(), cc) || !SelectionMatches(cookie, original->original))
           return false;
       }
+      owner_.RevokeRelease();
       owner_.owned_.reset();
       if (!Alive())
         return false;
@@ -589,6 +594,7 @@ private:
           return;
         }
         eaten = plan.disposition == KR_KEY_CONSUMED;
+        completion = eaten ? Service::Completion::Reserved : Service::Completion::Refused;
         return;
       }
       wrote_ = false;
@@ -611,10 +617,13 @@ private:
       }
       if (!applied || !current) {
         eaten = UnknownDisposition();
+        completion = wrote_ ? Service::Completion::Unknown : Service::Completion::Refused;
         owner_.Invalidate(wrote_ || owner_.owned_ != nullptr);
         return;
       }
       eaten = plan.disposition == KR_KEY_CONSUMED;
+      if (plan.action == KR_MARK && (event_.role == KR_MANUAL || event_.role == KR_REVERSE))
+        completion = Service::Completion::ManualMark;
       if (plan.disposition != KR_KEY_REPLAN)
         return;
       ComPtr<ITfContextComposition> cc;
@@ -808,15 +817,6 @@ void Service::PublishObservation() noexcept {
 diagnostics::ObservationStamp Service::ObservationStamp() const noexcept {
   return {{lifecycle_.sequence()}, {owned_ != nullptr, owned_ ? owned_->diagnostic_serial : 0}};
 }
-void Service::ObserveRelease(diagnostics::ReleaseDelivery delivery, WPARAM key,
-                             LPARAM flags) noexcept {
-  if (GetCurrentThreadId() != thread_)
-    return;
-  if (const auto modifier = diagnostics::ClassifyRelevantRelease(key, flags)) {
-    DiagnosticCallback callback(*this);
-    observations_.Record({delivery, *modifier}, ObservationStamp());
-  }
-}
 void Service::ObserveHost(ITfContext *context) {
   if (observing_host_ || observed_generation_ == generation_ || !Current(generation_) || !context)
     return;
@@ -840,6 +840,7 @@ void Service::ObserveHost(ITfContext *context) {
   }
 }
 void Service::Invalidate(bool stop) {
+  RevokeRelease();
   host_metadata_ = {};
   if (generation_ == std::numeric_limits<uint64_t>::max())
     stop = true;
@@ -894,13 +895,13 @@ HRESULT Service::AcquireActivation(ActivationAttempt &attempt) {
     native.key_sink = true;
   if (result != S_OK || !Preparing(epoch))
     return result == S_OK ? E_FAIL : result;
-  for (const auto &command : commands) {
+  for (const auto &command : bindings) {
     attempt.uncertain_acquisition = true;
     result = native.keys->PreserveKey(native.client, command.id, &command.key, command.description,
                                       static_cast<ULONG>(wcslen(command.description)));
     attempt.uncertain_acquisition = false;
     if (result == S_OK)
-      ++native.command_prefix;
+      ++native.binding_prefix;
     if (result != S_OK || !Preparing(epoch))
       return result == S_OK ? E_FAIL : result;
   }
@@ -930,8 +931,8 @@ void Service::CleanupResult::Record(HRESULT result, bool absent) noexcept {
 }
 Service::CleanupResult Service::DrainActivation(ActivationResources &native) noexcept {
   CleanupResult cleanup;
-  while (native.command_prefix) {
-    const auto &command = commands[--native.command_prefix];
+  while (native.binding_prefix) {
+    const auto &command = bindings[--native.binding_prefix];
     try {
       HRESULT result = native.keys->UnpreserveKey(command.id, &command.key);
       cleanup.Record(result, result == CONNECT_E_NOCONNECTION);
@@ -1200,22 +1201,240 @@ HRESULT Service::Deactivate() {
   activation_ = cleanup.uncertain ? Activation::Faulted : Activation::Inactive;
   return cleanup.error;
 }
+Service::ReleaseDecision::ReleaseDecision(Service &value)
+    : service(value), parent(value.release_decision_) {
+  if (parent)
+    service.RevokeRelease();
+  service.release_decision_ = this;
+}
+Service::ReleaseDecision::~ReleaseDecision() { service.release_decision_ = parent; }
+void Service::RevokeRelease() noexcept {
+  if (release_decision_)
+    release_decision_->cancelled = true;
+  alt_cycle_.reset();
+  if (owned_)
+    owned_->release.reset();
+}
+bool Service::SameCycle(const std::shared_ptr<const AltCycle> &cycle) const noexcept {
+  return cycle && cycle == alt_cycle_ && owned_ && owned_->identity == cycle->ownership &&
+         activation_epoch_.value == cycle->activation && Current(cycle->generation) &&
+         mode_ == cycle->mode && owned_->context_id.Get() == cycle->context &&
+         owned_->composition_id.Get() == cycle->composition;
+}
+std::optional<native_field::FieldIdentity>
+Service::ReleaseAuthority(ITfContext *context,
+                          const std::shared_ptr<const OwnedIdentity> &ownership,
+                          uint64_t activation, uint64_t generation, uint32_t mode) {
+  const auto current = [&] {
+    return release_decision_ && release_decision_->Current() && Current(generation) &&
+           activation_epoch_.value == activation && mode_ == mode && owned_ &&
+           owned_->identity == ownership;
+  };
+  if (!context || !current())
+    return std::nullopt;
+  auto *expected_context = owned_->context_id.Get();
+  const auto query = [&]() -> std::optional<native_field::FieldIdentity> {
+    ComPtr<ITfContext> receiving(context);
+    if (!current())
+      return std::nullopt;
+    ComPtr<ITfThreadMgr> manager = native_ ? native_->manager : nullptr;
+    if (!current() || !manager)
+      return std::nullopt;
+    ComPtr<ITfInputProcessorProfileMgr> profile_manager = native_ ? native_->profiles : nullptr;
+    if (!current() || !profile_manager)
+      return std::nullopt;
+    TF_INPUTPROCESSORPROFILE profile{};
+    if (profile_manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile) != S_OK ||
+        !current() || !ActiveProfile(profile, mode))
+      return std::nullopt;
+    ComPtr<IUnknown> receiving_id;
+    if (receiving->QueryInterface(IID_PPV_ARGS(&receiving_id)) != S_OK || !current() ||
+        receiving_id.Get() != expected_context)
+      return std::nullopt;
+    ComPtr<ITfDocumentMgr> document;
+    if (manager->GetFocus(&document) != S_OK || !current() || !document)
+      return std::nullopt;
+    ComPtr<ITfContext> top;
+    if (document->GetTop(&top) != S_OK || !current() || !top)
+      return std::nullopt;
+    ComPtr<IUnknown> top_id;
+    if (top->QueryInterface(IID_PPV_ARGS(&top_id)) != S_OK || !current() ||
+        top_id.Get() != expected_context)
+      return std::nullopt;
+    TF_STATUS status{};
+    if (receiving->GetStatus(&status) != S_OK || !current() ||
+        (status.dwDynamicFlags & TF_SD_READONLY))
+      return std::nullopt;
+    const auto enabled = [&](IUnknown *target, REFGUID id) {
+      ComPtr<ITfCompartmentMgr> compartments;
+      if (target->QueryInterface(IID_PPV_ARGS(&compartments)) != S_OK || !current() ||
+          !compartments)
+        return false;
+      ComPtr<ITfCompartment> compartment;
+      if (compartments->GetCompartment(id, &compartment) != S_OK || !current() || !compartment)
+        return false;
+      VARIANT value;
+      VariantInit(&value);
+      const HRESULT result = compartment->GetValue(&value);
+      const bool allowed =
+          current() &&
+          ((result == S_OK && (value.vt == VT_EMPTY || (value.vt == VT_I4 && value.lVal == 0))) ||
+           (result == S_FALSE && value.vt == VT_EMPTY));
+      VariantClear(&value);
+      return allowed;
+    };
+    if (!enabled(receiving.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED) || !current() ||
+        !enabled(receiving.Get(), GUID_COMPARTMENT_EMPTYCONTEXT) || !current() ||
+        !enabled(manager.Get(), GUID_COMPARTMENT_KEYBOARD_DISABLED) || !current())
+      return std::nullopt;
+    ComPtr<ITfContextView> view;
+    if (receiving->GetActiveView(&view) != S_OK || !current() || !view)
+      return std::nullopt;
+    HWND window = nullptr;
+    if (view->GetWnd(&window) != S_OK || !current())
+      return std::nullopt;
+    const auto facts = field_source_ ? field_source_->Capture(window, host_identity_)
+                                     : native_field::Capture(window, host_identity_);
+    if (!current())
+      return std::nullopt;
+    return native_field::Match(facts);
+  };
+  const auto field = query();
+  return current() ? field : std::nullopt;
+}
+void Service::WitnessAlt(ITfContext *context) {
+  observations_.Record(diagnostics::ObserverObservation{diagnostics::ObserverStage::Arrival},
+                       ObservationStamp());
+  struct Observation {
+    Service &service;
+    ~Observation() {
+      service.observations_.Record(
+          diagnostics::ObserverObservation{service.alt_cycle_
+                                               ? diagnostics::ObserverStage::Admitted
+                                               : diagnostics::ObserverStage::Refused},
+          service.ObservationStamp());
+    }
+  } observation{*this};
+  try {
+    if (!release_decision_->Current() || !owned_ || !Current(generation_))
+      return;
+    const auto ownership = owned_->identity;
+    const auto epoch = activation_epoch_.value;
+    const auto generation = generation_;
+    const auto mode = mode_;
+    BYTE state[256]{};
+    if (!GetKeyboardState(state) || !(state[VK_LMENU] & 0x80) || (state[VK_RMENU] & 0x80))
+      return;
+    const auto field = ReleaseAuthority(context, ownership, epoch, generation, mode);
+    if (field)
+      alt_cycle_ =
+          std::make_shared<AltCycle>(ownership, epoch, generation, mode, owned_->context_id.Get(),
+                                     owned_->composition_id.Get(), *field);
+  } catch (...) {
+    RevokeRelease();
+  }
+}
+bool Service::DispatchCommand(ITfContext *context, const kr_event &event,
+                              const diagnostics::CommandTicket &ticket) {
+  const auto cycle = alt_cycle_;
+  const bool witnessed = SameCycle(cycle);
+  const auto permission = owned_ ? owned_->release : nullptr;
+  const auto execution = Execute(context, event);
+  if (release_decision_ && release_decision_->Current() && SameCycle(cycle) &&
+      (execution.completion == Completion::ManualMark ||
+       (execution.completion == Completion::Reserved && permission == cycle &&
+        owned_->release == permission))) {
+    owned_->release = cycle;
+  } else {
+    RevokeRelease();
+  }
+  if (ticket.identity) {
+    diagnostics::CommandCompletion outcome = diagnostics::CommandCompletion::Refused;
+    switch (execution.completion) {
+    case Completion::Refused:
+      break;
+    case Completion::Unknown:
+      outcome = diagnostics::CommandCompletion::Unknown;
+      break;
+    case Completion::Reserved:
+      outcome = diagnostics::CommandCompletion::Reserved;
+      break;
+    case Completion::ManualMark:
+      outcome = diagnostics::CommandCompletion::ManualMark;
+      break;
+    }
+    observations_.Record(diagnostics::CompletionObservation{*ticket.identity, witnessed, outcome},
+                         ObservationStamp());
+  }
+  return execution.eaten;
+}
+HRESULT Service::ReleaseAlt(ITfContext *context, WPARAM key, LPARAM flags, BOOL *eaten,
+                            diagnostics::ReleaseDelivery delivery) {
+  if (!eaten)
+    return E_POINTER;
+  *eaten = FALSE;
+  if (GetCurrentThreadId() != thread_)
+    return S_OK;
+  ComPtr<Service> self(this);
+  DiagnosticCallback callback(*this);
+  const auto modifier = diagnostics::ClassifyRelevantRelease(key, flags);
+  if (!modifier)
+    return S_OK;
+  ReleaseDecision decision(*this);
+  if (*modifier != diagnostics::ReleaseModifier::LeftAlt &&
+      *modifier != diagnostics::ReleaseModifier::RightAlt &&
+      *modifier != diagnostics::ReleaseModifier::AltUnresolved) {
+    observations_.Record(diagnostics::ReleaseObservation{delivery, *modifier}, ObservationStamp());
+    return S_OK;
+  }
+  const auto cycle = alt_cycle_;
+  bool accepted = false;
+  auto context_match = diagnostics::ReleaseObservation::Context::Unchecked;
+  try {
+    if (*modifier == diagnostics::ReleaseModifier::LeftAlt && decision.Current() &&
+        SameCycle(cycle) && owned_->release == cycle) {
+      context_match = diagnostics::ReleaseObservation::Context::Refused;
+      const auto field = ReleaseAuthority(context, cycle->ownership, cycle->activation,
+                                          cycle->generation, cycle->mode);
+      accepted = field && *field == cycle->field && decision.Current() && SameCycle(cycle) &&
+                 owned_->release == cycle;
+      if (accepted)
+        context_match = diagnostics::ReleaseObservation::Context::Matched;
+    }
+  } catch (...) {
+    RevokeRelease();
+  }
+  if (delivery == diagnostics::ReleaseDelivery::Actual ||
+      context_match == diagnostics::ReleaseObservation::Context::Refused)
+    RevokeRelease();
+  observations_.Record(
+      diagnostics::ReleaseObservation{delivery, *modifier, context_match, accepted},
+      ObservationStamp());
+  *eaten = accepted;
+  return S_OK;
+}
 bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
   if (GetCurrentThreadId() != thread_)
     return false;
+  RevokeRelease();
+  return Execute(context, event).eaten;
+}
+Service::Execution Service::Execute(ITfContext *context, const kr_event &event) {
   DiagnosticCallback callback(*this);
   diagnostics::Count(diagnostics_, Counter::HandleEntered);
   if (!Active() || stopped_ || !context) {
     Refuse(Stage::Handle, !Active() ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::Missing);
-    return false;
+    return {};
   }
   if (busy_) {
     Refuse(Stage::Handle, Cause::Reentry);
     Invalidate(owned_ != nullptr);
-    return false;
+    return {};
   }
   busy_ = true;
   bool eaten = false;
+  Completion completion = Completion::Refused;
+  const auto generation = generation_;
   ComPtr<EditSession> request;
   try {
     request.Attach(new EditSession(*this, context, event));
@@ -1230,10 +1449,14 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
       diagnostics_.request_present = diagnostics_.session_present = 1;
       diagnostics_.request_result = static_cast<uint32_t>(request_result);
       diagnostics_.session_result = static_cast<uint32_t>(session_result);
+      const bool valid = request->valid();
       request->Expire();
-      if (SUCCEEDED(request_result) && SUCCEEDED(session_result) && request->completed)
+      if (SUCCEEDED(request_result) && SUCCEEDED(session_result) && request->completed) {
         eaten = request->eaten;
-      else {
+        if ((request_result == S_OK && session_result == S_OK && valid) ||
+            request->completion == Completion::Unknown)
+          completion = request->completion;
+      } else {
         if (FAILED(request_result))
           Refuse(Stage::Request, Cause::Native, request_result);
         else if (FAILED(session_result))
@@ -1241,6 +1464,7 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
         else
           Refuse(Stage::Session, Cause::Predicate);
         eaten = request->UnknownDisposition();
+        completion = request->attempted() ? Completion::Unknown : Completion::Refused;
         Invalidate(request->attempted() || owned_ != nullptr);
       }
     } else {
@@ -1248,14 +1472,19 @@ bool Service::HandleEvent(ITfContext *context, const kr_event &event) {
     }
   } catch (...) {
     Refuse(Stage::Handle, Cause::Exception);
-    if (request)
+    if (request) {
       eaten = request->UnknownDisposition();
+      completion = request->attempted() ? Completion::Unknown : Completion::Refused;
+    }
     Invalidate(true);
   }
   if (request)
     request->Expire();
+  request.Reset();
   busy_ = false;
-  return eaten;
+  if (!Current(generation) && completion != Completion::Unknown)
+    completion = Completion::Refused;
+  return {eaten, completion};
 }
 Service::KeyAdmission::KeyAdmission(Service &service, ITfContext *target)
     : owner(&service), context(target), epoch(service.activation_epoch_),
@@ -1291,6 +1520,9 @@ bool Service::KeyAdmission::Dispatch(const kr_event &event,
     service->observations_.Record(command->ticket,
                                   diagnostics::ExecutorDispatch{command->modifiers},
                                   service->ObservationStamp());
+  if (event.role == KR_MANUAL || event.role == KR_REVERSE)
+    return service->DispatchCommand(context, event,
+                                    command ? command->ticket : diagnostics::CommandTicket{});
   return service->HandleEvent(context, event);
 }
 std::optional<Service::KeyAdmission>
@@ -1405,12 +1637,15 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
     return RPC_E_WRONG_THREAD;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
+  ReleaseDecision decision(*this);
   std::optional<CommandDispatch> command;
   try {
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
     auto admission = AdmitKey(context);
-    if (!admission)
+    if (!admission) {
+      RevokeRelease();
       return S_OK;
+    }
     NativeKey translated = TranslateKey(key, flags, admission->layout, admission->state);
     if (const auto *event = std::get_if<kr_event>(&translated)) {
       if (event->role == KR_MANUAL || event->role == KR_REVERSE) {
@@ -1424,7 +1659,8 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       *eaten = admission->Dispatch(*event, command);
       if (*eaten)
         diagnostics::Count(diagnostics_, Counter::Consumed);
-    }
+    } else if (key == VK_MENU || key == VK_LMENU || key == VK_RMENU)
+      RevokeRelease();
     return S_OK;
   } catch (...) {
     if (command)
@@ -1438,6 +1674,9 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
 HRESULT Service::OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
   if (!eaten)
     return E_POINTER;
+  *eaten = FALSE;
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   diagnostics::Count(diagnostics_, Counter::TestEntered);
   *eaten = Active() && !stopped_ && mode_ != 0;
@@ -1447,19 +1686,11 @@ HRESULT Service::OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
     Refuse(Stage::Test, !Active() ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::ModeUnset);
   return S_OK;
 }
-HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM key, LPARAM flags, BOOL *eaten) {
-  if (!eaten)
-    return E_POINTER;
-  *eaten = FALSE;
-  ObserveRelease(diagnostics::ReleaseDelivery::Test, key, flags);
-  return S_OK;
+HRESULT Service::OnTestKeyUp(ITfContext *context, WPARAM key, LPARAM flags, BOOL *eaten) {
+  return ReleaseAlt(context, key, flags, eaten, diagnostics::ReleaseDelivery::Test);
 }
-HRESULT Service::OnKeyUp(ITfContext *, WPARAM key, LPARAM flags, BOOL *eaten) {
-  if (!eaten)
-    return E_POINTER;
-  *eaten = FALSE;
-  ObserveRelease(diagnostics::ReleaseDelivery::Actual, key, flags);
-  return S_OK;
+HRESULT Service::OnKeyUp(ITfContext *context, WPARAM key, LPARAM flags, BOOL *eaten) {
+  return ReleaseAlt(context, key, flags, eaten, diagnostics::ReleaseDelivery::Actual);
 }
 HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
   if (!eaten)
@@ -1467,32 +1698,40 @@ HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
   *eaten = FALSE;
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
-  const auto command = std::find_if(commands.begin(), commands.end(),
-                                    [&](const CommandSpec &entry) { return entry.id == id; });
-  if (command == commands.end())
+  const auto command = std::find_if(bindings.begin(), bindings.end(),
+                                    [&](const BindingSpec &entry) { return entry.id == id; });
+  if (command == bindings.end())
     return S_OK;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
+  if (std::holds_alternative<AltPressed>(command->action))
+    RevokeRelease();
+  ReleaseDecision decision(*this);
+  if (std::holds_alternative<AltPressed>(command->action)) {
+    WitnessAlt(context);
+    return S_OK;
+  }
+  const auto intent = std::get<ManualIntent>(command->action);
   diagnostics::ModifierKnowledge modifiers = diagnostics::UnknownModifiers{};
-  const auto ticket =
-      observations_.Begin(diagnostics::PreservedIntent{command->intent}, ObservationStamp());
+  const auto ticket = observations_.Begin(diagnostics::PreservedIntent{intent}, ObservationStamp());
   try {
     auto admission = AdmitKey(context, &modifiers);
     if (!admission) {
+      RevokeRelease();
       observations_.Record(ticket, diagnostics::AdmissionRefused{modifiers}, ObservationStamp());
       return S_OK;
     }
     const auto facts = diagnostics::ProjectModifiers(admission->state);
     if (!ExactCommandModifiers(admission->state)) {
+      RevokeRelease();
       observations_.Record(ticket, diagnostics::ExactModifiersRefused{facts}, ObservationStamp());
       return S_OK;
     }
-    kr_event event{
-        static_cast<uint32_t>(command->intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE),
-        admission->mode,
-        KR_CTX_INELIGIBLE,
-        0,
-        {}};
+    kr_event event{static_cast<uint32_t>(intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE),
+                   admission->mode,
+                   KR_CTX_INELIGIBLE,
+                   0,
+                   {}};
     *eaten = admission->Dispatch(event, CommandDispatch{ticket, facts});
     return S_OK;
   } catch (...) {
@@ -1503,6 +1742,8 @@ HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
   }
 }
 HRESULT Service::OnSetFocus(BOOL foreground) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   if (!foreground)
     InvalidateForLifecycle(diagnostics::LifecycleCause::ForegroundLost);
@@ -1510,21 +1751,29 @@ HRESULT Service::OnSetFocus(BOOL foreground) {
 }
 HRESULT Service::OnInitDocumentMgr(ITfDocumentMgr *) { return S_OK; }
 HRESULT Service::OnUninitDocumentMgr(ITfDocumentMgr *) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentUninit);
   return S_OK;
 }
 HRESULT Service::OnSetFocus(ITfDocumentMgr *, ITfDocumentMgr *) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::DocumentFocus);
   return S_OK;
 }
 HRESULT Service::OnPushContext(ITfContext *) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPush);
   return S_OK;
 }
 HRESULT Service::OnPopContext(ITfContext *) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ContextPop);
   return S_OK;
@@ -1532,6 +1781,7 @@ HRESULT Service::OnPopContext(ITfContext *) {
 HRESULT Service::OnCompositionTerminated(TfEditCookie, ITfComposition *composition) {
   if (GetCurrentThreadId() != thread_)
     return RPC_E_WRONG_THREAD;
+  RevokeRelease();
   DiagnosticCallback callback(*this);
   const auto serial = owned_ ? owned_->diagnostic_serial : 0;
   try {
@@ -1579,6 +1829,8 @@ HRESULT Service::OnCompositionTerminated(TfEditCookie, ITfComposition *compositi
 }
 HRESULT Service::OnActivated(DWORD, LANGID, REFCLSID clsid, REFGUID, REFGUID profile, HKL,
                              DWORD flags) {
+  if (GetCurrentThreadId() != thread_)
+    return RPC_E_WRONG_THREAD;
   DiagnosticCallback callback(*this);
   InvalidateForLifecycle(diagnostics::LifecycleCause::ProfileChanged);
   mode_ = 0;

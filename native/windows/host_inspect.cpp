@@ -95,8 +95,20 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
       if (const auto *release = std::get_if<diagnostics::ReleaseObservation>(&event.body)) {
         const char *modifiers[] = {"LeftControl", "RightControl",      "LeftAlt",
                                    "RightAlt",    "ControlUnresolved", "AltUnresolved"};
-        printf(" release=%s callback=%s\n", modifiers[static_cast<size_t>(release->modifier)],
-               release->delivery == diagnostics::ReleaseDelivery::Test ? "TEST" : "ACTUAL");
+        const char *contexts[] = {"Unchecked", "Matched", "Refused"};
+        printf(" release=%s callback=%s context=%s eaten=%u\n",
+               modifiers[static_cast<size_t>(release->modifier)],
+               release->delivery == diagnostics::ReleaseDelivery::Test ? "TEST" : "ACTUAL",
+               contexts[static_cast<size_t>(release->context)], release->consumed);
+      } else if (const auto *observer =
+                     std::get_if<diagnostics::ObserverObservation>(&event.body)) {
+        const char *stages[] = {"Arrival", "Admitted", "Refused"};
+        printf(" alt_observer=%s\n", stages[static_cast<size_t>(observer->stage)]);
+      } else if (const auto *completion =
+                     std::get_if<diagnostics::CompletionObservation>(&event.body)) {
+        const char *outcomes[] = {"Refused", "Unknown", "Reserved", "ManualMark"};
+        printf(" command=%u witnessed=%u completion=%s\n", completion->command.id.arrival.value,
+               completion->witnessed, outcomes[static_cast<size_t>(completion->completion)]);
       } else {
         const auto &command = std::get<diagnostics::CommandObservation>(event.body);
         const char *stages[] = {"Arrival",         "AdmissionRefused", "ExactModifiersRefused",

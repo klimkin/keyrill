@@ -503,6 +503,7 @@ struct Document final : ITfContext,
   std::map<std::string, int> calls;
   std::vector<std::string> trace;
   std::function<void(const char *)> hook;
+  std::function<void()> release_hook;
   void Call(const char *name) {
     ++calls[name];
     trace.emplace_back(name);
@@ -510,7 +511,11 @@ struct Document final : ITfContext,
       hook(name);
   }
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
-  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  ULONG STDMETHODCALLTYPE Release() override {
+    if (release_hook)
+      release_hook();
+    return --references;
+  }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
     Call("context.QI");
     *out = nullptr;
@@ -557,6 +562,7 @@ struct Document final : ITfContext,
       retained_request = request;
       throw 1;
     }
+    Call("RequestEditSession.after");
     *result = session_result;
     max_request_writes = std::max(max_request_writes, writes - before);
     return request_result;
@@ -905,8 +911,8 @@ struct Manager final : ITfThreadMgr,
   std::vector<Registration> preserved_keys;
   std::vector<Registration> preserve_calls;
   std::vector<CommandKey> unpreserved_keys;
-  HRESULT preserve_result[2]{S_OK, S_OK};
-  HRESULT unpreserve_result[2]{S_OK, S_OK};
+  HRESULT preserve_result[3]{S_OK, S_OK, S_OK};
+  HRESULT unpreserve_result[3]{S_OK, S_OK, S_OK};
   int throw_preserve = -1, throw_unpreserve = -1;
   std::function<void(size_t)> preserve_hook, unpreserve_hook;
   std::function<void()> release_hook;
@@ -1081,7 +1087,7 @@ struct Manager final : ITfThreadMgr,
                                         const TF_PRESERVEDKEY *key, const WCHAR *, ULONG) override {
     if (!key)
       return E_INVALIDARG;
-    const size_t index = key->uVKey == 'K' ? 0 : 1;
+    const size_t index = key->uVKey == 'K' ? 0 : key->uVKey == 'Z' ? 1 : 2;
     preserve_calls.push_back({client, {command, *key}});
     if (preserve_result[index] == S_OK)
       preserved_keys.push_back({client, {command, *key}});
@@ -1095,7 +1101,7 @@ struct Manager final : ITfThreadMgr,
     if (!key)
       return E_INVALIDARG;
     unpreserved_keys.push_back({command, *key});
-    const size_t index = key->uVKey == 'K' ? 0 : 1;
+    const size_t index = key->uVKey == 'K' ? 0 : key->uVKey == 'Z' ? 1 : 2;
     if (unpreserve_hook)
       unpreserve_hook(index);
     if (throw_unpreserve == static_cast<int>(index))
@@ -1306,7 +1312,7 @@ bool PreservedCommandSequences() {
       passed = false;
     }
   };
-  std::vector<Manager::CommandKey> stable_bindings;
+  std::vector<Manager::CommandKey> stable_command_bindings;
   for (int activation = 0; activation != 2; ++activation) {
     ProfileManager profile;
     Harness h(&profile, ProofLayouts);
@@ -1315,12 +1321,12 @@ bool PreservedCommandSequences() {
     const bool advised = manager.key_advises == 1 && manager.key_sink && manager.key_client == 42 &&
                          manager.key_foreground;
     check(advised, "preserved commands use the actual advised foreground sink and client");
-    if (manager.preserved_keys.size() != 2) {
-      fprintf(stderr, "FAIL: preserved command registrations activation=%d expected=2 actual=%zu\n",
+    if (manager.preserved_keys.size() != 3) {
+      fprintf(stderr, "FAIL: preserved command registrations activation=%d expected=3 actual=%zu\n",
               activation + 1, manager.preserved_keys.size());
       passed = false;
     }
-    std::vector<Manager::CommandKey> bindings;
+    std::vector<Manager::CommandKey> command_bindings;
     for (UINT key : {static_cast<UINT>('K'), static_cast<UINT>('Z')}) {
       auto found = std::find_if(
           manager.preserved_keys.begin(), manager.preserved_keys.end(),
@@ -1331,18 +1337,28 @@ bool PreservedCommandSequences() {
                 found->binding.key.uModifiers == (TF_MOD_LCONTROL | TF_MOD_LALT) &&
                 found->binding.key.uModifiers == 0xc0,
             "preserved command binds its activation client and exact left Ctrl Alt keydown pair");
-      bindings.push_back(found->binding);
+      command_bindings.push_back(found->binding);
     }
-    check(bindings.size() == 2, "activation registers both K and Z command bindings");
-    if (bindings.size() == 2) {
-      check(bindings[0].command != bindings[1].command,
+    check(command_bindings.size() == 2, "activation registers both K and Z command bindings");
+    if (command_bindings.size() == 2) {
+      check(command_bindings[0].command != command_bindings[1].command,
             "manual and reverse use distinct nonnull command GUIDs");
       if (activation == 0)
-        stable_bindings = bindings;
+        stable_command_bindings = command_bindings;
       else
-        check(bindings == stable_bindings,
+        check(command_bindings == stable_command_bindings,
               "command GUID and key bindings are stable across activations");
     }
+    const auto observer =
+        std::find_if(manager.preserved_keys.begin(), manager.preserved_keys.end(),
+                     [](const auto &entry) { return entry.binding.key.uVKey == VK_MENU; });
+    check(observer != manager.preserved_keys.end() && observer->client == manager.key_client &&
+              observer->binding.key.uModifiers == TF_MOD_IGNORE_ALL_MODIFIER &&
+              observer->binding.command != GUID_NULL &&
+              std::none_of(
+                  command_bindings.begin(), command_bindings.end(),
+                  [&](const auto &entry) { return entry.command == observer->binding.command; }),
+          "Alt observer registers a distinct exact binding on the same activation client");
     if (advised) {
       BOOL eaten = TRUE;
       check(manager.key_sink->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
@@ -1350,14 +1366,14 @@ bool PreservedCommandSequences() {
                 h.a.calls["RequestEditSession"] == 0,
             "unknown preserved GUID passes without text inspection or an edit request");
     }
-    if (advised && manager.preserved_keys.size() == 2 && bindings.size() == 2) {
+    if (advised && manager.preserved_keys.size() == 3 && command_bindings.size() == 2) {
       keyboard.Type(h, "GHBDTN");
       h.Oracle(L"ghbdtn", 13);
       auto *composition = h.a.composition.Get();
       const int starts = h.a.starts, ends = h.a.ends;
       keyboard.Set(VK_LCONTROL, 0x80);
       keyboard.Set(VK_LMENU, 0x80);
-      for (const auto &binding : bindings) {
+      for (const auto &binding : command_bindings) {
         const int writes = h.a.writes, requests = h.a.calls["RequestEditSession"];
         const auto before = DiagnosticSnapshot(*h.service.Get());
         BOOL eaten = FALSE;
@@ -1385,13 +1401,13 @@ bool PreservedCommandSequences() {
     }
     check(h.service->Deactivate() == S_OK && manager.key_sink == nullptr,
           "deactivation clears the captured preserved-command sink");
-    check(manager.unpreserved_keys.size() == 2 &&
+    check(manager.unpreserved_keys.size() == 3 &&
               std::all_of(manager.preserved_keys.begin(), manager.preserved_keys.end(),
                           [&](const Manager::Registration &entry) {
                             return std::count(manager.unpreserved_keys.begin(),
                                               manager.unpreserved_keys.end(), entry.binding) == 1;
                           }),
-          "deactivation unregisters exactly the two acquired command pairs once");
+          "deactivation unregisters exactly the acquired binding pairs once");
     const auto cleanup = manager.unpreserved_keys;
     check(h.service->Deactivate() == S_OK && manager.unpreserved_keys == cleanup &&
               manager.key_unadvises == 1,
@@ -1416,12 +1432,12 @@ void PreservedActivationSchedules() {
                   !h.a.reads && !h.a.writes && !h.a.starts && !h.a.calls["RequestEditSession"],
               "native callbacks during provisional registration have no editing authority");
     };
-    Require(h.service->Activate(&h.manager, 42) == S_OK && callbacks == 2,
+    Require(h.service->Activate(&h.manager, 42) == S_OK && callbacks == 3,
             "editing generation changes cannot cancel or duplicate activation registrations");
     h.manager.preserve_hook = nullptr;
     h.Oracle(L"", 7);
   }
-  for (int position : {0, 1}) {
+  for (int position : {0, 1, 2}) {
     for (HRESULT failure : {E_FAIL, S_FALSE, TF_E_ALREADY_EXISTS}) {
       ProfileManager profile;
       Harness h(&profile, ProofLayouts);
@@ -1439,8 +1455,8 @@ void PreservedActivationSchedules() {
                   manager.profile_unadvises == profile_unadvises + 1 && manager.references == 1,
               "registration failure drains only the exact successful prefix and every sink");
       if (position)
-        Require(manager.unpreserved_keys.front() == manager.preserve_calls.front().binding,
-                "failed or duplicate second registration never becomes cleanup ownership");
+        Require(manager.unpreserved_keys.front() == manager.preserve_calls[position - 1].binding,
+                "failed or duplicate registration never becomes cleanup ownership");
       const auto cleanup = manager.unpreserved_keys;
       Require(h.service->Deactivate() == S_OK && manager.unpreserved_keys == cleanup,
               "failed activation cannot unregister anything twice");
@@ -1464,7 +1480,7 @@ void PreservedActivationSchedules() {
                 h.manager.preserve_calls.size() == attempts && h.service->Deactivate() == S_OK,
             "uncertain acquisition faults the instance without retry or guessed unregister");
   }
-  for (int boundary = 0; boundary != 5; ++boundary) {
+  for (int boundary = 0; boundary != 6; ++boundary) {
     ProfileManager profile;
     Harness h(&profile, ProofLayouts);
     h.service->Deactivate();
@@ -1530,7 +1546,7 @@ void PreservedActivationSchedules() {
               "only unknown sink acquisition faults the activation instance");
     }
   }
-  for (int position : {0, 1}) {
+  for (int position : {0, 1, 2}) {
     for (int outcome = 0; outcome != 4; ++outcome) {
       ProfileManager profile;
       Harness h(&profile, ProofLayouts);
@@ -1554,13 +1570,14 @@ void PreservedActivationSchedules() {
         Require(h.service->Activate(&manager, 42) == E_INVALIDARG,
                 "active teardown holds its barrier through COM releases");
       };
-      Require(FAILED(h.service->Deactivate()) && manager.unpreserved_keys.size() == 2 &&
-                  manager.unpreserved_keys[0] == manager.preserved_keys[1].binding &&
-                  manager.unpreserved_keys[1] == manager.preserved_keys[0].binding &&
+      Require(FAILED(h.service->Deactivate()) && manager.unpreserved_keys.size() == 3 &&
+                  manager.unpreserved_keys[0] == manager.preserved_keys[2].binding &&
+                  manager.unpreserved_keys[1] == manager.preserved_keys[1].binding &&
+                  manager.unpreserved_keys[2] == manager.preserved_keys[0].binding &&
                   manager.key_unadvises == 1 && manager.thread_unadvises == 1 &&
                   manager.profile_unadvises == 1 && manager.diagnostic_unadvises == 1 &&
                   releases >= 4,
-              "each failed pair cleanup still drains both pairs and every independent sink");
+              "each failed pair cleanup still drains all pairs and every independent sink");
       manager.release_hook = nullptr;
       manager.unpreserve_hook = nullptr;
       manager.unpreserve_result[position] = S_OK;
@@ -1580,7 +1597,7 @@ void PreservedActivationSchedules() {
     ProfileManager profile;
     Harness h(&profile, ProofLayouts);
     h.manager.unsink_result[position] = S_FALSE;
-    Require(FAILED(h.service->Deactivate()) && h.manager.unpreserved_keys.size() == 2 &&
+    Require(FAILED(h.service->Deactivate()) && h.manager.unpreserved_keys.size() == 3 &&
                 h.manager.key_unadvises == 1 && h.manager.thread_unadvises == 1 &&
                 h.manager.profile_unadvises == 1 && h.manager.diagnostic_unadvises == 1 &&
                 FAILED(h.service->Activate(&h.manager, 42)),
@@ -1633,7 +1650,7 @@ void PreservedActivationSchedules() {
       };
     Require(h.service->Activate(&h.manager, 42) == S_OK &&
                 DiagnosticSnapshot(*h.service.Get()).mode == KR_RU &&
-                h.manager.preserve_calls.size() == 4,
+                h.manager.preserve_calls.size() == 6,
             "profile notifications do not cancel registration or get overwritten by older query "
             "results");
     profile.hook = nullptr;
@@ -1713,6 +1730,303 @@ void CommandRetentionRegression() {
           "release never reads text or requests an edit");
   Require(registered && eaten,
           "witnessed command retains its owned mark through actual Alt release");
+}
+bool RetentionRelease(Harness &h, bool actual = true, WPARAM key = VK_MENU,
+                      LPARAM flags = 0xc0000001, ITfContext *context = nullptr) {
+  const auto reads = h.a.reads, writes = h.a.writes, starts = h.a.starts, ends = h.a.ends;
+  const auto requests = h.a.calls["RequestEditSession"], selection = h.a.calls["GetSelection"];
+  BOOL eaten = FALSE;
+  const auto result = actual ? h.service->OnKeyUp(context ? context : &h.a, key, flags, &eaten)
+                             : h.service->OnTestKeyUp(context ? context : &h.a, key, flags, &eaten);
+  Require(result == S_OK && h.a.reads == reads && h.a.writes == writes && h.a.starts == starts &&
+              h.a.ends == ends && h.a.calls["RequestEditSession"] == requests &&
+              h.a.calls["GetSelection"] == selection && !h.b.reads && !h.b.writes,
+          "every release has zero document access, composition effects and edit requests");
+  return eaten != FALSE;
+}
+void Witness(Harness &h, KeyboardState &keyboard) {
+  keyboard.Set(VK_LMENU, 0x80);
+  const auto reads = h.a.reads, requests = h.a.calls["RequestEditSession"];
+  Require(!Preserved(h, VK_MENU) && h.a.reads == reads &&
+              h.a.calls["RequestEditSession"] == requests,
+          "preserved observer always declines without text access or an edit session");
+}
+void CommandRetentionSchedules() {
+  for (bool ordinary : {false, true}) {
+    for (bool ctrl_first : {false, true}) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      KeyboardState keyboard;
+      keyboard.Type(h, "GHBDTN");
+      auto *composition = h.a.composition.Get();
+      for (UINT command : {static_cast<UINT>('K'), static_cast<UINT>('Z')}) {
+        Witness(h, keyboard);
+        Require(!RetentionRelease(h, false),
+                "a test before the command cannot spend its press witness");
+        keyboard.Set(VK_LCONTROL, 0x80);
+        const auto writes = h.a.writes;
+        Require(ordinary ? keyboard.Down(h, command) : Preserved(h, command),
+                "both command routes perform the witnessed command");
+        h.Oracle(command == 'K' ? L"привет" : L"ghbdtn", 13);
+        Require(h.a.writes == writes + 1 && h.a.composition.Get() == composition &&
+                    h.a.active_composition && h.a.max_request_writes == 1,
+                "conversion and reversal retain the original composition with one exact write");
+        if (command == 'Z') {
+          Require(Preserved(h, 'Z') && Preserved(h, 'Z') && h.a.writes == writes + 1,
+                  "repeated acknowledged reserved reversal retains only existing permission");
+        }
+        Require(!RetentionRelease(h, true, command), "command letter releases always pass");
+        if (ctrl_first) {
+          keyboard.Set(VK_LCONTROL, 0);
+          Require(!RetentionRelease(h, true, VK_CONTROL), "Ctrl-first release passes");
+        }
+        keyboard.Set(VK_LMENU, 0);
+        Require(!RetentionRelease(h, false, VK_RMENU, 0xc1000001),
+                "an unrelated sided test cannot spend the left Alt permission");
+        Require(RetentionRelease(h, false) && RetentionRelease(h, false) && RetentionRelease(h) &&
+                    !RetentionRelease(h) && !RetentionRelease(h, false),
+                "tests predict without spending and one actual Alt release consumes");
+        keyboard.Set(VK_LCONTROL, 0);
+        Require(!RetentionRelease(h, true, VK_CONTROL), "Ctrl release passes after Alt too");
+        Witness(h, keyboard);
+        keyboard.Set(VK_LMENU, 0);
+        Require(!RetentionRelease(h), "separate witnessed bare Alt keeps native menu disposition");
+      }
+    }
+  }
+  for (int scenario = 0; scenario != 6; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    if (scenario != 0) {
+      keyboard.Set(VK_LMENU, scenario == 1 ? 0 : 0x80);
+      if (scenario == 2)
+        keyboard.Set(VK_RMENU, 0x80);
+      if (scenario == 3)
+        h.manager.top = &h.b;
+      if (scenario == 4)
+        profile.profile.clsid = GUID_NULL;
+      if (scenario == 5)
+        h.a.status = TF_SD_READONLY;
+      Require(!Preserved(h, VK_MENU), "refused observer still declines");
+      keyboard.Set(VK_RMENU, 0);
+      h.manager.top = &h.a;
+      profile.profile.clsid = service_id;
+      h.a.status = 0;
+    }
+    keyboard.Set(VK_LMENU, 0x80);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(Preserved(h, 'K'),
+            "missing or refused witness never blocks ordinary command execution");
+    h.Oracle(L"привет", 13);
+    keyboard.Set(VK_LMENU, 0);
+    Require(!RetentionRelease(h, false) && !RetentionRelease(h),
+            "missing initial or refused witness cannot grant release permission");
+  }
+  for (int scenario = 0; scenario != 17; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(Preserved(h, 'K'), "verified command arms the invalidation schedule");
+    if (scenario == 0)
+      h.manager.top = &h.b;
+    if (scenario == 1)
+      profile.profile.clsid = GUID_NULL;
+    if (scenario == 2)
+      h.a.status = TF_SD_READONLY;
+    if (scenario == 3)
+      h.service->OnSetFocus(FALSE);
+    if (scenario == 4)
+      h.service->OnActivated(TF_PROFILETYPE_INPUTPROCESSOR, profiles[0].language, service_id,
+                             GUID_TFCAT_TIP_KEYBOARD, profiles[0].id, nullptr,
+                             TF_IPSINK_FLAG_ACTIVE);
+    if (scenario == 5)
+      h.service->OnCompositionTerminated(123, h.a.composition.Get());
+    if (scenario == 6)
+      h.service->Deactivate();
+    if (scenario == 7)
+      Witness(h, keyboard);
+    if (scenario == 8) {
+      keyboard.Set(VK_LCONTROL, 0);
+      keyboard.Set(VK_LMENU, 0);
+      Require(keyboard.Down(h, 'X'), "ordinary new input revokes the preceding cycle");
+    }
+    if (scenario == 9) {
+      h.service->OnSetFocus(&h.manager, &h.manager);
+      h.service->OnSetFocus(&h.manager, &h.manager);
+    }
+    if (scenario == 10)
+      Require(!keyboard.Down(h, VK_MENU), "ordinary fresh Alt press revokes old permission");
+    if (scenario == 11)
+      h.a.window = GetDlgItem(h.root, 104);
+    if (scenario == 15)
+      h.a.disabled = true;
+    if (scenario == 16)
+      h.manager.disabled = true;
+    keyboard.Set(VK_LMENU, 0);
+    const auto key = scenario == 12 ? VK_RMENU : scenario == 13 ? VK_LMENU : VK_MENU;
+    const LPARAM flags = scenario == 12 || scenario == 13 ? 0xc1000001 : 0xc0000001;
+    Require(!RetentionRelease(h, true, key, flags, scenario == 14 ? &h.b : nullptr),
+            "authority loss, fresh press, unrelated side or context cannot consume Alt release");
+    h.manager.top = &h.a;
+    profile.profile.clsid = service_id;
+    h.a.status = 0;
+    h.a.disabled = h.manager.disabled = false;
+    h.a.window = GetDlgItem(h.root, 101);
+    Require(!RetentionRelease(h), "returning old metadata cannot revive a spent cycle");
+  }
+  for (int scenario = 0; scenario != 8; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    if (scenario == 0) {
+      Require(Preserved(h, 'Z'), "no-receipt reserved command has no write");
+    } else {
+      if (scenario == 1) {
+        h.a.callback = false;
+        h.a.request_result = E_ACCESSDENIED;
+      }
+      if (scenario == 2) {
+        h.a.session_result = E_FAIL;
+      }
+      if (scenario == 3) {
+        h.a.request_result = E_FAIL;
+      }
+      if (scenario == 4) {
+        h.a.write_result = E_FAIL;
+      }
+      if (scenario == 5) {
+        h.a.callback = false;
+      }
+      if (scenario == 6) {
+        h.a.throw_after_callback = true;
+      }
+      if (scenario == 7) {
+        h.a.request_result = S_FALSE;
+      }
+      Preserved(h, 'K');
+    }
+    keyboard.Set(VK_LMENU, 0);
+    Require(!RetentionRelease(h),
+            "reserved-only, refused, unknown or incomplete command never arms");
+    if (h.a.retained_request) {
+      const auto writes = h.a.writes;
+      Require(h.a.retained_request->DoEditSession(123) == E_FAIL && h.a.writes == writes &&
+                  !RetentionRelease(h),
+              "expired session cannot write or restore release permission");
+      h.a.retained_request.Reset();
+    }
+  }
+  for (int scenario = 0; scenario != 9; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    bool nested = false;
+    h.a.hook = [&](const char *name) {
+      if (std::string(name) != (scenario < 3   ? "SetText.after"
+                                : scenario < 6 ? "GetSelection"
+                                               : "RequestEditSession.after") ||
+          std::exchange(nested, true))
+        return;
+      if (scenario % 3 == 0)
+        Require(!RetentionRelease(h), "release during command closes its cycle and passes");
+      else if (scenario % 3 == 1)
+        Require(!Preserved(h, VK_MENU), "nested observer declines and cannot create a cycle");
+      else
+        Require(!Preserved(h, 'Z'), "nested command cannot create release authority");
+    };
+    Preserved(h, 'K');
+    h.a.hook = nullptr;
+    Require(nested && !RetentionRelease(h), "callback cancellation prevents late command arming");
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    bool returned = false, nested = false;
+    h.a.hook = [&](const char *name) {
+      if (std::string(name) == "RequestEditSession.after")
+        returned = true;
+    };
+    h.a.release_hook = [&] {
+      if (returned && !std::exchange(nested, true))
+        Require(!RetentionRelease(h), "request destruction still has an open cancellation frame");
+    };
+    Require(Preserved(h, 'K'),
+            "verified command keeps its original disposition during release reentry");
+    h.a.hook = nullptr;
+    h.a.release_hook = nullptr;
+    Require(nested && !RetentionRelease(h),
+            "temporary request COM cleanup cannot publish late permission");
+    h.Oracle(L"привет", 13);
+  }
+  for (int scenario = 0; scenario != 5; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(Preserved(h, 'K'), "release reentry starts from verified permission");
+    bool nested = false;
+    auto cancel = [&] {
+      if (!std::exchange(nested, true))
+        Require(!Preserved(h, VK_MENU),
+                "observer cannot recreate permission in an open release decision");
+    };
+    if (scenario == 0)
+      profile.hook = [&](const char *) { cancel(); };
+    if (scenario == 1)
+      h.a.hook = [&](const char *name) {
+        if (std::string(name) == "context.QI")
+          cancel();
+      };
+    if (scenario == 2)
+      h.a.hook = [&](const char *name) {
+        if (std::string(name) == "GetWnd")
+          cancel();
+      };
+    if (scenario == 3)
+      profile.release_hook = cancel;
+    if (scenario == 4)
+      h.manager.release_hook = cancel;
+    Require(!RetentionRelease(h) && nested,
+            "native metadata and COM cleanup reentry cancel final spending");
+    profile.hook = nullptr;
+    profile.release_hook = nullptr;
+    h.a.hook = nullptr;
+    h.manager.release_hook = nullptr;
+    Require(!RetentionRelease(h), "cancelled release never revives after cleanup");
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(Preserved(h, 'K'), "host-boundary schedule starts from a verified witnessed command");
+    Require(RetentionRelease(h, false), "an abandoned test does not spend the cycle");
+    keyboard.Set(VK_LMENU, 0);
+    keyboard.Set(VK_LMENU, 0x80);
+    keyboard.Set(VK_LMENU, 0);
+    Require(RetentionRelease(h), "missing both original actual release and later observer is "
+                                 "indistinguishable and excluded by the host contract");
+    h.Oracle(L"привет", 13);
+  }
 }
 void PreservedDispatchSchedules() {
   for (const auto &entry : profiles) {
@@ -4607,7 +4921,7 @@ void HostPublicationEquivalence() {
                 armed.Read(payload) == probe::Availability::Available &&
                 probe::Decode(payload, decoded) && decoded.service.base == command_snapshot.base &&
                 decoded.service.lifecycle == command_snapshot.lifecycle &&
-                decoded.observations.count == 4,
+                decoded.observations.count == 6,
             "armed and unarmed manual commands have exact old snapshots and actual mapped "
             "observations");
     h.service->OnSetFocus(FALSE);
@@ -4647,6 +4961,61 @@ diagnostics::CommandObservation ObservedCommand(const probe::Snapshot &snapshot,
 }
 void CommandObservationSchedules() {
   using namespace diagnostics;
+  {
+    host::Identity identity;
+    Require(
+        host::Capture(GetCurrentProcess(), GetCurrentProcessId(), GetCurrentThreadId(), identity),
+        "retention observation process identity");
+    probe::ArmedPage retained;
+    Require(retained.Create(identity), "retention evidence uses the actual optional mapping");
+    for (int scenario = 0; scenario != 6; ++scenario) {
+      ProfileManager profile;
+      Harness h(&profile, ProofLayouts);
+      KeyboardState keyboard;
+      h.Type(L"ghbdtn");
+      if (scenario != 4) {
+        if (scenario == 5)
+          keyboard.Set(VK_RMENU, 0x80);
+        Witness(h, keyboard);
+        keyboard.Set(VK_RMENU, 0);
+      }
+      keyboard.Set(VK_LMENU, 0x80);
+      keyboard.Set(VK_LCONTROL, 0x80);
+      if (scenario == 1)
+        h.a.write_result = E_FAIL;
+      if (scenario == 2) {
+        h.a.callback = false;
+        h.a.request_result = E_ACCESSDENIED;
+      }
+      Preserved(h, scenario == 0 ? 'Z' : 'K');
+      auto snapshot = ReadCommandObservations(retained);
+      const auto &completion = std::get<CompletionObservation>(
+          snapshot.observations.events[snapshot.observations.count - 1]->body);
+      const auto expected = scenario == 0   ? CommandCompletion::Reserved
+                            : scenario == 1 ? CommandCompletion::Unknown
+                            : scenario == 2 ? CommandCompletion::Refused
+                                            : CommandCompletion::ManualMark;
+      Require(completion.witnessed == (scenario < 4) && completion.completion == expected,
+              "mapped command completion records actual executor outcome and dispatch witness");
+      if (scenario != 4) {
+        Require(std::get<ObserverObservation>(snapshot.observations.events[0]->body).stage ==
+                        ObserverStage::Arrival &&
+                    std::get<ObserverObservation>(snapshot.observations.events[1]->body).stage ==
+                        (scenario == 5 ? ObserverStage::Refused : ObserverStage::Admitted),
+                "mapped observer arrival and admission remain separate declined callback facts");
+      }
+      keyboard.Set(VK_LMENU, 0);
+      Require(RetentionRelease(h) == (scenario == 3),
+              "mapped observations do not grant release authority");
+      snapshot = ReadCommandObservations(retained);
+      const auto &release = std::get<ReleaseObservation>(
+          snapshot.observations.events[snapshot.observations.count - 1]->body);
+      Require(release.consumed == (scenario == 3) &&
+                  release.context == (scenario == 3 ? ReleaseObservation::Context::Matched
+                                                    : ReleaseObservation::Context::Unchecked),
+              "mapped actual release distinguishes validation from final disposition");
+    }
+  }
   const int source_keys[] = {VK_LCONTROL, VK_LMENU,  VK_RCONTROL, VK_RMENU, VK_SHIFT,
                              VK_LSHIFT,   VK_RSHIFT, VK_LWIN,     VK_RWIN};
   for (unsigned mask = 0; mask != 512; ++mask) {
@@ -4709,9 +5078,9 @@ void CommandObservationSchedules() {
     h.Oracle(L"ghbdtn", 13);
     auto observed = ReadCommandObservations(armed);
     Require(
-        observed.observations.count == 4 &&
+        observed.observations.count == 6 &&
             ObservedCommand(observed, 0).command.intent == ManualIntent::Convert &&
-            ObservedCommand(observed, 2).command.intent == ManualIntent::Reverse &&
+            ObservedCommand(observed, 3).command.intent == ManualIntent::Reverse &&
             std::holds_alternative<CommandArrival>(ObservedCommand(observed, 0).stage) &&
             std::holds_alternative<ExecutorDispatch>(ObservedCommand(observed, 1).stage) &&
             std::holds_alternative<UnknownModifiers>(
@@ -4727,7 +5096,7 @@ void CommandObservationSchedules() {
     const auto calls = profile.active_calls;
     BOOL eaten = TRUE;
     Require(h.service->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
-                h.service->OnPreservedKey(&h.a, commands[0].id, nullptr) == E_POINTER &&
+                h.service->OnPreservedKey(&h.a, bindings[0].id, nullptr) == E_POINTER &&
                 ReadCommandObservations(armed).observations == before_unknown &&
                 DiagnosticSnapshot(*h.service.Get()) == old_unknown &&
                 profile.active_calls == calls,
@@ -4736,10 +5105,10 @@ void CommandObservationSchedules() {
     h.Oracle(L"ghbdtn", 13);
     observed = ReadCommandObservations(armed);
     Require(
-        observed.observations.count == 8 &&
-            ObservedCommand(observed, 4).command.route == CommandRoute::Ordinary &&
-            ObservedCommand(observed, 6).command.intent == ManualIntent::Reverse &&
-            std::holds_alternative<ModifierFacts>(Knowledge(ObservedCommand(observed, 4).stage)) &&
+        observed.observations.count == 12 &&
+            ObservedCommand(observed, 6).command.route == CommandRoute::Ordinary &&
+            ObservedCommand(observed, 9).command.intent == ManualIntent::Reverse &&
+            std::holds_alternative<ModifierFacts>(Knowledge(ObservedCommand(observed, 6).stage)) &&
             DiagnosticSnapshot(*h.service.Get()).counts[static_cast<size_t>(Counter::KeyEntered)] ==
                 old.counts[static_cast<size_t>(Counter::KeyEntered)] + 2 &&
             DiagnosticSnapshot(*h.service.Get()).counts[static_cast<size_t>(Counter::Consumed)] ==
@@ -4846,17 +5215,18 @@ void CommandObservationSchedules() {
       profile.hook = [&](const char *) {
         if (!std::exchange(nested, true)) {
           BOOL eaten = TRUE;
-          Require(h.service->OnPreservedKey(&h.a, commands[1].id, &eaten) == S_OK && !eaten,
+          Require(h.service->OnPreservedKey(&h.a, bindings[1].id, &eaten) == S_OK && !eaten,
                   "nested command reentry refuses before keyboard acquisition");
         }
       };
     BOOL eaten = TRUE;
     const auto result =
-        h.service->OnPreservedKey(scenario == 0 ? nullptr : &h.a, commands[0].id, &eaten);
+        h.service->OnPreservedKey(scenario == 0 ? nullptr : &h.a, bindings[0].id, &eaten);
     profile.hook = nullptr;
     profile.release_hook = nullptr;
     const auto observed = ReadCommandObservations(armed);
-    const auto last = ObservedCommand(observed, observed.observations.count - 1);
+    const auto last =
+        ObservedCommand(observed, observed.observations.count - (scenario == 3 ? 2 : 1));
     Require(result == (scenario == 2 ? E_FAIL : S_OK) && !eaten && h.a.reads == reads &&
                 h.a.writes == writes,
             "admission stale dispatch exception and executor refusal retain old no-text outcomes");
@@ -4920,7 +5290,7 @@ void CommandObservationSchedules() {
                 !h.b.writes && !h.b.starts,
             "observed excluded uncertain secure and read-only commands retain zero text effects");
     const auto observed = ReadCommandObservations(armed);
-    Require(observed.observations.count == 2 &&
+    Require(observed.observations.count == 3 &&
                 std::holds_alternative<ExecutorDispatch>(ObservedCommand(observed, 1).stage),
             "executor admission refusal remains distinct from command admission progress");
     h.Oracle(L"", 7);
@@ -7316,6 +7686,7 @@ int wmain(int argc, wchar_t **argv) {
   puts("Existing controlled same-service COM schedules passed.");
   puts("RUN activation-registered preserved command sequences");
   CommandRetentionRegression();
+  CommandRetentionSchedules();
   const bool preserved_commands = PreservedCommandSequences();
   PreservedActivationSchedules();
   PreservedDispatchSchedules();

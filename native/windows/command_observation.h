@@ -136,12 +136,28 @@ inline ModifierKnowledge Knowledge(const CommandStage &stage) noexcept {
 struct ReleaseObservation {
   ReleaseDelivery delivery;
   ReleaseModifier modifier;
+  enum class Context : uint32_t { Unchecked, Matched, Refused };
+  Context context = Context::Unchecked;
+  bool consumed = false;
   bool operator==(const ReleaseObservation &) const = default;
+};
+enum class ObserverStage : uint32_t { Arrival, Admitted, Refused };
+struct ObserverObservation {
+  ObserverStage stage;
+  bool operator==(const ObserverObservation &) const = default;
+};
+enum class CommandCompletion : uint32_t { Refused, Unknown, Reserved, ManualMark };
+struct CompletionObservation {
+  CommandIdentity command;
+  bool witnessed;
+  CommandCompletion completion;
+  bool operator==(const CompletionObservation &) const = default;
 };
 struct ObservationEvent {
   ObservationSequence sequence;
   ObservationStamp stamp;
-  std::variant<CommandObservation, ReleaseObservation> body;
+  std::variant<CommandObservation, ReleaseObservation, ObserverObservation, CompletionObservation>
+      body;
   bool operator==(const ObservationEvent &) const = default;
 };
 inline constexpr size_t observation_capacity = 32;
@@ -181,6 +197,12 @@ public:
   }
   void Record(ReleaseObservation release, ObservationStamp stamp) noexcept {
     Append({{}, stamp, release});
+  }
+  void Record(ObserverObservation observer, ObservationStamp stamp) noexcept {
+    Append({{}, stamp, observer});
+  }
+  void Record(CompletionObservation completion, ObservationStamp stamp) noexcept {
+    Append({{}, stamp, completion});
   }
   ObservationWindow Copy() const noexcept { return window_; }
 
@@ -224,7 +246,42 @@ inline bool Valid(const ObservationWindow &window, const LifecycleSnapshot &life
     cursor = event.stamp.after.value;
     if (const auto *release = std::get_if<ReleaseObservation>(&event.body)) {
       if (release->delivery > ReleaseDelivery::Actual ||
-          release->modifier > ReleaseModifier::AltUnresolved)
+          release->modifier > ReleaseModifier::AltUnresolved ||
+          release->context > ReleaseObservation::Context::Refused ||
+          (release->context != ReleaseObservation::Context::Unchecked &&
+           release->modifier != ReleaseModifier::LeftAlt) ||
+          (release->consumed && (release->modifier != ReleaseModifier::LeftAlt ||
+                                 release->context != ReleaseObservation::Context::Matched)))
+        return false;
+      continue;
+    }
+    if (const auto *observer = std::get_if<ObserverObservation>(&event.body)) {
+      if (observer->stage > ObserverStage::Refused)
+        return false;
+      continue;
+    }
+    if (const auto *completion = std::get_if<CompletionObservation>(&event.body)) {
+      const auto &identity = completion->command;
+      if (completion->completion > CommandCompletion::ManualMark || !identity.id.arrival.value ||
+          identity.id.arrival.value >= event.sequence.value ||
+          identity.route > CommandRoute::Preserved ||
+          (identity.intent != ManualIntent::Convert && identity.intent != ManualIntent::Reverse))
+        return false;
+      const CommandObservation *dispatch = nullptr;
+      for (size_t earlier = 0; earlier != i; ++earlier) {
+        const auto &body = window.events[earlier]->body;
+        if (const auto *other = std::get_if<CompletionObservation>(&body))
+          if (other->command.id == identity.id)
+            return false;
+        if (const auto *other = std::get_if<CommandObservation>(&body))
+          if (other->command.id == identity.id) {
+            if (other->command != identity)
+              return false;
+            dispatch = other;
+          }
+      }
+      if (dispatch ? !std::holds_alternative<ExecutorDispatch>(dispatch->stage)
+                   : identity.id.arrival.value >= window.sequence.value - window.count + 1)
         return false;
       continue;
     }

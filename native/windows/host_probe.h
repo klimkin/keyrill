@@ -5,7 +5,7 @@
 #include "service_diagnostics.h"
 
 namespace keyrill::probe {
-inline constexpr DWORD protocol = 2;
+inline constexpr DWORD protocol = 3;
 inline constexpr size_t page_bytes = 4096;
 inline constexpr size_t payload_words = 512;
 inline constexpr size_t observation_offset = 177;

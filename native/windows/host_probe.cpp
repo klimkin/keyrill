@@ -85,8 +85,21 @@ EncodeObservation(const std::optional<diagnostics::ObservationEvent> &slot) noex
                      event.stamp.owned.composition_serial};
   if (const auto *release = std::get_if<diagnostics::ReleaseObservation>(&event.body)) {
     row[4] = 7;
+    row[5] = release->consumed;
+    row[6] = static_cast<DWORD>(release->context);
     row[8] = EncodeRelease(release->modifier);
     row[9] = release->delivery == diagnostics::ReleaseDelivery::Test ? 1 : 2;
+  } else if (const auto *observer = std::get_if<diagnostics::ObserverObservation>(&event.body)) {
+    row[4] = 8;
+    row[8] = static_cast<DWORD>(observer->stage) + 1;
+  } else if (const auto *completion =
+                 std::get_if<diagnostics::CompletionObservation>(&event.body)) {
+    row[4] = 9;
+    row[5] = completion->command.route == diagnostics::CommandRoute::Ordinary ? 1 : 2;
+    row[6] = completion->command.intent == ManualIntent::Convert ? 1 : 2;
+    row[7] = completion->command.id.arrival.value;
+    row[8] = completion->witnessed;
+    row[9] = static_cast<DWORD>(completion->completion) + 1;
   } else {
     const auto &command = std::get<diagnostics::CommandObservation>(event.body);
     row[4] = std::visit(
@@ -127,11 +140,26 @@ bool DecodeObservation(const ObservationRow &row,
   ObservationEvent event{{row[0]}, {{row[1]}, {row[2] != 0, row[3]}}, {}};
   if (row[4] == 7) {
     ReleaseModifier modifier;
-    if (row[5] || row[6] || row[7] || !DecodeRelease(row[8], modifier) ||
+    if (row[5] > 1 || row[6] > 2 || row[7] || !DecodeRelease(row[8], modifier) ||
         (row[9] != 1 && row[9] != 2))
       return false;
     event.body =
-        ReleaseObservation{row[9] == 1 ? ReleaseDelivery::Test : ReleaseDelivery::Actual, modifier};
+        ReleaseObservation{row[9] == 1 ? ReleaseDelivery::Test : ReleaseDelivery::Actual, modifier,
+                           static_cast<ReleaseObservation::Context>(row[6]), row[5] != 0};
+  } else if (row[4] == 8) {
+    if (row[5] || row[6] || row[7] || row[9] || row[8] < 1 || row[8] > 3)
+      return false;
+    event.body = ObserverObservation{static_cast<ObserverStage>(row[8] - 1)};
+  } else if (row[4] == 9) {
+    if ((row[5] != 1 && row[5] != 2) || (row[6] != 1 && row[6] != 2) || row[8] > 1 || row[9] < 1 ||
+        row[9] > 4)
+      return false;
+    event.body =
+        CompletionObservation{{{{row[7]}},
+                               row[5] == 1 ? CommandRoute::Ordinary : CommandRoute::Preserved,
+                               row[6] == 1 ? ManualIntent::Convert : ManualIntent::Reverse},
+                              row[8] != 0,
+                              static_cast<CommandCompletion>(row[9] - 1)};
   } else {
     ModifierKnowledge knowledge;
     if ((row[5] != 1 && row[5] != 2) || (row[6] != 1 && row[6] != 2) || row[9] ||

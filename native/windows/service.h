@@ -69,7 +69,19 @@ private:
     }
   };
   ~Service();
+  struct OwnedIdentity {};
+  struct AltCycle {
+    std::shared_ptr<const OwnedIdentity> ownership;
+    uint64_t activation;
+    uint64_t generation;
+    uint32_t mode;
+    IUnknown *context;
+    IUnknown *composition;
+    native_field::FieldIdentity field;
+  };
   struct Owned {
+    std::shared_ptr<const OwnedIdentity> identity = std::make_shared<OwnedIdentity>();
+    std::shared_ptr<const AltCycle> release;
     ComPtr<ITfContext> context;
     ComPtr<IUnknown> context_id;
     ComPtr<ITfComposition> composition;
@@ -78,6 +90,28 @@ private:
     LONG start = 0;
     std::wstring verified;
   };
+  struct ReleaseDecision {
+    Service &service;
+    ReleaseDecision *parent;
+    bool cancelled = false;
+    explicit ReleaseDecision(Service &);
+    ~ReleaseDecision();
+    bool Current() const { return !parent && !cancelled; }
+  };
+  enum class Completion { Refused, Unknown, Reserved, ManualMark };
+  struct Execution {
+    bool eaten = false;
+    Completion completion = Completion::Refused;
+  };
+  Execution Execute(ITfContext *, const kr_event &);
+  bool DispatchCommand(ITfContext *, const kr_event &, const diagnostics::CommandTicket &);
+  void RevokeRelease() noexcept;
+  bool SameCycle(const std::shared_ptr<const AltCycle> &) const noexcept;
+  std::optional<native_field::FieldIdentity>
+  ReleaseAuthority(ITfContext *, const std::shared_ptr<const OwnedIdentity> &, uint64_t, uint64_t,
+                   uint32_t);
+  void WitnessAlt(ITfContext *);
+  HRESULT ReleaseAlt(ITfContext *, WPARAM, LPARAM, BOOL *, diagnostics::ReleaseDelivery);
   void Invalidate(bool stop);
   void InvalidateForLifecycle(diagnostics::LifecycleCause cause);
   bool StartMaintenance();
@@ -87,7 +121,6 @@ private:
   void RegisterDiagnostics() noexcept;
   void PublishObservation() noexcept;
   diagnostics::ObservationStamp ObservationStamp() const noexcept;
-  void ObserveRelease(diagnostics::ReleaseDelivery, WPARAM, LPARAM) noexcept;
   void ObserveHost(ITfContext *);
   void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
   void Refuse(diagnostics::Stage stage, diagnostics::Cause cause, HRESULT result = S_OK) noexcept {
@@ -110,7 +143,7 @@ private:
     DWORD thread_cookie = TF_INVALID_COOKIE;
     DWORD profile_cookie = TF_INVALID_COOKIE;
     bool key_sink = false;
-    size_t command_prefix = 0;
+    size_t binding_prefix = 0;
   };
   struct ActivationAttempt {
     ActivationEpoch epoch;
@@ -157,6 +190,8 @@ private:
   uint32_t mode_ = 0;
   kr_engine *engine_ = nullptr;
   std::unique_ptr<Owned> owned_;
+  std::shared_ptr<const AltCycle> alt_cycle_;
+  ReleaseDecision *release_decision_ = nullptr;
   const ComPtr<ITfInputProcessorProfileMgr> profile_dependency_;
   const decltype(&GetKeyboardLayoutList) layouts_;
   const native_field::Source *const field_source_;

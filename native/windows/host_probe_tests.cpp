@@ -249,7 +249,42 @@ void ObservationCodecSchedules(const host::Identity &id) {
   probe::Initialize(legacy, id);
   legacy.header[1] = 1;
   legacy.header[3] = 192;
-  Require(!probe::Matches(legacy, id), "protocol2 rejects frozen protocol1 header");
+  Require(!probe::Matches(legacy, id), "protocol3 rejects frozen protocol1 header");
+  probe::Initialize(legacy, id);
+  legacy.header[1] = 2;
+  Require(!probe::Matches(legacy, id), "protocol3 rejects the frozen protocol2 header too");
+  for (const auto outcome : {CommandCompletion::Refused, CommandCompletion::Unknown,
+                             CommandCompletion::Reserved, CommandCompletion::ManualMark}) {
+    for (bool witnessed : {false, true}) {
+      ObservationJournal retention;
+      retention.Record(ObserverObservation{ObserverStage::Arrival}, stamp);
+      retention.Record(ObserverObservation{ObserverStage::Admitted}, stamp);
+      const auto ticket = retention.Begin(PreservedIntent{ManualIntent::Convert}, stamp);
+      retention.Record(ticket, ExecutorDispatch{exact}, stamp);
+      retention.Record(CompletionObservation{*ticket.identity, witnessed, outcome}, stamp);
+      retention.Record(ReleaseObservation{ReleaseDelivery::Actual, ReleaseModifier::LeftAlt,
+                                          ReleaseObservation::Context::Matched, true},
+                       stamp);
+      const auto retained_service = service;
+      const auto payload = probe::Encode(id, {}, retained_service, {}, 1, retention.Copy());
+      probe::Snapshot roundtrip;
+      Require(probe::Decode(payload, roundtrip) && roundtrip.observations == retention.Copy(),
+              "protocol3 roundtrips observer, typed completion, witness and release disposition");
+      for (const auto &[field, value] : std::initializer_list<std::pair<size_t, DWORD>>{
+               {184, 0}, {185, 1}, {186, 1}, {187, 1}, {188, 0}, {188, 4}, {189, 1},
+               {224, 8}, {225, 0}, {226, 0}, {227, 0}, {227, 5}, {228, 2}, {229, 0},
+               {229, 5}, {235, 2}, {236, 0}, {236, 3}, {237, 1}, {238, 4}}) {
+        auto malformed = payload;
+        malformed[field] = value;
+        const auto saved = roundtrip.observations;
+        Require(!probe::Decode(malformed, roundtrip) && roundtrip.observations == saved,
+                "protocol3 rejects malformed authority evidence without partial publication");
+      }
+      retention.Record(CompletionObservation{*ticket.identity, witnessed, outcome}, stamp);
+      Require(!Valid(retention.Copy(), retained_service.lifecycle),
+              "one command cannot publish a second executor completion");
+    }
+  }
 }
 } // namespace
 int wmain(int argc, wchar_t **argv) {

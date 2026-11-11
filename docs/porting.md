@@ -144,17 +144,23 @@ either native effect, clone gravity, exact selection styles, and fresh policy re
 Actual Notepad selection preservation and Undo remain separate live gates.
 
 The Windows branch contains a bounded `PreserveKey` delivery candidate for manual conversion
-and reversal. Two exact left Ctrl + left Alt registrations belong to one activation. A provisional
+and reversal. Two exact left Ctrl + left Alt commands and one declined Alt-press observer belong
+to one activation through a shared binding table. A provisional
 stack owner accounts for late successful registrations before rollback, and reactivation waits
 for the whole activation call and all captured releases. Unknown mandatory acquisition or cleanup
 effects fault the instance. Ordinary and preserved callbacks share native admission and the
 existing executor. A command GUID supplies no modifier, repeat, or document-authority facts.
 Actual Notepad delivery before termination remains unproved; see
 [the command contract](windows.md#manual-conversion-and-reversal).
-The Windows host probe uses a separate protocol-2 command and modifier-release observation
+The Windows host probe uses a separate protocol-3 command and modifier-release observation
 window. Callback-local tickets preserve command identity through reentry. Lifecycle anchors
 order those content-free observations against owned termination. Dispatch records executor
-entry, and existing verified-edit diagnostics describe the resulting document outcome. See
+entry. Separate completion records distinguish verified manual MARK, no-write reservation,
+refusal and unknown effects. The observer witnesses an Alt cycle before a verified command can
+grant one release permission on its owned composition. Release validation performs metadata
+queries only. Missing original release plus missing later observer is an excluded indistinguishable
+host schedule. Actual Notepad observer delivery, bare-Alt behavior, retention and physical
+admission remain open gates. See
 [the observation protocol](windows.md#observation-protocol) for retention and coverage rules.
 
 | Interface | Documented behavior | Obligation |

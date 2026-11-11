@@ -3,7 +3,7 @@
 #include <algorithm>
 
 namespace keyrill {
-const std::array<CommandSpec, 2> commands{{
+const std::array<BindingSpec, 3> bindings{{
     {{0xd7abce42, 0xc8a9, 0x4a43, {0x99, 0x0a, 0x4a, 0x8d, 0x6c, 0x01, 0x1e, 0xbb}},
      {'K', TF_MOD_LCONTROL | TF_MOD_LALT},
      ManualIntent::Convert,
@@ -12,6 +12,10 @@ const std::array<CommandSpec, 2> commands{{
      {'Z', TF_MOD_LCONTROL | TF_MOD_LALT},
      ManualIntent::Reverse,
      L"Keyrill reversal"},
+    {{0x997f7561, 0x053d, 0x475a, {0xab, 0xb9, 0xb1, 0x1f, 0xcf, 0x16, 0xbb, 0x48}},
+     {VK_MENU, TF_MOD_IGNORE_ALL_MODIFIER},
+     AltPressed{},
+     L"Keyrill Alt press observer"},
 }};
 static bool Modifier(WPARAM key) {
   switch (key) {
@@ -70,9 +74,10 @@ NativeKey TranslateKey(WPARAM key, LPARAM flags, HKL layout, const BYTE (&state)
   bool command = down(VK_CONTROL) || down(VK_LCONTROL) || down(VK_RCONTROL) || down(VK_MENU) ||
                  down(VK_LMENU) || down(VK_RMENU) || windows;
   if (ExactCommandModifiers(state))
-    for (const auto &entry : commands)
-      if (key == entry.key.uVKey) {
-        event.role = entry.intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE;
+    for (const auto &entry : bindings)
+      if (const auto *intent = std::get_if<ManualIntent>(&entry.action);
+          intent && key == entry.key.uVKey) {
+        event.role = *intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE;
         return event;
       }
   if (command)
