@@ -82,6 +82,53 @@ void Print(const host::Identity &id, probe::Availability state, const probe::Pay
              static_cast<unsigned>(event.kind), event.subject, static_cast<unsigned>(event.cause),
              static_cast<unsigned>(event.unresolved));
     }
+    const auto &observations = value.observations;
+    printf(" observations_sequence=%u count=%u saturated=%u lifecycle_saturated=%u"
+           " history_evicted=%u\n",
+           observations.sequence.value, observations.count, observations.saturated, l.saturated,
+           observations.sequence.value > observations.count);
+    for (size_t i = 0; i != observations.count; ++i) {
+      const auto &event = *observations.events[i];
+      printf(" observation=%u lifecycle_after=%u owned=%u serial=%u", event.sequence.value,
+             event.stamp.after.value, event.stamp.owned.present,
+             event.stamp.owned.composition_serial);
+      if (const auto *release = std::get_if<diagnostics::ReleaseObservation>(&event.body)) {
+        const char *modifiers[] = {"LeftControl", "RightControl",      "LeftAlt",
+                                   "RightAlt",    "ControlUnresolved", "AltUnresolved"};
+        printf(" release=%s callback=%s\n", modifiers[static_cast<size_t>(release->modifier)],
+               release->delivery == diagnostics::ReleaseDelivery::Test ? "TEST" : "ACTUAL");
+      } else {
+        const auto &command = std::get<diagnostics::CommandObservation>(event.body);
+        const char *stages[] = {"Arrival",         "AdmissionRefused", "ExactModifiersRefused",
+                                "DispatchRefused", "ExecutorDispatch", "CallbackException"};
+        static_assert(std::size(stages) == std::variant_size_v<diagnostics::CommandStage>);
+        printf(" command=%u route=%s intent=%s stage=%s arrival_evicted=%u",
+               command.command.id.arrival.value,
+               command.command.route == diagnostics::CommandRoute::Ordinary ? "Ordinary"
+                                                                            : "Preserved",
+               command.command.intent == ManualIntent::Convert ? "Convert" : "Reverse",
+               stages[command.stage.index()],
+               command.command.id.arrival.value <
+                   observations.sequence.value - observations.count + 1);
+        const auto knowledge = diagnostics::Knowledge(command.stage);
+        if (const auto *facts = std::get_if<diagnostics::ModifierFacts>(&knowledge))
+          printf(" modifiers=Known left_control=%u left_alt=%u right_control=%u right_alt=%u"
+                 " any_shift=%u any_windows=%u",
+                 facts->left_control, facts->left_alt, facts->right_control, facts->right_alt,
+                 facts->any_shift, facts->any_windows);
+        else
+          printf(" modifiers=Unknown");
+        if (std::holds_alternative<diagnostics::CommandArrival>(command.stage)) {
+          bool continued = false;
+          for (size_t next = i + 1; next != observations.count; ++next)
+            if (const auto *other =
+                    std::get_if<diagnostics::CommandObservation>(&observations.events[next]->body))
+              continued |= other->command.id == command.command.id;
+          printf(" incomplete=%u", !continued);
+        }
+        puts("");
+      }
+    }
     for (size_t i = 0; i != s.refusals.size(); ++i)
       if (s.refusals[i])
         printf(" refusal_count_stage=%ls count=%lu\n", diagnostics::stage_labels[i],
@@ -289,8 +336,15 @@ int wmain(int argc, wchar_t **argv) {
                              ? probe::Availability::Stale
                          : seconds ? armed[i]->Read(payload)
                                    : Existing(id, payload);
-      if (!iteration || payload != previous[i] || state != previous_states[i])
+      if (!iteration || payload != previous[i] || state != previous_states[i]) {
         Print(id, state, payload, expected);
+        probe::Snapshot before, after;
+        if (state == probe::Availability::Available &&
+            previous_states[i] == probe::Availability::Available &&
+            probe::Decode(previous[i], before) && probe::Decode(payload, after))
+          printf(" thread=%lu complete_interval=%u\n", id.thread,
+                 probe::CompleteInterval(before, after));
+      }
       previous[i] = payload;
       previous_states[i] = state;
       probe::Snapshot decoded;

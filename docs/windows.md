@@ -242,7 +242,7 @@ owned-composition and physical application acceptance under the bounded contract
 
 ### Observation protocol
 
-Protocol v1 uses a local-session page named by protocol, PID, process creation time and TID.
+Protocol v2 uses a local-session page named by protocol, PID, process creation time and TID.
 Arming refuses an existing object and gives mapping read/write rights only to the current logon
 SID through an explicit protected DACL. The publisher opens only an already armed page.
 An atomic nonblocking claim allows one service instance per thread page. A page-resident,
@@ -256,6 +256,70 @@ text, titles, paths, dictionary entries or absolute text ranges. The snapshot in
 refusal, activation and callback counters, the existing V2 lifecycle journal and owned serial,
 runtime policy/readiness and a deterministic SHA-256 digest of the Windows native sources.
 Decoding validates enums and the existing service and lifecycle invariants.
+
+The protocol-2 payload has 512 DWORDs in the same 4096-byte page. Its first 177 words keep the
+existing field order. Three observation header words hold sequence, saturation, and count.
+Thirty-two ten-word rows follow, leaving twelve required-zero words after word 499. The
+versioned mapping name isolates this layout from frozen protocol 1, whose 192-word payload
+has fifteen required-zero words after its 177 fields. COM V1 remains 220 bytes. COM V2 and
+the status codecs retain their existing contracts.
+
+Each observation row contains sequence, lifecycle cursor, owned-present, owned serial, event
+kind, command route, command intent, command arrival ID, modifier knowledge or release class,
+and release delivery. Unused rows are ten zero words. The codec in `host_probe.cpp` owns all
+numeric tags. Command kinds 1 through 6 mean arrival, admission refusal, exact-modifier
+refusal, stale-dispatch refusal, executor dispatch, and callback exception. Kind 7 means
+release. Route 1 means ordinary and 2 means preserved. Intent 1 means convert and 2 means
+reverse. Command rows have zero release delivery. Release rows have zero route, intent, and
+command ID. Release class 1 through 6 means left Ctrl, right Ctrl, left Alt, right Alt,
+unresolved Ctrl, and unresolved Alt. Delivery 1 means TEST and 2 means ACTUAL.
+
+Modifier knowledge zero means unknown. Known knowledge is `0x100 | mask`, with bits 0 through
+5 holding left Ctrl, left Alt, right Ctrl, right Alt, any Shift, and any Windows. The projection
+uses only the keyboard state already acquired by admission. Any Shift combines generic,
+left, and right Shift. Any Windows combines left and right Windows. Caps Lock, text, raw keys,
+native pointers, and raw flags have no observation fields. Generic Ctrl and Alt releases use
+their extended bit to choose left or right. Explicit sided arguments whose extended bit
+contradicts that side produce the matching unresolved class. TEST and ACTUAL release methods
+record independently and return their existing pass disposition.
+
+A preserved arrival has unknown modifiers. It permits admission refusal, exact-modifier
+refusal, stale dispatch, executor dispatch, or an actual outer callback exception. An ordinary
+arrival starts after translation recognizes manual or reverse and has known exact modifiers.
+It permits stale dispatch, executor dispatch, or an actual outer callback exception. A dispatch
+may be followed by one actual outer exception. Other terminal progress has no continuation.
+Known facts stay identical for a retained command. The decoder rejects inconsistent grammar
+and commits its output only after every field and reserved word passes validation.
+
+The inspector prints `incomplete=1` for an arrival with no retained continuation and
+`arrival_evicted=1` for a continuation whose arrival left the window. `ExecutorDispatch`
+records entry into `HandleEvent`. Attempted, verified, refused, and unknown counters describe
+the editing outcome. Each row samples owned-present separately from serial, including the
+existing allocation-saturation case where ownership has serial zero.
+
+For `lifecycle_after=c`, lifecycle event c precedes the observation, and event c+1 follows it.
+Thus a release with cursor below a retained termination sequence precedes that termination.
+An equal or larger cursor follows it. This ordering remains usable despite older evictions
+while the anchor is unsaturated. Both journals expose their own saturation. The final
+representable observation sequence is appended, marks saturation, and freezes the journal.
+Inactive tickets leave runtime handling intact. Observations survive activation changes
+within the same Service instance.
+
+`history_evicted=1` reports an evicted observation prefix. `complete_interval=1` requires
+consecutive available samples from the same mapping identity, publisher instance, native
+build, and activation, coherent overlapping rows in both histories, full intervening coverage,
+and unsaturated histories and counters. A missing baseline or `complete_interval=0` leaves
+absence unknown. Old evictions can coexist with complete coverage of a later bounded interval.
+The inspector prints snapshots with mismatched builds for diagnosis and reports their
+`build_match=0` status.
+
+Controlled mapped-Service schedules cover both command routes, pre-acquisition unknown and
+post-acquisition known refusals, exact-modifier refusal, stale dispatch, executor refusal,
+independent release identities, nested commands, and releases around exact termination.
+Pure schedules cover all 512 high-bit source combinations, strict wire rejection, overflow,
+saturation, and frozen protocol-1 header rejection. Direct `GetKeyboardState` failure and
+its call count lack an injected seam and receive source review. Physical Notepad command
+retention remains a separate acceptance gate.
 
 Windows provides [atomic aligned 32-bit access](https://learn.microsoft.com/en-us/windows/win32/sync/interlocked-variable-access).
 Writers use [interlocked stores with a full memory barrier](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-interlockedexchange)

@@ -51,6 +51,7 @@ struct LifecycleSnapshot {
 };
 class LifecycleJournal {
 public:
+  uint32_t sequence() const noexcept { return window_.sequence; }
   uint32_t Acquire() noexcept {
     uint32_t serial = 0;
     if (window_.allocated != UINT32_MAX) {

@@ -151,6 +151,11 @@ effects fault the instance. Ordinary and preserved callbacks share native admiss
 existing executor. A command GUID supplies no modifier, repeat, or document-authority facts.
 Actual Notepad delivery before termination remains unproved; see
 [the command contract](windows.md#manual-conversion-and-reversal).
+The Windows host probe uses a separate protocol-2 command and modifier-release observation
+window. Callback-local tickets preserve command identity through reentry. Lifecycle anchors
+order those content-free observations against owned termination. Dispatch records executor
+entry, and existing verified-edit diagnostics describe the resulting document outcome. See
+[the observation protocol](windows.md#observation-protocol) for retention and coverage rules.
 
 | Interface | Documented behavior | Obligation |
 |---|---|---|

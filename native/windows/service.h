@@ -86,6 +86,8 @@ private:
   bool Current(uint64_t generation) const;
   void RegisterDiagnostics() noexcept;
   void PublishObservation() noexcept;
+  diagnostics::ObservationStamp ObservationStamp() const noexcept;
+  void ObserveRelease(diagnostics::ReleaseDelivery, WPARAM, LPARAM) noexcept;
   void ObserveHost(ITfContext *);
   void UnregisterDiagnostics(ITfSourceSingle *, TfClientId) noexcept;
   void Refuse(diagnostics::Stage stage, diagnostics::Cause cause, HRESULT result = S_OK) noexcept {
@@ -120,6 +122,10 @@ private:
     bool uncertain = false;
     void Record(HRESULT result, bool absent = false) noexcept;
   };
+  struct CommandDispatch {
+    diagnostics::CommandTicket ticket;
+    diagnostics::ModifierFacts modifiers;
+  };
   struct KeyAdmission {
     Service *owner;
     ITfContext *context;
@@ -133,13 +139,13 @@ private:
     KeyAdmission(const KeyAdmission &) = delete;
     KeyAdmission &operator=(const KeyAdmission &) = delete;
     ~KeyAdmission();
-    bool Dispatch(const kr_event &);
+    bool Dispatch(const kr_event &, std::optional<CommandDispatch> = std::nullopt);
   };
   bool Preparing(ActivationEpoch) const;
   bool SameActivation(ActivationEpoch) const;
   HRESULT AcquireActivation(ActivationAttempt &);
   CleanupResult DrainActivation(ActivationResources &) noexcept;
-  std::optional<KeyAdmission> AdmitKey(ITfContext *);
+  std::optional<KeyAdmission> AdmitKey(ITfContext *, diagnostics::ModifierKnowledge * = nullptr);
   Activation activation_ = Activation::Inactive;
   ActivationEpoch activation_epoch_{0};
   bool activation_call_open_ = false;
@@ -157,6 +163,7 @@ private:
   uint32_t diagnostic_depth_ = 0;
   diagnostics::Snapshot diagnostics_;
   diagnostics::LifecycleJournal lifecycle_;
+  diagnostics::ObservationJournal observations_;
   ComPtr<ITfSourceSingle> diagnostic_source_;
   TfClientId diagnostic_client_ = TF_CLIENTID_NULL;
   const vocabulary::ModuleOwner module_owner_;

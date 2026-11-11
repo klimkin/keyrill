@@ -26,7 +26,7 @@ probe::Payload Payload(const host::Identity &id, DWORD instance, DWORD serial = 
   runtime.activation = serial;
   host::Metadata metadata;
   metadata.result = serial;
-  return probe::Encode(id, metadata, service, runtime, instance);
+  return probe::Encode(id, metadata, service, runtime, instance, {});
 }
 int Child(const wchar_t *pid_text, const wchar_t *started_text, const wchar_t *tid_text) {
   const DWORD pid = wcstoul(pid_text, nullptr, 10);
@@ -80,12 +80,184 @@ void ReaderProcess(const host::Identity &id) {
   CloseHandle(child.hThread);
   CloseHandle(child.hProcess);
 }
+void ObservationCodecSchedules(const host::Identity &id) {
+  using namespace diagnostics;
+  const ModifierFacts exact{true, true, false, false, false, false};
+  LifecycleJournal lifecycle;
+  const auto serial = lifecycle.Acquire();
+  const ObservationStamp stamp{{lifecycle.sequence()}, {true, serial}};
+  ObservationJournal journal;
+  const auto command = journal.Begin(PreservedIntent{ManualIntent::Convert}, stamp);
+  journal.Record(command, ExecutorDispatch{exact}, stamp);
+  journal.Record(command, CommandException{exact}, stamp);
+  journal.Record({ReleaseDelivery::Actual, ReleaseModifier::RightAlt}, stamp);
+  SnapshotV2 service;
+  service.base.activation = service.base.active = 1;
+  service.lifecycle = lifecycle.Copy(true, serial);
+  const auto encoded = probe::Encode(id, {}, service, {}, 1, journal.Copy());
+  probe::Snapshot decoded;
+  Require(probe::Decode(encoded, decoded) && decoded.observations == journal.Copy(),
+          "explicit protocol2 codec preserves typed command grammar and ownership");
+  const auto preserved = probe::Encode(id, decoded.metadata, decoded.service, decoded.runtime,
+                                       decoded.instance, decoded.observations);
+  Require(preserved == encoded && encoded[177] == 4 && encoded[179] == 4 && encoded[184] == 1 &&
+              encoded[194] == 5 && encoded[204] == 6 && encoded[214] == 7,
+          "protocol2 has authoritative ten-DWORD rows after frozen 177 words");
+  auto invalid_domain = journal.Copy();
+  std::get<CommandObservation>(invalid_domain.events[0]->body).command.intent =
+      static_cast<ManualIntent>(-1);
+  Require(!Valid(invalid_domain, service.lifecycle), "domain rejects negative command intent");
+  invalid_domain = journal.Copy();
+  std::get<CommandObservation>(invalid_domain.events[0]->body).command.route =
+      static_cast<CommandRoute>(-1);
+  Require(!Valid(invalid_domain, service.lifecycle), "domain rejects invalid command route");
+  invalid_domain = journal.Copy();
+  std::get<ReleaseObservation>(invalid_domain.events[3]->body).delivery =
+      static_cast<ReleaseDelivery>(-1);
+  Require(!Valid(invalid_domain, service.lifecycle), "domain rejects invalid release delivery");
+  invalid_domain = journal.Copy();
+  std::get<ReleaseObservation>(invalid_domain.events[3]->body).modifier =
+      static_cast<ReleaseModifier>(-1);
+  Require(!Valid(invalid_domain, service.lifecycle), "domain rejects invalid release modifier");
+  for (const auto &[field, value] : std::initializer_list<std::pair<size_t, DWORD>>{
+           {177, 0},     {178, 1}, {178, 2}, {179, 33},    {180, 0}, {180, 2},     {181, 2},
+           {182, 2},     {183, 2}, {184, 0}, {184, 8},     {185, 0}, {185, 3},     {186, 0},
+           {186, 3},     {187, 0}, {187, 2}, {188, 0x100}, {188, 1}, {188, 0x140}, {189, 1},
+           {194, 3},     {194, 2}, {195, 1}, {196, 2},     {197, 2}, {198, 0},     {198, 0x100},
+           {198, 0x203}, {204, 5}, {208, 0}, {208, 0x102}, {215, 1}, {216, 1},     {217, 1},
+           {218, 0},     {218, 7}, {219, 0}, {219, 3},     {220, 1}, {500, 1},     {511, 1}}) {
+    auto malformed = encoded;
+    malformed[field] = value;
+    auto unchanged = decoded;
+    Require(!probe::Decode(malformed, unchanged) &&
+                probe::Encode(id, unchanged.metadata, unchanged.service, unchanged.runtime,
+                              unchanged.instance, unchanged.observations) == encoded,
+            "hostile observation field is rejected without exposing partial output");
+  }
+  ObservationJournal incomplete;
+  const auto incomplete_ticket = incomplete.Begin(PreservedIntent{ManualIntent::Reverse}, {});
+  auto words = probe::Encode(id, {}, {}, {}, 1, incomplete.Copy());
+  Require(probe::Decode(words, decoded), "incomplete preserved arrival remains decodable");
+  incomplete.Record(incomplete_ticket, CommandException{ModifierFacts{}}, {});
+  words = probe::Encode(id, {}, {}, {}, 1, incomplete.Copy());
+  Require(probe::Decode(words, decoded) &&
+              std::holds_alternative<ModifierFacts>(Knowledge(
+                  std::get<CommandObservation>(decoded.observations.events[1]->body).stage)),
+          "known all-zero facts differ from unknown acquisition knowledge");
+  ObservationJournal overflow;
+  const auto retained_ticket = overflow.Begin(PreservedIntent{ManualIntent::Convert}, {});
+  for (size_t i = 0; i != observation_capacity; ++i)
+    overflow.Record({ReleaseDelivery::Test, ReleaseModifier::LeftControl}, {});
+  overflow.Record(retained_ticket, ExecutorDispatch{exact}, {});
+  Require(Valid(overflow.Copy(), {}) && overflow.Copy().count == observation_capacity &&
+              overflow.Copy().events[0]->sequence.value == 3 &&
+              std::get<CommandObservation>(overflow.Copy().events.back()->body)
+                      .command.id.arrival.value == 1,
+          "evicted arrivals retain command identity and contiguous visible history");
+  ObservationJournal saturated(UINT32_MAX - 33);
+  for (size_t i = 0; i != 33; ++i)
+    saturated.Record({ReleaseDelivery::Actual, ReleaseModifier::AltUnresolved}, {});
+  const auto frozen = saturated.Copy();
+  Require(frozen.saturated && frozen.sequence.value == UINT32_MAX && Valid(frozen, {}),
+          "last representable sequence is appended before saturation freezes history");
+  Require(!saturated.Begin(PreservedIntent{ManualIntent::Convert}, {}).identity,
+          "new saturated command tickets become inactive");
+  saturated.Record(retained_ticket, ExecutorDispatch{exact}, {});
+  saturated.Record({ReleaseDelivery::Test, ReleaseModifier::RightControl}, {});
+  Require(saturated.Copy() == frozen, "saturation never wraps or overwrites retained history");
+  Require(probe::Decode(probe::Encode(id, {}, {}, {}, 1, frozen), decoded) &&
+              decoded.observations == frozen,
+          "saturated history retains the final sequence through the wire codec");
+  const std::array<CommandProgress, 5> progress{
+      AdmissionRefused{exact}, ExactModifiersRefused{ModifierFacts{}}, DispatchRefused{exact},
+      ExecutorDispatch{exact}, CommandException{exact}};
+  for (bool ordinary : {false, true}) {
+    for (size_t first = 0; first != progress.size(); ++first) {
+      for (size_t second = 0; second <= progress.size(); ++second) {
+        ObservationJournal grammar;
+        const RecognizedCommand recognized =
+            ordinary ? RecognizedCommand{OrdinaryIntent{ManualIntent::Convert, exact}}
+                     : RecognizedCommand{PreservedIntent{ManualIntent::Convert}};
+        const auto ticket = grammar.Begin(recognized, {});
+        grammar.Record(ticket, progress[first], {});
+        if (second != progress.size())
+          grammar.Record(ticket, progress[second], {});
+        const bool expected =
+            (!ordinary || first >= 2) && (second == progress.size() || (first == 3 && second == 4));
+        Require(Valid(grammar.Copy(), {}) == expected &&
+                    probe::Decode(probe::Encode(id, {}, {}, {}, 1, grammar.Copy()), decoded) ==
+                        expected,
+                "both routes enforce the complete terminal-progress grammar");
+      }
+    }
+  }
+  LifecycleJournal exhausted_serials(0, UINT32_MAX);
+  const auto zero_serial = exhausted_serials.Acquire();
+  SnapshotV2 exhausted_service;
+  exhausted_service.lifecycle = exhausted_serials.Copy(true, zero_serial);
+  ObservationJournal zero_owned;
+  zero_owned.Record({ReleaseDelivery::Test, ReleaseModifier::LeftAlt},
+                    {{exhausted_serials.sequence()}, {true, zero_serial}});
+  Require(
+      probe::Decode(probe::Encode(id, {}, exhausted_service, {}, 1, zero_owned.Copy()), decoded) &&
+          decoded.observations.events[0]->stamp.owned.present &&
+          decoded.observations.events[0]->stamp.owned.composition_serial == 0,
+      "allocation saturation preserves owned-present independently from serial zero");
+  probe::Snapshot before, after;
+  Require(probe::Decode(probe::Encode(id, {}, service, {}, 1, {}), before) &&
+              probe::Decode(encoded, after) && probe::CompleteInterval(before, after),
+          "coherent same-instance build activation baseline covers both histories");
+  auto mismatch = after;
+  ++mismatch.instance;
+  Require(!probe::CompleteInterval(before, mismatch), "changed instance has no complete interval");
+  mismatch = after;
+  ++mismatch.build[0];
+  Require(!probe::CompleteInterval(before, mismatch), "changed build has no complete interval");
+  mismatch = after;
+  ++mismatch.service.base.activation;
+  Require(!probe::CompleteInterval(before, mismatch),
+          "changed activation has no complete interval");
+  Require(probe::Decode(probe::Encode(id, {}, service, {}, 1, overflow.Copy()), mismatch) &&
+              !probe::CompleteInterval(before, mismatch),
+          "observation overflow prevents complete absence claims");
+  mismatch = after;
+  mismatch.observations.events[0]->stamp.owned.present = false;
+  mismatch.observations.events[0]->stamp.owned.composition_serial = 0;
+  Require(!probe::CompleteInterval(after, mismatch), "overlap cannot rewrite sampled ownership");
+  for (size_t i = 0; i != lifecycle_capacity + 1; ++i)
+    lifecycle.Record(LifecycleKind::LifecycleInvalidation, serial, LifecycleCause::DocumentFocus);
+  service.lifecycle = lifecycle.Copy(true, serial);
+  Require(probe::Decode(probe::Encode(id, {}, service, {}, 1, journal.Copy()), mismatch) &&
+              !probe::CompleteInterval(before, mismatch),
+          "independent lifecycle overflow prevents complete absence claims");
+  std::array<DWORD, 192> protocol1_fixture{};
+  protocol1_fixture[0] = 1;
+  protocol1_fixture[24] = protocol1_fixture[25] = 1;
+  Require(std::all_of(protocol1_fixture.begin() + 177, protocol1_fixture.end(),
+                      [](DWORD word) { return word == 0; }),
+          "frozen protocol1 fixture reserves fifteen zero tail words");
+  probe::Payload unchanged_prefix{};
+  std::copy(protocol1_fixture.begin(), protocol1_fixture.end(), unchanged_prefix.begin());
+  Require(probe::Decode(unchanged_prefix, decoded) && decoded.service.base.activation == 1 &&
+              decoded.service.base.active && decoded.observations.count == 0,
+          "frozen protocol1 fields retain their meanings in the unchanged protocol2 prefix");
+  protocol1_fixture[177] = 1;
+  Require(!std::all_of(protocol1_fixture.begin() + 177, protocol1_fixture.end(),
+                       [](DWORD word) { return word == 0; }),
+          "assigning protocol1 reserved tail violates its frozen fixture contract");
+  probe::Page legacy{};
+  probe::Initialize(legacy, id);
+  legacy.header[1] = 1;
+  legacy.header[3] = 192;
+  Require(!probe::Matches(legacy, id), "protocol2 rejects frozen protocol1 header");
+}
 } // namespace
 int wmain(int argc, wchar_t **argv) {
   if (argc == 5 && wcscmp(argv[1], L"--reader") == 0)
     return Child(argv[2], argv[3], argv[4]);
   Require(argc == 1, "known diagnostic schedule mode");
   const auto id = Current();
+  ObservationCodecSchedules(id);
   probe::Publisher absent;
   absent.Attach(id);
   Require(!absent.instance(), "missing arm disables publication");

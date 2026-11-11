@@ -1,6 +1,7 @@
 #include "host_probe.h"
 #include "host_build.h"
 #include <sddl.h>
+#include <type_traits>
 #include <vector>
 
 namespace keyrill::probe {
@@ -9,6 +10,170 @@ constexpr LONG magic = 0x4b525031;
 DWORD Load(const volatile LONG &value) noexcept { return static_cast<DWORD>(value); }
 void Store(volatile LONG &field, DWORD value) noexcept {
   InterlockedExchange(&field, static_cast<LONG>(value));
+}
+using ObservationRow = std::array<DWORD, 10>;
+DWORD EncodeKnowledge(const diagnostics::ModifierKnowledge &knowledge) noexcept {
+  const auto *facts = std::get_if<diagnostics::ModifierFacts>(&knowledge);
+  if (!facts)
+    return 0;
+  return 0x100u | static_cast<DWORD>(facts->left_control) |
+         (static_cast<DWORD>(facts->left_alt) << 1) |
+         (static_cast<DWORD>(facts->right_control) << 2) |
+         (static_cast<DWORD>(facts->right_alt) << 3) | (static_cast<DWORD>(facts->any_shift) << 4) |
+         (static_cast<DWORD>(facts->any_windows) << 5);
+}
+bool DecodeKnowledge(DWORD word, diagnostics::ModifierKnowledge &output) noexcept {
+  if (!word) {
+    output = diagnostics::UnknownModifiers{};
+    return true;
+  }
+  if ((word & ~0x3fu) != 0x100u)
+    return false;
+  output = diagnostics::ModifierFacts{(word & 1) != 0, (word & 2) != 0,  (word & 4) != 0,
+                                      (word & 8) != 0, (word & 16) != 0, (word & 32) != 0};
+  return true;
+}
+DWORD EncodeRelease(diagnostics::ReleaseModifier modifier) noexcept {
+  using diagnostics::ReleaseModifier;
+  switch (modifier) {
+  case ReleaseModifier::LeftControl:
+    return 1;
+  case ReleaseModifier::RightControl:
+    return 2;
+  case ReleaseModifier::LeftAlt:
+    return 3;
+  case ReleaseModifier::RightAlt:
+    return 4;
+  case ReleaseModifier::ControlUnresolved:
+    return 5;
+  case ReleaseModifier::AltUnresolved:
+    return 6;
+  }
+  return 0;
+}
+bool DecodeRelease(DWORD word, diagnostics::ReleaseModifier &modifier) noexcept {
+  using diagnostics::ReleaseModifier;
+  switch (word) {
+  case 1:
+    modifier = ReleaseModifier::LeftControl;
+    return true;
+  case 2:
+    modifier = ReleaseModifier::RightControl;
+    return true;
+  case 3:
+    modifier = ReleaseModifier::LeftAlt;
+    return true;
+  case 4:
+    modifier = ReleaseModifier::RightAlt;
+    return true;
+  case 5:
+    modifier = ReleaseModifier::ControlUnresolved;
+    return true;
+  case 6:
+    modifier = ReleaseModifier::AltUnresolved;
+    return true;
+  default:
+    return false;
+  }
+}
+ObservationRow
+EncodeObservation(const std::optional<diagnostics::ObservationEvent> &slot) noexcept {
+  if (!slot)
+    return {};
+  const auto &event = *slot;
+  ObservationRow row{event.sequence.value, event.stamp.after.value, event.stamp.owned.present,
+                     event.stamp.owned.composition_serial};
+  if (const auto *release = std::get_if<diagnostics::ReleaseObservation>(&event.body)) {
+    row[4] = 7;
+    row[8] = EncodeRelease(release->modifier);
+    row[9] = release->delivery == diagnostics::ReleaseDelivery::Test ? 1 : 2;
+  } else {
+    const auto &command = std::get<diagnostics::CommandObservation>(event.body);
+    row[4] = std::visit(
+        [](const auto &stage) -> DWORD {
+          using T = std::decay_t<decltype(stage)>;
+          if constexpr (std::is_same_v<T, diagnostics::CommandArrival>)
+            return 1;
+          else if constexpr (std::is_same_v<T, diagnostics::AdmissionRefused>)
+            return 2;
+          else if constexpr (std::is_same_v<T, diagnostics::ExactModifiersRefused>)
+            return 3;
+          else if constexpr (std::is_same_v<T, diagnostics::DispatchRefused>)
+            return 4;
+          else if constexpr (std::is_same_v<T, diagnostics::ExecutorDispatch>)
+            return 5;
+          else {
+            static_assert(std::is_same_v<T, diagnostics::CommandException>);
+            return 6;
+          }
+        },
+        command.stage);
+    row[5] = command.command.route == diagnostics::CommandRoute::Ordinary ? 1 : 2;
+    row[6] = command.command.intent == ManualIntent::Convert ? 1 : 2;
+    row[7] = command.command.id.arrival.value;
+    row[8] = EncodeKnowledge(diagnostics::Knowledge(command.stage));
+  }
+  return row;
+}
+bool DecodeObservation(const ObservationRow &row,
+                       std::optional<diagnostics::ObservationEvent> &output) noexcept {
+  using namespace diagnostics;
+  if (row == ObservationRow{}) {
+    output.reset();
+    return true;
+  }
+  if (!row[0] || row[2] > 1)
+    return false;
+  ObservationEvent event{{row[0]}, {{row[1]}, {row[2] != 0, row[3]}}, {}};
+  if (row[4] == 7) {
+    ReleaseModifier modifier;
+    if (row[5] || row[6] || row[7] || !DecodeRelease(row[8], modifier) ||
+        (row[9] != 1 && row[9] != 2))
+      return false;
+    event.body =
+        ReleaseObservation{row[9] == 1 ? ReleaseDelivery::Test : ReleaseDelivery::Actual, modifier};
+  } else {
+    ModifierKnowledge knowledge;
+    if ((row[5] != 1 && row[5] != 2) || (row[6] != 1 && row[6] != 2) || row[9] ||
+        !DecodeKnowledge(row[8], knowledge))
+      return false;
+    const auto *facts = std::get_if<ModifierFacts>(&knowledge);
+    CommandStage stage;
+    switch (row[4]) {
+    case 1:
+      stage = CommandArrival{knowledge};
+      break;
+    case 2:
+      stage = AdmissionRefused{knowledge};
+      break;
+    case 3:
+      if (!facts)
+        return false;
+      stage = ExactModifiersRefused{*facts};
+      break;
+    case 4:
+      if (!facts)
+        return false;
+      stage = DispatchRefused{*facts};
+      break;
+    case 5:
+      if (!facts)
+        return false;
+      stage = ExecutorDispatch{*facts};
+      break;
+    case 6:
+      stage = CommandException{knowledge};
+      break;
+    default:
+      return false;
+    }
+    event.body = CommandObservation{{{{row[7]}},
+                                     row[5] == 1 ? CommandRoute::Ordinary : CommandRoute::Preserved,
+                                     row[6] == 1 ? ManualIntent::Convert : ManualIntent::Reverse},
+                                    stage};
+  }
+  output = event;
+  return true;
 }
 } // namespace
 bool Name(const host::Identity &id, wchar_t (&name)[128]) noexcept {
@@ -44,7 +209,7 @@ bool Matches(const Page &page, const host::Identity &id) noexcept {
 }
 Payload Encode(const host::Identity &id, const host::Metadata &metadata,
                const diagnostics::SnapshotV2 &service_v2, const runtime::Snapshot &runtime,
-               DWORD instance) noexcept {
+               DWORD instance, const diagnostics::ObservationWindow &observations) noexcept {
   Payload words{};
   const auto &service = service_v2.base;
   size_t index = 0;
@@ -110,12 +275,20 @@ Payload Encode(const host::Identity &id, const host::Metadata &metadata,
     add(static_cast<DWORD>(runtime.sources[i]));
     add(static_cast<DWORD>(runtime.source_errors[i]));
   }
+  add(observations.sequence.value);
+  add(observations.saturated);
+  add(observations.count);
+  for (const auto &event : observations.events)
+    for (const auto word : EncodeObservation(event))
+      add(word);
   return words;
 }
 bool Decode(const Payload &words, Snapshot &output) noexcept {
   static_assert(14 + 10 + 9 + diagnostics::counter_count + diagnostics::stage_count + 8 + 6 +
-                    5 * diagnostics::lifecycle_capacity + 12 <=
-                payload_words);
+                    5 * diagnostics::lifecycle_capacity + 12 ==
+                observation_offset);
+  static_assert(observation_offset + 3 + 10 * diagnostics::observation_capacity == 500 &&
+                500 + 12 == payload_words);
   Snapshot candidate;
   size_t index = 0;
   auto next = [&]() { return words[index++]; };
@@ -183,10 +356,25 @@ bool Decode(const Payload &words, Snapshot &output) noexcept {
     r.sources[i] = static_cast<vocabulary::Status>(next());
     r.source_errors[i] = static_cast<vocabulary::Error>(next());
   }
+  auto &observations = candidate.observations;
+  observations.sequence.value = next();
+  const auto saturated = next();
+  if (saturated > 1)
+    return false;
+  observations.saturated = saturated != 0;
+  observations.count = next();
+  for (auto &event : observations.events) {
+    ObservationRow row;
+    for (auto &word : row)
+      word = next();
+    if (!DecodeObservation(row, event))
+      return false;
+  }
   if (!candidate.instance || candidate.kind > host::Kind::PackagedNotepad ||
       m.reason > host::Reason::Exception || m.focus > host::Focus::Windowless ||
       m.scope > host::Scope::Ambiguous || m.entered > 1 || m.completed > m.entered ||
       m.selection > 1 || m.acp > m.selection || !diagnostics::Valid(candidate.service) ||
+      !diagnostics::Valid(observations, candidate.service.lifecycle) ||
       r.requested > KR_POLICY_MODEL || r.effective > KR_POLICY_MODEL || r.model_ready > 1 ||
       r.error > vocabulary::Error::Cancelled ||
       r.configuration_error > vocabulary::Error::Cancelled)
@@ -199,6 +387,37 @@ bool Decode(const Payload &words, Snapshot &output) noexcept {
     if (words[index])
       return false;
   output = candidate;
+  return true;
+}
+bool CompleteInterval(const Snapshot &before, const Snapshot &after) noexcept {
+  const auto &a = before.observations;
+  const auto &b = after.observations;
+  const auto &la = before.service.lifecycle;
+  const auto &lb = after.service.lifecycle;
+  if (!before.instance || before.instance != after.instance || before.build != after.build ||
+      before.kind != after.kind || before.version != after.version ||
+      !before.service.base.activation ||
+      before.service.base.activation != after.service.base.activation ||
+      before.service.base.saturated || after.service.base.saturated || la.saturated ||
+      lb.saturated || a.saturated || b.saturated || !diagnostics::Valid(before.service) ||
+      !diagnostics::Valid(after.service) || !diagnostics::Valid(a, la) ||
+      !diagnostics::Valid(b, lb) || lb.sequence < la.sequence || lb.allocated < la.allocated ||
+      lb.sequence - la.sequence > lb.count || b.sequence.value < a.sequence.value ||
+      b.sequence.value - a.sequence.value > b.count)
+    return false;
+  const auto lifecycle_oldest = lb.sequence - lb.count;
+  for (size_t i = 0; i != la.count; ++i)
+    if (la.events[i].sequence > lifecycle_oldest &&
+        la.events[i] != lb.events[la.events[i].sequence - lifecycle_oldest - 1])
+      return false;
+  const auto oldest = b.sequence.value - b.count;
+  for (size_t i = 0; i != a.count; ++i)
+    if (a.events[i]->sequence.value > oldest &&
+        a.events[i] != b.events[a.events[i]->sequence.value - oldest - 1])
+      return false;
+  if (b.sequence.value > a.sequence.value &&
+      b.events[a.sequence.value - oldest]->stamp.after.value < la.sequence)
+    return false;
   return true;
 }
 Availability Read(const Page &page, const host::Identity &id, Payload &output) noexcept {

@@ -15,6 +15,7 @@
 #include <map>
 #include <olectl.h>
 #include <thread>
+#include <tuple>
 #include <vector>
 #include <winioctl.h>
 
@@ -4559,6 +4560,330 @@ void HostPublicationEquivalence() {
   Require(armed.Read(payload) == probe::Availability::Missing,
           "service destruction releases only its publisher claim");
 }
+probe::Snapshot ReadCommandObservations(const probe::ArmedPage &armed) {
+  probe::Payload payload;
+  probe::Snapshot snapshot;
+  Require(armed.Read(payload) == probe::Availability::Available && probe::Decode(payload, snapshot),
+          "actual Service publisher exposes a strictly valid observation window");
+  return snapshot;
+}
+diagnostics::CommandObservation ObservedCommand(const probe::Snapshot &snapshot, size_t index) {
+  Require(index < snapshot.observations.count &&
+              std::holds_alternative<diagnostics::CommandObservation>(
+                  snapshot.observations.events[index]->body),
+          "expected typed command observation exists");
+  return std::get<diagnostics::CommandObservation>(snapshot.observations.events[index]->body);
+}
+void CommandObservationSchedules() {
+  using namespace diagnostics;
+  const int source_keys[] = {VK_LCONTROL, VK_LMENU,  VK_RCONTROL, VK_RMENU, VK_SHIFT,
+                             VK_LSHIFT,   VK_RSHIFT, VK_LWIN,     VK_RWIN};
+  for (unsigned mask = 0; mask != 512; ++mask) {
+    BYTE state[256]{};
+    for (unsigned bit = 0; bit != 9; ++bit)
+      state[source_keys[bit]] = (mask & (1u << bit)) ? 0x80 : 0;
+    const auto facts = ProjectModifiers(state);
+    Require(Exact(facts) == ExactCommandModifiers(state),
+            "six-fact projection exhaustively preserves the nine-high-bit predicate");
+    state[VK_CAPITAL] = state['K'] = 0xff;
+    state[VK_CONTROL] = state[VK_MENU] = 0x81;
+    Require(ProjectModifiers(state) == facts,
+            "toggle generic and ordinary key state never enter modifier facts");
+  }
+  host::Identity identity;
+  Require(host::Capture(GetCurrentProcess(), GetCurrentProcessId(), GetCurrentThreadId(), identity),
+          "command observation process identity captured");
+  probe::ArmedPage armed;
+  Require(armed.Create(identity), "command schedules arm actual Service publisher");
+  ObservationWindow content_independent;
+  for (int variation = 0; variation != 2; ++variation) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    const auto *word = variation ? L"hello" : L"ghbdtn";
+    h.Type(word);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_CAPITAL, variation ? 1 : 0);
+    keyboard.Set('Q', variation ? 0x81 : 0);
+    Require(!Preserved(h, 'K'), "nonexact modifiers pass independently of document text");
+    const auto observed = ReadCommandObservations(armed).observations;
+    if (!variation)
+      content_independent = observed;
+    else
+      Require(observed == content_independent,
+              "different raw text and irrelevant keyboard facts produce identical observations");
+    h.Oracle(word, variation ? 12 : 13);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    Require(keyboard.Down(h, 'K') && keyboard.Down(h, 'Z'),
+            "ordinary unmodified K and Z remain ordinary text");
+    h.Oracle(L"kz", 9);
+    Require(!keyboard.Down(h, VK_SHIFT) && ReadCommandObservations(armed).observations.count == 0,
+            "ordinary text and modifier-only translation never invent command identities");
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    const auto old = DiagnosticSnapshot(*h.service.Get());
+    auto *composition = h.a.composition.Get();
+    const int writes = h.a.writes;
+    Require(Preserved(h, 'K') && Preserved(h, 'Z'), "both known preserved commands execute");
+    h.Oracle(L"ghbdtn", 13);
+    auto observed = ReadCommandObservations(armed);
+    Require(
+        observed.observations.count == 4 &&
+            ObservedCommand(observed, 0).command.intent == ManualIntent::Convert &&
+            ObservedCommand(observed, 2).command.intent == ManualIntent::Reverse &&
+            std::holds_alternative<CommandArrival>(ObservedCommand(observed, 0).stage) &&
+            std::holds_alternative<ExecutorDispatch>(ObservedCommand(observed, 1).stage) &&
+            std::holds_alternative<UnknownModifiers>(
+                Knowledge(ObservedCommand(observed, 0).stage)) &&
+            Exact(std::get<ModifierFacts>(Knowledge(ObservedCommand(observed, 1).stage))) &&
+            DiagnosticSnapshot(*h.service.Get()).counts[static_cast<size_t>(Counter::KeyEntered)] ==
+                old.counts[static_cast<size_t>(Counter::KeyEntered)] &&
+            h.a.writes == writes + 2 && h.a.composition.Get() == composition &&
+            h.a.max_request_writes == 1,
+        "preserved observations retain route intent modifiers and exact old execution oracles");
+    const auto before_unknown = observed.observations;
+    const auto old_unknown = DiagnosticSnapshot(*h.service.Get());
+    const auto calls = profile.active_calls;
+    BOOL eaten = TRUE;
+    Require(h.service->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
+                h.service->OnPreservedKey(&h.a, commands[0].id, nullptr) == E_POINTER &&
+                ReadCommandObservations(armed).observations == before_unknown &&
+                DiagnosticSnapshot(*h.service.Get()) == old_unknown &&
+                profile.active_calls == calls,
+            "unknown GUID and missing output preserve both journals and native query counts");
+    Require(keyboard.Down(h, 'K') && keyboard.Down(h, 'Z'), "ordinary recognized commands execute");
+    h.Oracle(L"ghbdtn", 13);
+    observed = ReadCommandObservations(armed);
+    Require(
+        observed.observations.count == 8 &&
+            ObservedCommand(observed, 4).command.route == CommandRoute::Ordinary &&
+            ObservedCommand(observed, 6).command.intent == ManualIntent::Reverse &&
+            std::holds_alternative<ModifierFacts>(Knowledge(ObservedCommand(observed, 4).stage)) &&
+            DiagnosticSnapshot(*h.service.Get()).counts[static_cast<size_t>(Counter::KeyEntered)] ==
+                old.counts[static_cast<size_t>(Counter::KeyEntered)] + 2 &&
+            DiagnosticSnapshot(*h.service.Get()).counts[static_cast<size_t>(Counter::Consumed)] ==
+                old.counts[static_cast<size_t>(Counter::Consumed)] + 2,
+        "ordinary intent begins after translator recognition and keeps ordinary counters");
+    const auto before_release = DiagnosticSnapshot(*h.service.Get());
+    const int reads = h.a.reads, release_writes = h.a.writes;
+    for (const auto &[key, extended, expected] :
+         std::initializer_list<std::tuple<WPARAM, bool, ReleaseModifier>>{
+             {VK_CONTROL, false, ReleaseModifier::LeftControl},
+             {VK_CONTROL, true, ReleaseModifier::RightControl},
+             {VK_MENU, false, ReleaseModifier::LeftAlt},
+             {VK_MENU, true, ReleaseModifier::RightAlt},
+             {VK_LCONTROL, false, ReleaseModifier::LeftControl},
+             {VK_LCONTROL, true, ReleaseModifier::ControlUnresolved},
+             {VK_RCONTROL, false, ReleaseModifier::ControlUnresolved},
+             {VK_RCONTROL, true, ReleaseModifier::RightControl},
+             {VK_LMENU, false, ReleaseModifier::LeftAlt},
+             {VK_LMENU, true, ReleaseModifier::AltUnresolved},
+             {VK_RMENU, false, ReleaseModifier::AltUnresolved},
+             {VK_RMENU, true, ReleaseModifier::RightAlt}}) {
+      for (bool actual : {false, true}) {
+        const auto sequence = ReadCommandObservations(armed).observations.sequence.value;
+        eaten = TRUE;
+        const LPARAM flags = extended ? (LPARAM{1} << 24) : 0;
+        const auto result = actual ? h.service->OnKeyUp(&h.a, key, flags, &eaten)
+                                   : h.service->OnTestKeyUp(&h.a, key, flags, &eaten);
+        observed = ReadCommandObservations(armed);
+        const auto &release = std::get<ReleaseObservation>(
+            observed.observations.events[observed.observations.count - 1]->body);
+        Require(result == S_OK && !eaten && observed.observations.sequence.value == sequence + 1 &&
+                    release.modifier == expected &&
+                    release.delivery == (actual ? ReleaseDelivery::Actual : ReleaseDelivery::Test),
+                "each release method independently records one derived side and callback identity");
+      }
+    }
+    const auto release_history = observed.observations;
+    Require(h.service->OnKeyUp(&h.a, VK_CONTROL, 0, nullptr) == E_POINTER &&
+                h.service->OnTestKeyUp(&h.a, VK_MENU, 0, nullptr) == E_POINTER &&
+                h.service->OnKeyUp(&h.a, 'K', 0, &eaten) == S_OK && !eaten,
+            "null and irrelevant release arguments preserve exact HRESULT and pass disposition");
+    std::thread foreign([&] {
+      eaten = TRUE;
+      Require(h.service->OnKeyUp(&h.a, VK_CONTROL, 0, &eaten) == S_OK && !eaten,
+              "foreign actual release retains its existing pass result");
+      eaten = TRUE;
+      Require(h.service->OnTestKeyUp(&h.a, VK_MENU, 0, &eaten) == S_OK && !eaten,
+              "foreign test release retains its existing pass result");
+    });
+    foreign.join();
+    Require(ReadCommandObservations(armed).observations == release_history &&
+                DiagnosticSnapshot(*h.service.Get()) == before_release && h.a.reads == reads &&
+                h.a.writes == release_writes && h.a.composition.Get() == composition &&
+                profile.active_calls == calls + 2,
+            "release observations add no queries text access old diagnostics or editing effects");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  for (int extra : {0, 1, VK_RCONTROL, VK_RMENU, VK_LSHIFT, VK_RSHIFT, VK_LWIN, VK_RWIN}) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    keyboard.Set(VK_LCONTROL, extra == 0 ? 0 : 0x80);
+    keyboard.Set(VK_LMENU, extra == 1 ? 0 : 0x80);
+    if (extra > 1)
+      keyboard.Set(extra, 0x80);
+    const auto before = DiagnosticSnapshot(*h.service.Get());
+    const int reads = h.a.reads, writes = h.a.writes;
+    Require(!Preserved(h, 'K'), "exact modifier refusal retains its pass disposition");
+    const auto observed = ReadCommandObservations(armed);
+    Require(
+        observed.observations.count == 2 &&
+            std::holds_alternative<ExactModifiersRefused>(ObservedCommand(observed, 1).stage) &&
+            !Exact(std::get<ModifierFacts>(Knowledge(ObservedCommand(observed, 1).stage))) &&
+            DiagnosticSnapshot(*h.service.Get()) == before && h.a.reads == reads &&
+            h.a.writes == writes,
+        "modifier refusal records known facts without inventing old refusals or inspecting text");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  for (int scenario = 0; scenario != 6; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    const int reads = h.a.reads, writes = h.a.writes;
+    const auto old = DiagnosticSnapshot(*h.service.Get());
+    if (scenario == 1)
+      profile.active_result = E_ACCESSDENIED;
+    if (scenario == 2)
+      profile.hook = [](const char *) { throw 1; };
+    if (scenario == 3) {
+      h.a.callback = false;
+      h.a.request_result = E_ACCESSDENIED;
+    }
+    bool nested = false;
+    if (scenario == 4)
+      profile.release_hook = [&] {
+        if (!std::exchange(nested, true))
+          h.service->OnSetFocus(FALSE);
+      };
+    if (scenario == 5)
+      profile.hook = [&](const char *) {
+        if (!std::exchange(nested, true)) {
+          BOOL eaten = TRUE;
+          Require(h.service->OnPreservedKey(&h.a, commands[1].id, &eaten) == S_OK && !eaten,
+                  "nested command reentry refuses before keyboard acquisition");
+        }
+      };
+    BOOL eaten = TRUE;
+    const auto result =
+        h.service->OnPreservedKey(scenario == 0 ? nullptr : &h.a, commands[0].id, &eaten);
+    profile.hook = nullptr;
+    profile.release_hook = nullptr;
+    const auto observed = ReadCommandObservations(armed);
+    const auto last = ObservedCommand(observed, observed.observations.count - 1);
+    Require(result == (scenario == 2 ? E_FAIL : S_OK) && !eaten && h.a.reads == reads &&
+                h.a.writes == writes,
+            "admission stale dispatch exception and executor refusal retain old no-text outcomes");
+    if (scenario <= 1)
+      Require(std::holds_alternative<AdmissionRefused>(last.stage) &&
+                  (std::holds_alternative<ModifierFacts>(Knowledge(last.stage)) == (scenario == 1)),
+              "pre-acquisition refusal is unknown and post-acquisition refusal is known");
+    if (scenario == 2)
+      Require(std::holds_alternative<CommandException>(last.stage),
+              "actual outer callback catch records exception instead of inferred refusal");
+    if (scenario == 3)
+      Require(std::holds_alternative<ExecutorDispatch>(last.stage) &&
+                  observed.service.base.counts[static_cast<size_t>(Counter::HandleEntered)] ==
+                      old.counts[static_cast<size_t>(Counter::HandleEntered)] + 1 &&
+                  observed.service.base.latest.result == static_cast<uint32_t>(E_ACCESSDENIED),
+              "executor dispatch records entry while actual native HRESULT explains no edit");
+    if (scenario == 4)
+      Require(std::holds_alternative<DispatchRefused>(last.stage) &&
+                  observed.service.base.counts[static_cast<size_t>(Counter::HandleEntered)] ==
+                      old.counts[static_cast<size_t>(Counter::HandleEntered)],
+              "stale dispatch never claims executor entry");
+    if (scenario == 5)
+      Require(observed.observations.count == 4 &&
+                  ObservedCommand(observed, 0).command.id !=
+                      ObservedCommand(observed, 1).command.id &&
+                  std::holds_alternative<UnknownModifiers>(
+                      Knowledge(ObservedCommand(observed, 2).stage)) &&
+                  std::holds_alternative<ModifierFacts>(Knowledge(last.stage)) &&
+                  last.command.id == ObservedCommand(observed, 0).command.id,
+              "nested callbacks preserve separate value tickets and callback-local modifier facts");
+    h.Oracle(L"ghbdtn", 13);
+  }
+  for (int scenario = 0; scenario != 10; ++scenario) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    if (scenario == 0)
+      h.a.window = GetDlgItem(h.root, 103);
+    if (scenario == 1)
+      h.a.window = GetDlgItem(h.root, 104);
+    if (scenario == 2)
+      h.a.scope = IS_PASSWORD;
+    if (scenario == 3)
+      h.a.disabled = true;
+    if (scenario == 4)
+      h.a.status = TF_SD_READONLY;
+    if (scenario == 5)
+      h.a.window = h.root;
+    if (scenario == 6)
+      h.a.scope = IS_EMAIL_SMTPEMAILADDRESS;
+    if (scenario == 7)
+      h.manager.disabled = true;
+    if (scenario == 8)
+      h.a.foreign = true;
+    if (scenario == 9)
+      h.manager.top = &h.b;
+    ::SetFocus(h.a.window);
+    Require(!Preserved(h, 'K') && !h.a.reads && !h.a.writes && !h.a.starts && !h.b.reads &&
+                !h.b.writes && !h.b.starts,
+            "observed excluded uncertain secure and read-only commands retain zero text effects");
+    const auto observed = ReadCommandObservations(armed);
+    Require(observed.observations.count == 2 &&
+                std::holds_alternative<ExecutorDispatch>(ObservedCommand(observed, 1).stage),
+            "executor admission refusal remains distinct from command admission progress");
+    h.Oracle(L"", 7);
+  }
+  {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    keyboard.Set(VK_LCONTROL, 0x80);
+    keyboard.Set(VK_LMENU, 0x80);
+    bool nested = false;
+    profile.hook = [&](const char *) {
+      if (std::exchange(nested, true))
+        return;
+      BOOL eaten = TRUE;
+      Require(h.service->OnTestKeyUp(&h.a, VK_CONTROL, 0, &eaten) == S_OK && !eaten &&
+                  h.service->OnCompositionTerminated(123, h.a.composition.Get()) == S_OK &&
+                  h.service->OnKeyUp(&h.a, VK_MENU, 0, &eaten) == S_OK && !eaten,
+              "nested releases bracket exact host termination");
+    };
+    Require(!Preserved(h, 'K'), "termination invalidates outer captured admission");
+    profile.hook = nullptr;
+    const auto observed = ReadCommandObservations(armed);
+    Require(observed.observations.count == 4 &&
+                observed.observations.events[1]->stamp.owned.present &&
+                !observed.observations.events[2]->stamp.owned.present &&
+                observed.observations.events[1]->stamp.after.value <
+                    observed.observations.events[2]->stamp.after.value &&
+                std::holds_alternative<AdmissionRefused>(ObservedCommand(observed, 3).stage),
+            "actual mapped publication preserves release ownership and lifecycle anchor order");
+    h.Oracle(L"ghbdtn", 13);
+  }
+}
 void DiagnosticCodecSchedules() {
   using namespace diagnostics;
   Require(SameActivation(true, 1, 1) && !SameActivation(false, 1, 1) &&
@@ -6830,6 +7155,7 @@ int wmain(int argc, wchar_t **argv) {
   puts("RUN actual service diagnostic codec");
   HostMetadataSchedules();
   HostPublicationEquivalence();
+  CommandObservationSchedules();
   DiagnosticCodecSchedules();
   LifecycleCodecSchedules();
   LifecycleServiceSchedules();

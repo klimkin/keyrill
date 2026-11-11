@@ -803,7 +803,19 @@ void Service::PublishObservation() noexcept {
   complete.base = snapshot;
   complete.lifecycle = lifecycle_.Copy(owned_ != nullptr, owned_ ? owned_->diagnostic_serial : 0);
   host_publisher_.Publish(probe::Encode(host_identity_, host_metadata_, complete, runtime_,
-                                        host_publisher_.instance()));
+                                        host_publisher_.instance(), observations_.Copy()));
+}
+diagnostics::ObservationStamp Service::ObservationStamp() const noexcept {
+  return {{lifecycle_.sequence()}, {owned_ != nullptr, owned_ ? owned_->diagnostic_serial : 0}};
+}
+void Service::ObserveRelease(diagnostics::ReleaseDelivery delivery, WPARAM key,
+                             LPARAM flags) noexcept {
+  if (GetCurrentThreadId() != thread_)
+    return;
+  if (const auto modifier = diagnostics::ClassifyRelevantRelease(key, flags)) {
+    DiagnosticCallback callback(*this);
+    observations_.Record({delivery, *modifier}, ObservationStamp());
+  }
 }
 void Service::ObserveHost(ITfContext *context) {
   if (observing_host_ || observed_generation_ == generation_ || !Current(generation_) || !context)
@@ -1259,20 +1271,30 @@ Service::KeyAdmission::~KeyAdmission() {
   if (owner)
     owner->key_admission_ = false;
 }
-bool Service::KeyAdmission::Dispatch(const kr_event &event) {
+bool Service::KeyAdmission::Dispatch(const kr_event &event,
+                                     std::optional<CommandDispatch> command) {
   auto *service = std::exchange(owner, nullptr);
   if (!service)
     return false;
   service->key_admission_ = false;
   if (!service->SameActivation(epoch) || !service->Current(generation) || service->mode_ != mode ||
       event.mode != mode) {
+    if (command)
+      service->observations_.Record(command->ticket,
+                                    diagnostics::DispatchRefused{command->modifiers},
+                                    service->ObservationStamp());
     service->Refuse(Stage::Mode, event.mode != mode ? Cause::Predicate : Cause::Stale);
     service->InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
     return false;
   }
+  if (command)
+    service->observations_.Record(command->ticket,
+                                  diagnostics::ExecutorDispatch{command->modifiers},
+                                  service->ObservationStamp());
   return service->HandleEvent(context, event);
 }
-std::optional<Service::KeyAdmission> Service::AdmitKey(ITfContext *context) {
+std::optional<Service::KeyAdmission>
+Service::AdmitKey(ITfContext *context, diagnostics::ModifierKnowledge *acquired_modifiers) {
   if (busy_ || key_admission_ || observing_host_) {
     Refuse(Stage::Key, Cause::Reentry);
     Invalidate(owned_ != nullptr);
@@ -1291,6 +1313,8 @@ std::optional<Service::KeyAdmission> Service::AdmitKey(ITfContext *context) {
     InvalidateForLifecycle(diagnostics::LifecycleCause::KeyAdmission);
     return std::nullopt;
   }
+  if (acquired_modifiers)
+    *acquired_modifiers = diagnostics::ProjectModifiers(state);
   TF_INPUTPROCESSORPROFILE profile{};
   ComPtr<ITfInputProcessorProfileMgr> manager = native_ ? native_->profiles : nullptr;
   HRESULT profile_result = S_OK;
@@ -1381,6 +1405,7 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
     return RPC_E_WRONG_THREAD;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
+  std::optional<CommandDispatch> command;
   try {
     diagnostics::Count(diagnostics_, Counter::KeyEntered);
     auto admission = AdmitKey(context);
@@ -1388,12 +1413,23 @@ HRESULT Service::OnKeyDown(ITfContext *context, WPARAM key, LPARAM flags, BOOL *
       return S_OK;
     NativeKey translated = TranslateKey(key, flags, admission->layout, admission->state);
     if (const auto *event = std::get_if<kr_event>(&translated)) {
-      *eaten = admission->Dispatch(*event);
+      if (event->role == KR_MANUAL || event->role == KR_REVERSE) {
+        const auto facts = diagnostics::ProjectModifiers(admission->state);
+        const auto intent =
+            event->role == KR_MANUAL ? ManualIntent::Convert : ManualIntent::Reverse;
+        command = CommandDispatch{
+            observations_.Begin(diagnostics::OrdinaryIntent{intent, facts}, ObservationStamp()),
+            facts};
+      }
+      *eaten = admission->Dispatch(*event, command);
       if (*eaten)
         diagnostics::Count(diagnostics_, Counter::Consumed);
     }
     return S_OK;
   } catch (...) {
+    if (command)
+      observations_.Record(command->ticket, diagnostics::CommandException{command->modifiers},
+                           ObservationStamp());
     Refuse(Stage::Key, Cause::Exception);
     Invalidate(true);
     return E_FAIL;
@@ -1411,14 +1447,19 @@ HRESULT Service::OnTestKeyDown(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
     Refuse(Stage::Test, !Active() ? Cause::Inactive : stopped_ ? Cause::Stopped : Cause::ModeUnset);
   return S_OK;
 }
-HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM, LPARAM, BOOL *eaten) {
+HRESULT Service::OnTestKeyUp(ITfContext *, WPARAM key, LPARAM flags, BOOL *eaten) {
   if (!eaten)
     return E_POINTER;
   *eaten = FALSE;
+  ObserveRelease(diagnostics::ReleaseDelivery::Test, key, flags);
   return S_OK;
 }
-HRESULT Service::OnKeyUp(ITfContext *c, WPARAM k, LPARAM l, BOOL *e) {
-  return OnTestKeyUp(c, k, l, e);
+HRESULT Service::OnKeyUp(ITfContext *, WPARAM key, LPARAM flags, BOOL *eaten) {
+  if (!eaten)
+    return E_POINTER;
+  *eaten = FALSE;
+  ObserveRelease(diagnostics::ReleaseDelivery::Actual, key, flags);
+  return S_OK;
 }
 HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
   if (!eaten)
@@ -1432,19 +1473,30 @@ HRESULT Service::OnPreservedKey(ITfContext *context, REFGUID id, BOOL *eaten) {
     return S_OK;
   ComPtr<Service> self(this);
   DiagnosticCallback callback(*this);
+  diagnostics::ModifierKnowledge modifiers = diagnostics::UnknownModifiers{};
+  const auto ticket =
+      observations_.Begin(diagnostics::PreservedIntent{command->intent}, ObservationStamp());
   try {
-    auto admission = AdmitKey(context);
-    if (!admission || !ExactCommandModifiers(admission->state))
+    auto admission = AdmitKey(context, &modifiers);
+    if (!admission) {
+      observations_.Record(ticket, diagnostics::AdmissionRefused{modifiers}, ObservationStamp());
       return S_OK;
+    }
+    const auto facts = diagnostics::ProjectModifiers(admission->state);
+    if (!ExactCommandModifiers(admission->state)) {
+      observations_.Record(ticket, diagnostics::ExactModifiersRefused{facts}, ObservationStamp());
+      return S_OK;
+    }
     kr_event event{
         static_cast<uint32_t>(command->intent == ManualIntent::Convert ? KR_MANUAL : KR_REVERSE),
         admission->mode,
         KR_CTX_INELIGIBLE,
         0,
         {}};
-    *eaten = admission->Dispatch(event);
+    *eaten = admission->Dispatch(event, CommandDispatch{ticket, facts});
     return S_OK;
   } catch (...) {
+    observations_.Record(ticket, diagnostics::CommandException{modifiers}, ObservationStamp());
     Refuse(Stage::Key, Cause::Exception);
     Invalidate(true);
     return E_FAIL;

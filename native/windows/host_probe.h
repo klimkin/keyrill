@@ -1,12 +1,14 @@
 #pragma once
+#include "command_observation.h"
 #include "host_observation.h"
 #include "runtime_diagnostics.h"
 #include "service_diagnostics.h"
 
 namespace keyrill::probe {
-inline constexpr DWORD protocol = 1;
+inline constexpr DWORD protocol = 2;
 inline constexpr size_t page_bytes = 4096;
-inline constexpr size_t payload_words = 192;
+inline constexpr size_t payload_words = 512;
+inline constexpr size_t observation_offset = 177;
 using Payload = std::array<DWORD, payload_words>;
 // Every shared access is one aligned DWORD. MSVC /volatile:ms loads and Windows
 // barriers provide the read-only side; interlocked stores provide the writer side.
@@ -27,14 +29,17 @@ struct Snapshot {
   host::Metadata metadata;
   diagnostics::SnapshotV2 service;
   runtime::Snapshot runtime;
+  diagnostics::ObservationWindow observations;
 };
 enum class Availability { Available, Missing, Busy, Incompatible, Stale };
 bool Name(const host::Identity &, wchar_t (&name)[128]) noexcept;
 void Initialize(Page &, const host::Identity &) noexcept;
 bool Matches(const Page &, const host::Identity &) noexcept;
 Payload Encode(const host::Identity &, const host::Metadata &, const diagnostics::SnapshotV2 &,
-               const runtime::Snapshot &, DWORD instance) noexcept;
+               const runtime::Snapshot &, DWORD instance,
+               const diagnostics::ObservationWindow &) noexcept;
 bool Decode(const Payload &, Snapshot &) noexcept;
+bool CompleteInterval(const Snapshot &, const Snapshot &) noexcept;
 Availability Read(const Page &, const host::Identity &, Payload &) noexcept;
 
 class Publisher {
