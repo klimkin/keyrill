@@ -67,7 +67,7 @@ fn valid_refusal(value: &[u32]) -> bool {
         }
 }
 
-fn valid_service(value: &[u32; 55]) -> bool {
+pub(crate) fn valid_service(value: &[u32; 55]) -> bool {
     if [1, 2, 4, 5, 7].iter().any(|&i| value[i] > 1)
         || value[3] > 2
         || (value[5] == 0 && value[6] != 0)
@@ -86,7 +86,7 @@ fn valid_service(value: &[u32; 55]) -> bool {
             || (value[21 + value[48] as usize] != 0 && value[21 + value[52] as usize] != 0))
 }
 
-fn valid_lifecycle(value: &[u32; 86]) -> bool {
+pub(crate) fn valid_lifecycle(value: &[u32; 86]) -> bool {
     let [sequence, allocated, saturated, count, owned, serial] = value[..6].try_into().unwrap();
     if saturated > 1
         || owned > 1

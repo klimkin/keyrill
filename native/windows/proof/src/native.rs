@@ -1,0 +1,282 @@
+//! Native lifetime and process identity evidence used only by proof tools.
+use crate::protocol::Identity;
+use windows::Win32::Foundation::*;
+use windows::Win32::Storage::Packaging::Appx::*;
+use windows::Win32::System::Diagnostics::ToolHelp::*;
+use windows::Win32::System::SystemInformation::*;
+use windows::Win32::System::Threading::*;
+use windows::core::{PCWSTR, PWSTR, Result};
+
+pub struct Handle(pub HANDLE);
+impl Drop for Handle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+pub fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
+}
+pub fn filetime(value: FILETIME) -> u64 {
+    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
+}
+pub fn started(handle: HANDLE, thread: bool) -> Result<u64> {
+    let (mut creation, mut exit, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    unsafe {
+        if thread {
+            GetThreadTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)?;
+        } else {
+            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)?;
+        }
+    }
+    Ok(filetime(creation))
+}
+pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identity> {
+    let mut identity = Identity {
+        process: pid,
+        thread,
+        started: started(process, false)?,
+        ..Identity::default()
+    };
+    let (mut machine, mut native) = (IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_UNKNOWN);
+    unsafe {
+        IsWow64Process2(process, &mut machine, Some(&mut native))?;
+    }
+    if machine != IMAGE_FILE_MACHINE_UNKNOWN || native != IMAGE_FILE_MACHINE_AMD64 {
+        return Err(windows::core::Error::from_hresult(E_FAIL));
+    }
+    let mut image = vec![0; 32768];
+    let mut length = image.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(image.as_mut_ptr()),
+            &mut length,
+        )?;
+    }
+    let path = String::from_utf16_lossy(&image[..length as usize]);
+    let base = path
+        .rsplit_once('\\')
+        .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?
+        .1;
+    if base.eq_ignore_ascii_case("KeyrillProofEditor.exe") {
+        identity.kind = 1;
+        return Ok(identity);
+    }
+    if !base.eq_ignore_ascii_case("Notepad.exe") {
+        return Ok(identity);
+    }
+    let mut family = [0; 66];
+    let mut length = family.len() as u32;
+    if unsafe { GetPackageFamilyName(process, &mut length, Some(PWSTR(family.as_mut_ptr()))) }
+        != ERROR_SUCCESS
+        || String::from_utf16_lossy(
+            &family[..family
+                .iter()
+                .position(|&word| word == 0)
+                .unwrap_or(family.len())],
+        ) != "Microsoft.WindowsNotepad_8wekyb3d8bbwe"
+    {
+        return Ok(identity);
+    }
+    let mut storage = [0u64; 512];
+    let mut size = std::mem::size_of_val(&storage) as u32;
+    if unsafe { GetPackageId(process, &mut size, Some(storage.as_mut_ptr().cast())) }
+        != ERROR_SUCCESS
+    {
+        return Ok(identity);
+    }
+    let package = unsafe { &*storage.as_ptr().cast::<PACKAGE_ID>() };
+    let package_name = package.name;
+    if package.processorArchitecture != PROCESSOR_ARCHITECTURE_AMD64.0 as u32
+        || package_name.is_null()
+        || unsafe { PCWSTR(package_name.0).to_string() }
+            .ok()
+            .as_deref()
+            != Some("Microsoft.WindowsNotepad")
+    {
+        return Ok(identity);
+    }
+    let version = unsafe { package.version.Anonymous.Anonymous };
+    identity.version = [
+        version.Major.into(),
+        version.Minor.into(),
+        version.Build.into(),
+        version.Revision.into(),
+    ];
+    identity.kind = 2;
+    Ok(identity)
+}
+pub struct Target {
+    pub process: Handle,
+    pub identity: Identity,
+}
+impl Target {
+    pub fn open(pid: u32) -> Result<Self> {
+        let process = Handle(unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )?
+        });
+        let identity = capture_identity(process.0, pid, 0)?;
+        Ok(Self { process, identity })
+    }
+    pub fn current(&self) -> bool {
+        (unsafe {
+            GetProcessId(self.process.0) == self.identity.process
+                && WaitForSingleObject(self.process.0, 0) == WAIT_TIMEOUT
+        }) && started(self.process.0, false).ok() == Some(self.identity.started)
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadState {
+    Live,
+    Exited,
+    Missing,
+    OpenFailed,
+    OwnerFailed,
+    WrongOwner,
+    WaitFailed,
+    ProcessStale,
+    ProcessFailed,
+    WrongProcess,
+}
+pub struct ThreadCheck {
+    pub state: ThreadState,
+    pub tid: u32,
+    pub owner: u32,
+    pub error: u32,
+    pub wait: u32,
+    pub process_wait: u32,
+    pub handle: Option<Handle>,
+}
+pub fn capture_thread(process: HANDLE, pid: u32, tid: u32) -> ThreadCheck {
+    let mut result = ThreadCheck {
+        state: ThreadState::OpenFailed,
+        tid,
+        owner: 0,
+        error: 0,
+        wait: WAIT_FAILED.0,
+        process_wait: WAIT_FAILED.0,
+        handle: None,
+    };
+    if !process_live(process, pid, &mut result) {
+        return result;
+    }
+    match unsafe {
+        OpenThread(
+            THREAD_QUERY_LIMITED_INFORMATION | THREAD_SYNCHRONIZE,
+            false,
+            tid,
+        )
+    } {
+        Err(error) => {
+            result.error = error.code().0 as u32 & 0xffff;
+            result.state = if result.error == ERROR_INVALID_PARAMETER.0 {
+                ThreadState::Missing
+            } else {
+                ThreadState::OpenFailed
+            };
+        }
+        Ok(handle) => {
+            result.handle = Some(Handle(handle));
+            result.owner = unsafe { GetProcessIdOfThread(handle) };
+            result.state = if result.owner == 0 {
+                result.error = unsafe { GetLastError().0 };
+                ThreadState::OwnerFailed
+            } else if result.owner != pid {
+                ThreadState::WrongOwner
+            } else {
+                let wait = unsafe { WaitForSingleObject(handle, 0) };
+                result.wait = wait.0;
+                if wait == WAIT_TIMEOUT {
+                    ThreadState::Live
+                } else if wait == WAIT_OBJECT_0 {
+                    ThreadState::Exited
+                } else {
+                    result.error = unsafe { GetLastError().0 };
+                    ThreadState::WaitFailed
+                }
+            };
+        }
+    }
+    process_live(process, pid, &mut result);
+    result
+}
+fn process_live(process: HANDLE, pid: u32, result: &mut ThreadCheck) -> bool {
+    let owner = unsafe { GetProcessId(process) };
+    if owner == 0 {
+        result.error = unsafe { GetLastError().0 };
+        result.state = ThreadState::ProcessFailed;
+        return false;
+    }
+    if owner != pid {
+        result.state = ThreadState::WrongProcess;
+        return false;
+    }
+    let wait = unsafe { WaitForSingleObject(process, 0) };
+    result.process_wait = wait.0;
+    if wait == WAIT_TIMEOUT {
+        return true;
+    }
+    result.state = if wait == WAIT_OBJECT_0 {
+        ThreadState::ProcessStale
+    } else {
+        ThreadState::ProcessFailed
+    };
+    if wait == WAIT_FAILED {
+        result.error = unsafe { GetLastError().0 };
+    }
+    false
+}
+pub fn threads(pid: u32) -> Result<Vec<u32>> {
+    let snapshot = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)? });
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut result = Vec::new();
+    if unsafe { Thread32First(snapshot.0, &mut entry) }.is_err() {
+        return Ok(result);
+    }
+    loop {
+        if entry.th32OwnerProcessID == pid {
+            if result.len() == 64 {
+                return Err(windows::core::Error::from_hresult(E_FAIL));
+            }
+            result.push(entry.th32ThreadID);
+        }
+        if unsafe { Thread32Next(snapshot.0, &mut entry) }.is_err() {
+            return Ok(result);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn thread_capture_retains_live_thread_and_rejects_wrong_process() {
+        let process = unsafe { GetCurrentProcess() };
+        let pid = unsafe { GetCurrentProcessId() };
+        let tid = unsafe { GetCurrentThreadId() };
+        let captured = capture_thread(process, pid, tid);
+        assert_eq!(captured.state, ThreadState::Live);
+        assert_eq!(captured.owner, pid);
+        assert!(captured.handle.is_some());
+        assert_eq!(
+            capture_thread(process, pid.wrapping_add(1), tid).state,
+            ThreadState::WrongProcess
+        );
+        assert!(threads(pid).unwrap().contains(&tid));
+    }
+}
