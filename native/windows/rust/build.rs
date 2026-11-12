@@ -15,6 +15,9 @@ fn identity() {
         }
     });
     println!("cargo:rerun-if-env-changed=PYTHON");
+    for directory in ["include", "crates", "native/windows"] {
+        println!("cargo:rerun-if-changed={}", root.join(directory).display());
+    }
     let listed = Command::new(&python)
         .arg(&script)
         .arg("--list")
