@@ -115,12 +115,24 @@ pub struct Endpoint {
 }
 impl Endpoint {
     pub fn discover(manager: &ITfThreadMgr) -> Result<Self, HRESULT> {
+        Self::discover_with(manager, || true)
+    }
+    pub fn discover_with(
+        manager: &ITfThreadMgr,
+        alive: impl Fn() -> bool,
+    ) -> Result<Self, HRESULT> {
         let mut raw = std::ptr::null_mut();
         let result = unsafe {
             (manager.vtable().GetFunctionProvider)(manager.as_raw(), &SERVICE_ID, &mut raw)
         };
         let provider = take_interface::<ITfFunctionProvider>(result, raw)?;
-        let identity = provider.cast::<IUnknown>().map_err(|error| error.code())?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
+        let identity: IUnknown = query_exact(&provider)?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
         let mut raw = std::ptr::null_mut();
         let result = unsafe {
             (provider.vtable().GetFunction)(
@@ -131,24 +143,47 @@ impl Endpoint {
             )
         };
         let function = take_interface::<IUnknown>(result, raw)?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
         let mut raw = std::ptr::null_mut();
         let result = unsafe {
             (function.vtable().QueryInterface)(function.as_raw(), &SNAPSHOT_IID, &mut raw)
         };
         let reader = take_interface::<IUnknown>(result, raw)?;
-        let reader_identity = reader.cast::<IUnknown>().map_err(|error| error.code())?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
+        let reader_identity: IUnknown = query_exact(&reader)?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
         if identity != reader_identity {
             return Err(E_UNEXPECTED);
         }
         Ok(Self { identity, reader })
     }
     pub fn same_provider(&self, manager: &ITfThreadMgr) -> Result<bool, HRESULT> {
+        self.same_provider_with(manager, || true)
+    }
+    pub fn same_provider_with(
+        &self,
+        manager: &ITfThreadMgr,
+        alive: impl Fn() -> bool,
+    ) -> Result<bool, HRESULT> {
         let mut raw = std::ptr::null_mut();
         let result = unsafe {
             (manager.vtable().GetFunctionProvider)(manager.as_raw(), &SERVICE_ID, &mut raw)
         };
         let provider = take_interface::<ITfFunctionProvider>(result, raw)?;
-        Ok(provider.cast::<IUnknown>().map_err(|error| error.code())? == self.identity)
+        if !alive() {
+            return Err(E_ABORT);
+        }
+        let identity: IUnknown = query_exact(&provider)?;
+        if !alive() {
+            return Err(E_ABORT);
+        }
+        Ok(identity == self.identity)
     }
     pub fn copy(&self) -> Result<ServiceSnapshot, HRESULT> {
         let mut output = ServiceSnapshot::default();
@@ -169,6 +204,11 @@ impl Endpoint {
         }
         Ok(output)
     }
+}
+fn query_exact<T: Interface>(object: &impl Interface) -> Result<T, HRESULT> {
+    let mut raw = std::ptr::null_mut();
+    let result = unsafe { object.query(&T::IID, &mut raw) };
+    take_interface(result, raw)
 }
 fn take_interface<T: Interface>(result: HRESULT, raw: *mut c_void) -> Result<T, HRESULT> {
     if raw.is_null() {
