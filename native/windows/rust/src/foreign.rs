@@ -1,8 +1,10 @@
 //! The only owner of host COM references. Generated ownership helpers stay out of this module too.
 
 pub(crate) mod registrar;
+pub(crate) mod tsf;
 
 use crate::field_contract::{Facts, HostIdentity};
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -114,6 +116,15 @@ pub(crate) fn quarantine() {
 
 struct Owner {
     pointer: NonNull<c_void>,
+    release_failed: Rc<Cell<bool>>,
+}
+
+pub(crate) struct ReleaseWitness(Rc<Cell<bool>>);
+
+impl ReleaseWitness {
+    pub(crate) fn failed(&self) -> bool {
+        self.0.get()
+    }
 }
 
 impl Drop for Owner {
@@ -122,6 +133,7 @@ impl Drop for Owner {
         // SAFETY: this owner holds exactly one reference and surrenders it once through the fence.
         let result = unsafe { kr_foreign_release(self.pointer.as_ptr(), &mut count) };
         if !result.exact() {
+            self.release_failed.set(true);
             // A throwing Release may have already deleted the object. Never retry it.
             quarantine();
         }
@@ -146,6 +158,15 @@ impl<T: Interface> Lease<T> {
     pub(crate) fn address(&self) -> usize {
         self.owner.pointer.as_ptr() as usize
     }
+
+    pub(crate) fn release_witness(&self) -> ReleaseWitness {
+        ReleaseWitness(Rc::clone(&self.owner.release_failed))
+    }
+
+    pub(crate) fn query<U: Interface>(&self) -> Result<Lease<U>, Call> {
+        // SAFETY: this Rust lease retains the host across the complete fenced acquisition.
+        unsafe { query(self.owner.pointer.as_ptr()) }
+    }
 }
 
 /// Take exactly one reference returned by an exact successful foreign acquisition.
@@ -157,7 +178,10 @@ pub(crate) unsafe fn adopt<T: Interface>(pointer: *mut c_void) -> Result<Lease<T
         });
     };
     Ok(Lease {
-        owner: Rc::new(Owner { pointer }),
+        owner: Rc::new(Owner {
+            pointer,
+            release_failed: Rc::new(Cell::new(false)),
+        }),
         interface: PhantomData,
     })
 }
@@ -178,7 +202,10 @@ pub(crate) unsafe fn retain<T: Interface>(pointer: *mut c_void) -> Result<Lease<
         return Err(result);
     }
     Ok(Lease {
-        owner: Rc::new(Owner { pointer }),
+        owner: Rc::new(Owner {
+            pointer,
+            release_failed: Rc::new(Cell::new(false)),
+        }),
         interface: PhantomData,
     })
 }

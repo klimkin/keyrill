@@ -7,6 +7,14 @@ mod com;
 #[cfg(windows)]
 #[allow(
     dead_code,
+    reason = "Journal callers transfer with the native executor and command unit."
+)]
+mod diagnostics;
+#[cfg(windows)]
+mod engine;
+#[cfg(windows)]
+#[allow(
+    dead_code,
     reason = "The shipping diagnostics path consumes this identity during migration."
 )]
 mod build_identity {

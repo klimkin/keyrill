@@ -334,6 +334,19 @@ void Basic(Api &api) {
                 std::wstring_view(description) == L"Keyrill proof service diagnostics",
             "BSTR transfers ownership");
     SysFreeString(description);
+    std::thread metadata_thread([&] {
+      GUID type_on_thread{};
+      BSTR text_on_thread = nullptr;
+      IUnknown *function_on_thread = reinterpret_cast<IUnknown *>(1);
+      Require(provider->GetType(&type_on_thread) == S_OK && type_on_thread == type &&
+                  provider->GetDescription(&text_on_thread) == S_OK && text_on_thread &&
+                  provider->GetFunction(GUID_NULL, IID_IUnknown, &function_on_thread) ==
+                      E_NOINTERFACE &&
+                  !function_on_thread,
+              "stateless provider metadata preserves any-thread contract");
+      SysFreeString(text_on_thread);
+    });
+    metadata_thread.join();
     IUnknown *function = reinterpret_cast<IUnknown *>(1);
     Require(provider->GetFunction(GUID_NULL, IID_IUnknown, &function) == E_NOINTERFACE && !function,
             "failed GetFunction clears output");

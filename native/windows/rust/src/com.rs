@@ -1,5 +1,6 @@
+use crate::diagnostics::{self, RuntimeSnapshot, Snapshot, SnapshotV2};
 use crate::foreign;
-use crate::service::{LOCKS, OBJECTS, ObjectLease, Service, WORKERS};
+use crate::service::{LOCKS, OBJECTS, ObjectLease, Service, Sinks, WORKERS};
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -9,13 +10,19 @@ use windows::Win32::Foundation::{
     LPARAM, S_FALSE, S_OK, WPARAM,
 };
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
+use windows::Win32::UI::TextServices::{
+    ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfDocumentMgr,
+    ITfInputProcessorProfileActivationSink, ITfInputProcessorProfileActivationSink_Impl,
+    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+};
 use windows::Win32::UI::TextServices::{
     ITfFunctionProvider, ITfFunctionProvider_Vtbl, ITfKeyEventSink, ITfKeyEventSink_Vtbl,
     ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
     ITfThreadMgr,
 };
 use windows_core::{
-    BOOL, BSTR, GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface, Ref, Result, implement,
+    BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, IUnknownImpl, Interface, Ref, Result, implement,
     interface,
 };
 
@@ -68,6 +75,19 @@ unsafe trait RawFunctionProvider: IUnknown {
     ) -> HRESULT;
 }
 
+#[interface("f75f909b-293a-4a7b-a172-f5a061880352")]
+unsafe trait RawSnapshotReader: IUnknown {
+    fn Copy(&self, size: u32, version: u32, output: *mut Snapshot) -> HRESULT;
+}
+#[interface("4f89429e-a955-4885-bb33-c78ad1982481")]
+unsafe trait RawSnapshotReaderV2: IUnknown {
+    fn Copy(&self, size: u32, version: u32, output: *mut SnapshotV2) -> HRESULT;
+}
+#[interface("cda9ed25-1dbc-4fb6-b2a5-bc132945e082")]
+unsafe trait RawRuntimeReader: IUnknown {
+    fn Copy(&self, size: u32, version: u32, output: *mut RuntimeSnapshot) -> HRESULT;
+}
+
 const _: () = {
     assert!(RawKeyEventSink::IID.to_u128() == ITfKeyEventSink::IID.to_u128());
     assert!(RawFunctionProvider::IID.to_u128() == ITfFunctionProvider::IID.to_u128());
@@ -75,6 +95,14 @@ const _: () = {
     assert!(align_of::<RawKeyEventSink_Vtbl>() == align_of::<ITfKeyEventSink_Vtbl>());
     assert!(size_of::<RawFunctionProvider_Vtbl>() == size_of::<ITfFunctionProvider_Vtbl>());
     assert!(align_of::<RawFunctionProvider_Vtbl>() == align_of::<ITfFunctionProvider_Vtbl>());
+    assert!(
+        std::mem::offset_of!(RawKeyEventSink_Vtbl, base__)
+            == std::mem::offset_of!(ITfKeyEventSink_Vtbl, base__)
+    );
+    assert!(
+        std::mem::offset_of!(RawFunctionProvider_Vtbl, base__)
+            == std::mem::offset_of!(ITfFunctionProvider_Vtbl, base__)
+    );
 };
 
 macro_rules! assert_method {
@@ -111,6 +139,12 @@ assert_method!(
     ITfTextInputProcessorEx,
     RawKeyEventSink,
     RawFunctionProvider,
+    RawSnapshotReader,
+    RawSnapshotReaderV2,
+    RawRuntimeReader,
+    ITfThreadMgrEventSink,
+    ITfInputProcessorProfileActivationSink,
+    ITfCompositionSink,
     Agile = false
 )]
 struct ServiceCom {
@@ -122,8 +156,8 @@ pub(crate) fn create(service: Rc<Service>) -> ITfTextInputProcessorEx {
 }
 
 impl ITfTextInputProcessor_Impl for ServiceCom_Impl {
-    fn Activate(&self, manager: Ref<'_, ITfThreadMgr>, _: u32) -> Result<()> {
-        self.service.activate(manager.is_null()).ok()
+    fn Activate(&self, manager: Ref<'_, ITfThreadMgr>, client: u32) -> Result<()> {
+        self.activate(manager, client, 0).ok()
     }
 
     fn Deactivate(&self) -> Result<()> {
@@ -132,8 +166,99 @@ impl ITfTextInputProcessor_Impl for ServiceCom_Impl {
 }
 
 impl ITfTextInputProcessorEx_Impl for ServiceCom_Impl {
-    fn ActivateEx(&self, manager: Ref<'_, ITfThreadMgr>, client: u32, _: u32) -> Result<()> {
-        self.Activate(manager, client)
+    fn ActivateEx(&self, manager: Ref<'_, ITfThreadMgr>, client: u32, flags: u32) -> Result<()> {
+        self.activate(manager, client, flags).ok()
+    }
+}
+
+impl ServiceCom_Impl {
+    fn activate(&self, manager: Ref<'_, ITfThreadMgr>, client: u32, flags: u32) -> HRESULT {
+        if !self.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
+        let _keep = self.to_interface::<ITfTextInputProcessorEx>();
+        let sinks = Sinks {
+            thread: self.as_interface::<ITfThreadMgrEventSink>().as_raw(),
+            profile: self
+                .as_interface::<ITfInputProcessorProfileActivationSink>()
+                .as_raw(),
+            keys: self.as_interface::<RawKeyEventSink>().as_raw(),
+            provider: self.as_interface::<RawFunctionProvider>().as_raw(),
+        };
+        self.service.activate(
+            manager
+                .as_ref()
+                .map_or(std::ptr::null_mut(), Interface::as_raw),
+            client,
+            flags,
+            sinks,
+        )
+    }
+}
+
+impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
+    fn OnInitDocumentMgr(&self, _: Ref<'_, ITfDocumentMgr>) -> Result<()> {
+        Ok(())
+    }
+    fn OnUninitDocumentMgr(&self, _: Ref<'_, ITfDocumentMgr>) -> Result<()> {
+        self.service
+            .checked(|| {
+                self.service.invalidate();
+                S_OK
+            })
+            .ok()
+    }
+    fn OnSetFocus(&self, _: Ref<'_, ITfDocumentMgr>, _: Ref<'_, ITfDocumentMgr>) -> Result<()> {
+        self.service
+            .checked(|| {
+                self.service.invalidate();
+                S_OK
+            })
+            .ok()
+    }
+    fn OnPushContext(
+        &self,
+        _: Ref<'_, windows::Win32::UI::TextServices::ITfContext>,
+    ) -> Result<()> {
+        self.service
+            .checked(|| {
+                self.service.invalidate();
+                S_OK
+            })
+            .ok()
+    }
+    fn OnPopContext(&self, _: Ref<'_, windows::Win32::UI::TextServices::ITfContext>) -> Result<()> {
+        self.service
+            .checked(|| {
+                self.service.invalidate();
+                S_OK
+            })
+            .ok()
+    }
+}
+
+impl ITfInputProcessorProfileActivationSink_Impl for ServiceCom_Impl {
+    fn OnActivated(
+        &self,
+        _: u32,
+        _: u16,
+        service: *const GUID,
+        _: *const GUID,
+        profile: *const GUID,
+        _: HKL,
+        flags: u32,
+    ) -> Result<()> {
+        if service.is_null() || profile.is_null() {
+            return Err(E_POINTER.into());
+        }
+        // SAFETY: the SDK callback supplies readable GUID references for its duration.
+        unsafe { self.service.profile_changed(*service, *profile, flags) }.ok()
+    }
+}
+
+impl ITfCompositionSink_Impl for ServiceCom_Impl {
+    fn OnCompositionTerminated(&self, _: u32, _: Ref<'_, ITfComposition>) -> Result<()> {
+        self.service.checked(|| S_OK).ok()
     }
 }
 
@@ -147,9 +272,11 @@ fn key(service: &Service, eaten: *mut BOOL, release: bool) -> HRESULT {
 }
 
 impl RawKeyEventSink_Impl for ServiceCom_Impl {
-    unsafe fn OnSetFocus(&self, _: BOOL) -> HRESULT {
+    unsafe fn OnSetFocus(&self, foreground: BOOL) -> HRESULT {
         self.service.checked(|| {
-            self.service.invalidate();
+            if !foreground.as_bool() {
+                self.service.invalidate();
+            }
             S_OK
         })
     }
@@ -161,7 +288,16 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
         _: LPARAM,
         eaten: *mut BOOL,
     ) -> HRESULT {
-        key(&self.service, eaten, false)
+        if eaten.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK caller supplies one writable BOOL output.
+        unsafe { eaten.write(BOOL(0)) };
+        self.service.checked(|| {
+            // SAFETY: the output remains writable after the owner-thread admission check.
+            unsafe { eaten.write(BOOL(self.service.interested() as i32)) };
+            S_OK
+        })
     }
 
     unsafe fn OnTestKeyUp(
@@ -192,11 +328,9 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
         if output.is_null() {
             return E_POINTER;
         }
-        self.service.entry(|| {
-            // SAFETY: the COM caller supplies one writable GUID.
-            unsafe { output.write(SERVICE_ID) };
-            S_OK
-        })
+        // SAFETY: the COM caller supplies one writable GUID, initialized before fallible work.
+        unsafe { output.write(SERVICE_ID) };
+        fence(|| S_OK)
     }
 
     unsafe fn GetDescription(&self, output: *mut *mut c_void) -> HRESULT {
@@ -205,8 +339,14 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
         }
         // SAFETY: the COM caller supplies a writable pointer slot.
         unsafe { output.write(std::ptr::null_mut()) };
-        self.service.entry(|| {
-            let description = BSTR::from("Keyrill proof service diagnostics");
+        fence(|| {
+            let literal = windows_core::w!("Keyrill proof service diagnostics");
+            // SAFETY: w! provides a static, zero-terminated UTF-16 string.
+            let description =
+                unsafe { windows::Win32::Foundation::SysAllocStringLen(Some(literal.as_wide())) };
+            if description.is_empty() {
+                return windows::Win32::Foundation::E_OUTOFMEMORY;
+            }
             // SAFETY: ownership of the allocated BSTR is transferred to the caller.
             unsafe { output.write(description.into_raw().cast_mut().cast()) };
             S_OK
@@ -215,8 +355,8 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
 
     unsafe fn GetFunction(
         &self,
-        _: *const GUID,
-        _: *const GUID,
+        function: *const GUID,
+        id: *const GUID,
         output: *mut *mut c_void,
     ) -> HRESULT {
         if output.is_null() {
@@ -224,7 +364,100 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
         }
         // SAFETY: the COM caller supplies a writable pointer slot.
         unsafe { output.write(std::ptr::null_mut()) };
-        self.service.entry(|| E_NOINTERFACE)
+        if function.is_null() || id.is_null() {
+            return E_POINTER;
+        }
+        fence(|| {
+            // SAFETY: the SDK caller supplies two readable GUID references.
+            let (function, id) = unsafe { (*function, *id) };
+            if function != GUID::zeroed() {
+                return E_NOINTERFACE;
+            }
+            let interface = if id == diagnostics::SNAPSHOT_IID {
+                self.as_interface::<RawSnapshotReader>()
+                    .to_owned()
+                    .into_raw()
+            } else if id == diagnostics::SNAPSHOT_V2_IID {
+                self.as_interface::<RawSnapshotReaderV2>()
+                    .to_owned()
+                    .into_raw()
+            } else if id == diagnostics::RUNTIME_IID {
+                self.as_interface::<RawRuntimeReader>()
+                    .to_owned()
+                    .into_raw()
+            } else {
+                return E_NOINTERFACE;
+            };
+            // SAFETY: transfer one reference to our own generated interface through the checked output.
+            unsafe { output.write(interface) };
+            S_OK
+        })
+    }
+}
+
+fn copy_snapshot<T>(
+    service: &Service,
+    size: u32,
+    version: u32,
+    expected: u32,
+    output: *mut T,
+    read: impl FnOnce() -> std::result::Result<T, HRESULT>,
+) -> HRESULT {
+    if output.is_null() {
+        return E_POINTER;
+    }
+    // SAFETY: Copy's caller supplies at least size writable bytes. Only the bounded prefix is cleared.
+    unsafe { std::ptr::write_bytes(output.cast::<u8>(), 0, (size as usize).min(size_of::<T>())) };
+    if !service.owner_thread() {
+        return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+    }
+    if size as usize != size_of::<T>() || version != expected {
+        return windows::Win32::Foundation::E_INVALIDARG;
+    }
+    service.entry(|| match read() {
+        Ok(value) => {
+            // SAFETY: exact size/version validate one complete output object.
+            unsafe { output.write(value) };
+            S_OK
+        }
+        Err(error) => error,
+    })
+}
+
+impl RawSnapshotReader_Impl for ServiceCom_Impl {
+    unsafe fn Copy(&self, size: u32, version: u32, output: *mut Snapshot) -> HRESULT {
+        copy_snapshot(
+            &self.service,
+            size,
+            version,
+            diagnostics::VERSION,
+            output,
+            || self.service.copy_snapshot(),
+        )
+    }
+}
+impl RawSnapshotReaderV2_Impl for ServiceCom_Impl {
+    unsafe fn Copy(&self, size: u32, version: u32, output: *mut SnapshotV2) -> HRESULT {
+        copy_snapshot(
+            &self.service,
+            size,
+            version,
+            diagnostics::VERSION_V2,
+            output,
+            || self.service.copy_snapshot_v2(),
+        )
+    }
+}
+impl RawRuntimeReader_Impl for ServiceCom_Impl {
+    unsafe fn Copy(&self, size: u32, version: u32, output: *mut RuntimeSnapshot) -> HRESULT {
+        copy_snapshot(
+            &self.service,
+            size,
+            version,
+            diagnostics::RUNTIME_VERSION,
+            output,
+            || self.service.copy_runtime(),
+        )
     }
 }
 
