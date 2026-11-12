@@ -4,6 +4,14 @@
 
 #[cfg(windows)]
 mod com;
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "The shipping diagnostics path consumes this identity during migration."
+)]
+mod build_identity {
+    include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+}
 #[cfg(all(windows, feature = "test-api"))]
 mod edit;
 #[cfg(windows)]
@@ -42,6 +50,12 @@ pub mod registrar;
 mod service;
 #[cfg(all(windows, feature = "test-api"))]
 mod test_api;
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "The controlled worker schedules run this implementation while service callers migrate."
+)]
+mod vocabulary;
 #[cfg(windows)]
 #[allow(
     dead_code,

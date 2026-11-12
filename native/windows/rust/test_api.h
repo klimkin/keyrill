@@ -85,6 +85,7 @@ using KrTestProbe = HRESULT(WINAPI *)(void *, IUnknown *, uint32_t, uint32_t, Kr
 using KrTestEvent = HRESULT(WINAPI *)(void *, ITfContext *, const kr_event *, BOOL *);
 using KrTestMaintain = HRESULT(WINAPI *)(void *);
 using KrTestCounts = HRESULT(WINAPI *)(LONG *, LONG *);
+using KrTestBuildDigest = HRESULT(WINAPI *)(uint32_t, uint32_t *);
 using KrTestTranslate = HRESULT(WINAPI *)(WPARAM, LPARAM, HKL, const BYTE *, kr_event *, BOOL *);
 using KrTestExactCommandModifiers = HRESULT(WINAPI *)(const BYTE *, BOOL *);
 using KrTestBinding = HRESULT(WINAPI *)(uint32_t, GUID *, TF_PRESERVEDKEY *);

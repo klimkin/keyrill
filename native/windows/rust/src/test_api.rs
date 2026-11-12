@@ -19,6 +19,23 @@ use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 
 const VERSION: u32 = 2;
 
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestBuildDigest(count: u32, output: *mut u32) -> HRESULT {
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        if count != 8 {
+            return E_INVALIDARG;
+        }
+        // SAFETY: the size-checked SDK transport supplies eight writable, aligned u32 words.
+        unsafe {
+            std::ptr::copy_nonoverlapping(crate::build_identity::BUILD_DIGEST.as_ptr(), output, 8)
+        };
+        S_OK
+    })
+}
+
 struct Handle {
     service: Rc<Service>,
 }
