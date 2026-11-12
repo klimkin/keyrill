@@ -3,6 +3,7 @@
 #include "fixture.h"
 #include "fixture_mode.h"
 #include "keys.h"
+#include "rust/worker_test_api.h"
 #include "test_service.h"
 #include "test_vocabulary.h"
 #include <algorithm>
@@ -7620,7 +7621,8 @@ int wmain(int argc, wchar_t **argv) {
     puts("Actual DLL runtime and unload schedules passed.");
     return 0;
   }
-  Require(argc == 1, "known test mode");
+  const bool activation_only = argc == 2 && wcscmp(argv[1], L"--activation") == 0;
+  Require(argc == 1 || activation_only, "known test mode");
   RuntimeEnvironment fixture_policy(L"KEYRILL_WINDOWS_POLICY", nullptr);
   RuntimeEnvironment fixture_en(L"KEYRILL_WINDOWS_EN_DICTIONARY", nullptr);
   RuntimeEnvironment fixture_ru(L"KEYRILL_WINDOWS_RU_DICTIONARY", nullptr);
@@ -7628,6 +7630,13 @@ int wmain(int argc, wchar_t **argv) {
   FixtureLifecycle();
   controlled_root = CreateFixture(GetModuleHandleW(nullptr), FixtureProc, false);
   Require(controlled_root != nullptr, "controlled native metadata fixture");
+  if (activation_only) {
+    PreservedActivationSchedules();
+    DestroyWindow(controlled_root);
+    CoUninitialize();
+    puts("Controlled activation schedules passed.");
+    return 0;
+  }
   puts("RUN dedicated substitute layout regression");
   DedicatedLayoutRegression();
   puts("RUN dedicated substitute layout negatives");

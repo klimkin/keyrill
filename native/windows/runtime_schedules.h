@@ -349,6 +349,48 @@ struct WorkerEvents {
             "worker drains after nonblocking stop");
   }
 };
+void RuntimeGlobalHookSchedules() {
+  WorkerEvents events;
+  auto create =
+      reinterpret_cast<decltype(&KeyrillTestWorkerCreate)>(TestExport("KeyrillTestWorkerCreate"));
+  HMODULE dll = GetModuleHandleW(KEYRILL_TEST_DLL_LOCATION);
+  Require(dll && vocabulary::SetTestHooks(dll, events.Hooks()),
+          "global Rust worker hooks retain their callback owner");
+  auto start =
+      reinterpret_cast<decltype(&KeyrillTestWorkerStart)>(TestExport("KeyrillTestWorkerStart"));
+  auto stop =
+      reinterpret_cast<decltype(&KeyrillTestWorkerStop)>(TestExport("KeyrillTestWorkerStop"));
+  auto free_worker =
+      reinterpret_cast<decltype(&KeyrillTestWorkerFree)>(TestExport("KeyrillTestWorkerFree"));
+  void *worker = create();
+  KrWorkerSource sources[2]{{1, nullptr, 0}, {1, nullptr, 0}};
+  KrWorkerHooks inherited{};
+  Require(worker && start(worker, sources, 61, 0, &inherited),
+          "worker acquires globally retained hooks after setter returns");
+  Require(WaitForSingleObject(events.published, 15000) == WAIT_OBJECT_0,
+          "global hooks remain live through asynchronous publication");
+  Require(vocabulary::ClearTestHooks(dll), "global hook owner can retire while worker runs");
+  stop(worker);
+  free_worker(worker);
+  Require(WaitForSingleObject(events.finished, 15000) == WAIT_OBJECT_0,
+          "worker callback owner survives global clear through AfterCount");
+}
+void RuntimeAbsentSourceSchedules() {
+  WorkerEvents events;
+  vocabulary::Worker worker;
+  Require(
+      worker.Start(vocabulary::Model{{vocabulary::DefaultSource{}, vocabulary::DefaultSource{}}},
+                   62, vocabulary::ModuleOwner::Process, events.Hooks()),
+      "absent optional sources serialize as null empty paths");
+  const auto ready = events.Next(worker);
+  Require(ready.model && ready.sources[0].status == vocabulary::Status::Missing &&
+              ready.sources[1].status == vocabulary::Status::Missing &&
+              ready.sources[0].error == vocabulary::Error::Unavailable &&
+              ready.sources[1].error == vocabulary::Error::Unavailable &&
+              !ready.sources[0].dictionary && !ready.sources[1].dictionary,
+          "actual absent default source paths publish unavailable dictionaries");
+  events.Stop(worker);
+}
 struct NativeSchedule {
   enum class Io { Real, Immediate, Pending, Drain } io = Io::Real;
   enum class Failure {
@@ -805,6 +847,8 @@ void RuntimeStabilitySchedules() {
   }
 }
 void RuntimeFileSchedules() {
+  RuntimeAbsentSourceSchedules();
+  RuntimeGlobalHookSchedules();
   RuntimeNativeSchedules();
   RuntimeStabilitySchedules();
   RuntimeReparseSchedules();
@@ -993,6 +1037,7 @@ void RuntimeDllNativeSchedules(const wchar_t *path) {
       service.Reset();
       factory.Reset();
       Require(unload() == S_FALSE, "pending drainage holds real DLL worker ownership");
+      Require(vocabulary::ClearTestHooks(dll), "global hooks release before caller DLL reference");
       FreeLibrary(dll);
       Require(RuntimeModuleLoaded(path), "actual DLL remains pinned during delayed completion");
       SetEvent(schedule.release);
@@ -1016,6 +1061,8 @@ void RuntimeDllNativeSchedules(const wchar_t *path) {
       service.Reset();
       factory.Reset();
       RuntimeWait([&] { return unload() == S_OK; }, "startup failure releases worker count");
+      Require(vocabulary::ClearTestHooks(dll),
+              "failed startup releases global hooks before unload");
       FreeLibrary(dll);
       RuntimeWait([&] { return !RuntimeModuleLoaded(path); },
                   "startup failure releases every acquired module reference");
@@ -1080,6 +1127,8 @@ void RuntimeDllSchedules(const wchar_t *path) {
     if (set_hooks)
       Require(unload() == (boundary == vocabulary::Boundary::AfterCount ? S_OK : S_FALSE),
               "worker accounting and deferred release are separate");
+    if (set_hooks)
+      Require(vocabulary::ClearTestHooks(dll), "global hooks retire before last caller reference");
     FreeLibrary(dll);
     if (set_hooks) {
       Require(RuntimeModuleLoaded(path),

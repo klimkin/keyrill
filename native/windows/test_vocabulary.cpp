@@ -75,7 +75,7 @@ bool Worker::Start(const Model &model, uint32_t activation, ModuleOwner module, 
       reinterpret_cast<decltype(&KeyrillTestWorkerCreate)>(TestExport("KeyrillTestWorkerCreate"))();
   if (!state->handle)
     return false;
-  std::array<std::wstring, 2> paths;
+  std::array<std::optional<std::wstring>, 2> paths;
   KrWorkerSource sources[2]{};
   for (size_t index = 0; index < paths.size(); ++index) {
     if (const auto *defaults = std::get_if<DefaultSource>(&model.sources[index])) {
@@ -85,8 +85,10 @@ bool Worker::Start(const Model &model, uint32_t activation, ModuleOwner module, 
     } else {
       paths[index] = TextPath(std::get<ExplicitSource>(model.sources[index]).path);
     }
-    sources[index].path = reinterpret_cast<const uint16_t *>(paths[index].data());
-    sources[index].length = static_cast<uint32_t>(paths[index].size());
+    if (paths[index]) {
+      sources[index].path = reinterpret_cast<const uint16_t *>(paths[index]->data());
+      sources[index].length = static_cast<uint32_t>(paths[index]->size());
+    }
   }
   HookTable transport(hooks);
   auto start =
@@ -137,5 +139,11 @@ BOOL SetTestHooks(HMODULE module, const Hooks &hooks) {
     return FALSE;
   HookTable transport(hooks);
   return set(&transport.value);
+}
+
+BOOL ClearTestHooks(HMODULE module) {
+  auto set = reinterpret_cast<BOOL(WINAPI *)(const KrWorkerHooks *)>(
+      GetProcAddress(module, "KeyrillTestWorkerHooks"));
+  return set && set(nullptr);
 }
 } // namespace keyrill::vocabulary

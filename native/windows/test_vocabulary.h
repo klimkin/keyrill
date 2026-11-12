@@ -3,4 +3,5 @@
 
 namespace keyrill::vocabulary {
 BOOL SetTestHooks(HMODULE, const Hooks &);
-}
+BOOL ClearTestHooks(HMODULE);
+} // namespace keyrill::vocabulary
