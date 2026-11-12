@@ -1,10 +1,16 @@
-#define wmain KeyrillRegisterMain
-#include "register.cpp"
-#undef wmain
+#include "profiles.h"
+#include <cstdio>
 #include <cstdlib>
+#include <wrl/client.h>
 #include <wrl/implements.h>
 
 namespace {
+using Registration = HRESULT(WINAPI *)(IUnknown *, uint32_t);
+Registration registration = nullptr;
+HRESULT EnableProfiles(ITfInputProcessorProfiles *manager, bool enabled) {
+  return registration(manager, enabled ? 1u : 2u);
+}
+HRESULT Preflight(ITfInputProcessorProfiles *manager) { return registration(manager, 0); }
 void Check(bool passed, const char *message) {
   if (!passed) {
     fprintf(stderr, "Registration test failed: %s.\n", message);
@@ -42,7 +48,7 @@ private:
   bool returned_ = false;
   HRESULT result_;
 };
-struct Manager {
+struct Manager final : ITfInputProcessorProfiles {
   bool present[2] = {true, true};
   HRESULT enumeration[2] = {S_OK, S_OK};
   HRESULT next = S_OK;
@@ -56,31 +62,73 @@ struct Manager {
   BOOL enabled = FALSE;
   unsigned probes[2]{};
   unsigned writes = 0;
-  HRESULT EnumLanguageProfiles(LANGID language, IEnumTfLanguageProfiles **entries) {
+  ULONG references = 1;
+  bool null_entries = false;
+  bool throw_enumeration = false;
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+  ULONG STDMETHODCALLTYPE Release() override { return --references; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **output) override {
+    if (!output)
+      return E_POINTER;
+    *output = nullptr;
+    if (id != IID_IUnknown && id != IID_ITfInputProcessorProfiles)
+      return E_NOINTERFACE;
+    *output = static_cast<ITfInputProcessorProfiles *>(this);
+    AddRef();
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE EnumLanguageProfiles(LANGID language,
+                                                 IEnumTfLanguageProfiles **entries) override {
     size_t index = language == keyrill::profiles[0].language ? 0 : 1;
     ++probes[index];
+    if (throw_enumeration)
+      throw 1;
     if (FAILED(enumeration[index]))
+      return enumeration[index];
+    if (null_entries)
+      return enumeration[index];
+    if (enumeration[index] != S_OK)
       return enumeration[index];
     return Microsoft::WRL::Make<Entries>(keyrill::profiles[index],
                                          present[index] && !(disappear && writes), next)
         .CopyTo(entries);
   }
-  HRESULT GetLanguageProfileDescription(REFCLSID, LANGID language, REFGUID, BSTR *value) {
+  HRESULT STDMETHODCALLTYPE GetLanguageProfileDescription(REFCLSID, LANGID language, REFGUID,
+                                                          BSTR *value) override {
     size_t index = language == keyrill::profiles[0].language ? 0 : 1;
     if (SUCCEEDED(description) && !empty_description)
       *value =
           SysAllocString(wrong_description ? L"unrelated" : keyrill::profiles[index].description);
     return description;
   }
-  HRESULT EnableLanguageProfile(REFCLSID, LANGID, REFGUID, BOOL value) {
+  HRESULT STDMETHODCALLTYPE EnableLanguageProfile(REFCLSID, LANGID, REFGUID, BOOL value) override {
     ++writes;
     enabled = value;
     return enable_result;
   }
-  HRESULT IsEnabledLanguageProfile(REFCLSID, LANGID, REFGUID, BOOL *value) {
+  HRESULT STDMETHODCALLTYPE IsEnabledLanguageProfile(REFCLSID, LANGID, REFGUID,
+                                                     BOOL *value) override {
     *value = readback_matches ? enabled : !enabled;
     return readback;
   }
+#define UNUSED_METHOD(name, arguments)                                                             \
+  HRESULT STDMETHODCALLTYPE name arguments override { return E_NOTIMPL; }
+  UNUSED_METHOD(Register, (REFCLSID));
+  UNUSED_METHOD(Unregister, (REFCLSID));
+  UNUSED_METHOD(AddLanguageProfile,
+                (REFCLSID, LANGID, REFGUID, const WCHAR *, ULONG, const WCHAR *, ULONG, ULONG));
+  UNUSED_METHOD(RemoveLanguageProfile, (REFCLSID, LANGID, REFGUID));
+  UNUSED_METHOD(EnumInputProcessorInfo, (IEnumGUID **));
+  UNUSED_METHOD(GetDefaultLanguageProfile, (LANGID, REFGUID, CLSID *, GUID *));
+  UNUSED_METHOD(SetDefaultLanguageProfile, (LANGID, REFCLSID, REFGUID));
+  UNUSED_METHOD(ActivateLanguageProfile, (REFCLSID, LANGID, REFGUID));
+  UNUSED_METHOD(GetActiveLanguageProfile, (REFCLSID, LANGID *, GUID *));
+  UNUSED_METHOD(GetCurrentLanguage, (LANGID *));
+  UNUSED_METHOD(ChangeCurrentLanguage, (LANGID));
+  UNUSED_METHOD(GetLanguageList, (LANGID **, ULONG *));
+  UNUSED_METHOD(EnableLanguageProfileByDefault, (REFCLSID, LANGID, REFGUID, BOOL));
+  UNUSED_METHOD(SubstituteKeyboardLayout, (REFCLSID, LANGID, REFGUID, HKL));
+#undef UNUSED_METHOD
 };
 void Refuses(Manager &manager, HRESULT expected, const char *message) {
   Check(EnableProfiles(&manager, true) == expected, message);
@@ -88,7 +136,12 @@ void Refuses(Manager &manager, HRESULT expected, const char *message) {
   Check(manager.probes[0] == 1 && manager.probes[1] == 1, "both profiles inspected before refusal");
 }
 } // namespace
-int main() {
+int wmain(int argc, wchar_t **argv) {
+  Check(argc == 2, "pass the actual Rust test DLL path");
+  HMODULE module = LoadLibraryW(argv[1]);
+  Check(module != nullptr, "Rust registration test DLL loads");
+  registration = reinterpret_cast<Registration>(GetProcAddress(module, "KeyrillTestRegistration"));
+  Check(registration != nullptr, "registration schedules execute the Rust registrar");
   for (size_t missing = 0; missing < 2; ++missing) {
     Manager manager;
     manager.present[missing] = false;
@@ -140,5 +193,21 @@ int main() {
   disappeared.disappear = true;
   Check(EnableProfiles(&disappeared, true) == HRESULT_FROM_WIN32(ERROR_NOT_FOUND),
         "profile disappearance after acknowledged calls fails");
+  Manager null_entries;
+  null_entries.null_entries = true;
+  Refuses(null_entries, E_UNEXPECTED, "S_OK null enumerator refuses enablement");
+  Manager inconclusive_entries;
+  inconclusive_entries.enumeration[0] = S_FALSE;
+  Refuses(inconclusive_entries, E_UNEXPECTED, "S_FALSE enumeration refuses enablement");
+  Manager inconclusive_description;
+  inconclusive_description.description = S_FALSE;
+  Refuses(inconclusive_description, E_UNEXPECTED, "S_FALSE description refuses enablement");
+  Manager throws;
+  throws.throw_enumeration = true;
+  Refuses(throws, E_UNEXPECTED, "foreign enumeration exception is contained");
+  Check(throws.references == 1, "registration call releases its manager reference");
+  Check(registration(&success, 3) == E_INVALIDARG, "unknown test operation is rejected");
+  Check(registration(nullptr, 0) == E_POINTER, "null registration manager is rejected");
+  Check(FreeLibrary(module), "registration test host releases the loaded module");
   puts("Registration preflight and acknowledgement schedules passed.");
 }

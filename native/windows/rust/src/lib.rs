@@ -37,6 +37,8 @@ mod keys;
 )]
 mod profiles;
 #[cfg(windows)]
+pub mod registrar;
+#[cfg(windows)]
 mod service;
 #[cfg(all(windows, feature = "test-api"))]
 mod test_api;

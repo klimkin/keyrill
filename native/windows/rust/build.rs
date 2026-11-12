@@ -3,6 +3,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=foreign_calls.cpp");
     println!("cargo:rerun-if-changed=foreign_calls.h");
+    println!("cargo:rerun-if-changed=registrar_calls.cpp");
+    println!("cargo:rerun-if-changed=registrar_calls.h");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -11,6 +13,7 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .file("foreign_calls.cpp")
+        .file("registrar_calls.cpp")
         .flag("/std:c++20")
         .flag("/EHsc")
         .warnings_into_errors(true)
