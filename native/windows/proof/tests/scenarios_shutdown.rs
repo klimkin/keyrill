@@ -515,6 +515,15 @@ fn shutdown_reader_lifetime_both_release_orders() {
         }
         assert_eq!(inactive.base.active, 0);
         assert_eq!(inactive.lifecycle[4], 0);
+        // SAFETY: Snapshot is the frozen repr(C) payload of exactly 55 DWORDs.
+        let base: [u32; 55] = unsafe { std::mem::transmute(inactive.base) };
+        assert!(
+            ServiceSnapshot {
+                base,
+                lifecycle: inactive.lifecycle
+            }
+            .valid()
+        );
         assert_eq!(legacy.value, inactive.base);
         assert_eq!((legacy.before, legacy.after), (17, 23));
         if old_first {
