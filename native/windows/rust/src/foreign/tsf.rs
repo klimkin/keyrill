@@ -1,6 +1,6 @@
 //! Typed TSF calls. The C++ side invokes each host method inside its exception fence.
 
-use super::{Call, InterfaceError, Lease, adopt, quarantine};
+use super::{Call, InterfaceError, Lease, quarantine, returned_interface};
 use crate::keys::Binding;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{E_UNEXPECTED, S_OK};
@@ -78,17 +78,11 @@ pub(crate) fn acquired<T: Interface>(
     call: Call,
     output: *mut c_void,
 ) -> Result<Lease<T>, InterfaceError> {
+    let output = returned_interface::<T>(call, output).value;
     if !call.exact() {
-        if call.exception != 0 || !output.is_null() {
-            quarantine();
-        }
         return Err(InterfaceError::Native(call));
     }
-    if output.is_null() {
-        return Err(InterfaceError::Missing);
-    }
-    // SAFETY: the typed call returned exact S_OK, transferring one interface reference.
-    unsafe { adopt(output) }.map_err(InterfaceError::Native)
+    output.ok_or(InterfaceError::Missing)
 }
 
 pub(crate) fn advise(source: &Lease<ITfSource>, id: &GUID, sink: *mut c_void) -> (Call, u32) {
@@ -189,5 +183,79 @@ pub(crate) fn failure(call: Call) -> HRESULT {
         E_UNEXPECTED
     } else {
         call.result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows::Win32::Foundation::{E_FAIL, E_NOINTERFACE, S_FALSE};
+    use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
+    use windows_core::{BOOL, IUnknown, Ref, Result, implement};
+
+    #[implement(IClassFactory, Agile = false)]
+    struct Controlled {
+        retired: Arc<AtomicUsize>,
+    }
+
+    impl Drop for Controlled {
+        fn drop(&mut self) {
+            self.retired.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    impl IClassFactory_Impl for Controlled_Impl {
+        fn CreateInstance(
+            &self,
+            _: Ref<'_, IUnknown>,
+            _: *const GUID,
+            output: *mut *mut c_void,
+        ) -> Result<()> {
+            if !output.is_null() {
+                // SAFETY: the SDK contract supplies a writable interface output.
+                unsafe { output.write(std::ptr::null_mut()) };
+            }
+            E_NOINTERFACE.ok()
+        }
+
+        fn LockServer(&self, _: BOOL) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn refused_owned_outputs_retire_and_exact_null_stays_missing() {
+        for result in [S_FALSE, E_FAIL] {
+            let retired = Arc::new(AtomicUsize::new(0));
+            let object = windows_core::ComObject::new(Controlled {
+                retired: Arc::clone(&retired),
+            })
+            .to_interface::<IUnknown>();
+            let output = acquired::<IUnknown>(
+                Call {
+                    result,
+                    exception: 0,
+                },
+                object.into_raw(),
+            );
+            let Err(InterfaceError::Native(call)) = output else {
+                panic!("nonexact status granted an interface");
+            };
+            assert_eq!(call.result, result);
+            assert_eq!(call.exception, 0);
+            assert_eq!(retired.load(Ordering::Acquire), 1);
+        }
+        assert!(matches!(
+            acquired::<IUnknown>(
+                Call {
+                    result: S_OK,
+                    exception: 0
+                },
+                std::ptr::null_mut()
+            ),
+            Err(InterfaceError::Missing)
+        ));
     }
 }
