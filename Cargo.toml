@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/keyrill-core", "crates/keyrill-ffi", "tools/inference-probe"]
+members = ["crates/keyrill-core", "crates/keyrill-ffi", "native/windows/rust", "tools/inference-probe"]
 resolver = "3"
 
 [workspace.package]

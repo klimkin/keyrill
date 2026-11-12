@@ -1,0 +1,43 @@
+//! Fixed native-field facts passed by the SDK test substrate.
+
+use windows::Win32::Foundation::HWND;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct HostIdentity {
+    pub(crate) process: u32,
+    pub(crate) thread: u32,
+    pub(crate) started: u64,
+    pub(crate) kind: u32,
+    pub(crate) version: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Window {
+    pub(crate) handle: HWND,
+    pub(crate) process: u32,
+    pub(crate) thread: u32,
+    pub(crate) control: i32,
+    pub(crate) style: isize,
+    pub(crate) class_name: [u16; 64],
+    pub(crate) enabled: u32,
+    pub(crate) complete: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Facts {
+    pub(crate) host: HostIdentity,
+    pub(crate) process: u32,
+    pub(crate) thread: u32,
+    pub(crate) view: HWND,
+    pub(crate) focus: HWND,
+    pub(crate) foreground: HWND,
+    pub(crate) root: HWND,
+    pub(crate) field: Window,
+    pub(crate) parent: Window,
+    pub(crate) grandparent: Window,
+    pub(crate) proof_root: Window,
+    pub(crate) proof_process: u32,
+}

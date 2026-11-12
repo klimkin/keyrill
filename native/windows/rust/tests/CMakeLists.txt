@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(keyrill_rust_boundary_tests LANGUAGES CXX)
+add_executable(keyrill_rust_boundary_tests boundary_tests.cpp)
+target_compile_features(keyrill_rust_boundary_tests PRIVATE cxx_std_20)
+target_compile_options(keyrill_rust_boundary_tests PRIVATE /W4 /WX /EHsc)
+target_link_libraries(keyrill_rust_boundary_tests PRIVATE ole32 oleaut32 uuid)
