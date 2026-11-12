@@ -1,11 +1,15 @@
 use crate::diagnostics::{self, LifecycleJournal, RuntimeSnapshot, Snapshot, SnapshotV2};
+use crate::diagnostics::{Cause, Counter, LifecycleCause, LifecycleKind, Stage, Unresolved};
 use crate::engine::Engine;
+use crate::engine::Plan;
+use crate::field_contract::HostIdentity;
 use crate::foreign::tsf;
 use crate::foreign::{self, Call, DependencyLease, Lease};
 use crate::keys::BINDINGS;
 use crate::profiles::{PROFILES, SERVICE_ID};
 use crate::vocabulary;
 use crate::vocabulary_contract::Config;
+use keyrill_ffi::NativeEvent;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -17,7 +21,7 @@ use windows::Win32::Foundation::{E_FAIL, RPC_E_WRONG_THREAD, S_OK};
 use windows::Win32::System::Ole::CONNECT_E_NOCONNECTION;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::TextServices::*;
-use windows_core::{HRESULT, Interface};
+use windows_core::{HRESULT, IUnknown, Interface};
 
 pub(crate) static OBJECTS: AtomicU32 = AtomicU32::new(0);
 pub(crate) static LOCKS: AtomicU32 = AtomicU32::new(0);
@@ -65,6 +69,39 @@ struct State {
     diagnostics: Snapshot,
     lifecycle: LifecycleJournal,
     runtime: RuntimeSnapshot,
+    owned: Option<Rc<Owned>>,
+    busy: bool,
+    host_identity: HostIdentity,
+}
+
+pub(crate) struct OwnedIdentity;
+
+#[derive(Clone)]
+pub(crate) struct Owned {
+    pub(crate) identity: Rc<OwnedIdentity>,
+    pub(crate) _context: Lease<ITfContext>,
+    pub(crate) context_id: Lease<IUnknown>,
+    pub(crate) composition: Lease<ITfComposition>,
+    pub(crate) composition_id: Lease<IUnknown>,
+    pub(crate) start: i32,
+    pub(crate) verified: Vec<u16>,
+    pub(crate) serial: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Guard {
+    epoch: u64,
+    generation: u64,
+}
+
+pub(crate) struct Authority {
+    pub(crate) manager: Lease<ITfThreadMgr>,
+    pub(crate) client: u32,
+    pub(crate) guard: Guard,
+    pub(crate) owned: Option<Rc<Owned>>,
+    pub(crate) host_identity: HostIdentity,
+    // Keep activation's release barrier through the last context/composition reference in a frame.
+    _resources: Rc<Resources>,
 }
 
 pub(crate) struct Sinks {
@@ -196,6 +233,13 @@ impl Drop for ActivationCall<'_> {
     }
 }
 
+struct ExecutionCall<'a>(&'a Service);
+impl Drop for ExecutionCall<'_> {
+    fn drop(&mut self) {
+        self.0.state.borrow_mut().busy = false;
+    }
+}
+
 pub(crate) struct Service {
     owner_thread: u32,
     poisoned: Cell<bool>,
@@ -282,6 +326,121 @@ impl Service {
         if let Some(engine) = state.engine.as_mut() {
             engine.reset();
         }
+    }
+
+    pub(crate) fn invalidate_for_lifecycle(&self, cause: LifecycleCause) {
+        let serial = self
+            .state
+            .borrow()
+            .owned
+            .as_ref()
+            .map_or(0, |owned| owned.serial);
+        self.lifecycle(
+            LifecycleKind::LifecycleInvalidation,
+            serial,
+            cause,
+            Unresolved::None,
+        );
+        self.invalidate_word(self.owned().is_some());
+    }
+
+    pub(crate) fn terminated(&self, composition: *mut c_void) -> HRESULT {
+        self.cleanup(|| {
+            let owned = self.owned();
+            let serial = owned.as_ref().map_or(0, |owned| owned.serial);
+            if composition.is_null() || owned.is_none() {
+                self.lifecycle(
+                    if composition.is_null() {
+                        LifecycleKind::TerminationUnresolved
+                    } else {
+                        LifecycleKind::TerminationWithoutOwned
+                    },
+                    serial,
+                    LifecycleCause::None,
+                    if composition.is_null() {
+                        Unresolved::NullArgument
+                    } else {
+                        Unresolved::None
+                    },
+                );
+                return S_OK;
+            }
+            let Some(owned) = owned else {
+                return S_OK;
+            };
+            let generation = self.state.borrow().generation;
+            // SAFETY: TSF retains its incoming composition throughout this callback.
+            let identity = unsafe { foreign::query::<IUnknown>(composition) };
+            let identity = match identity {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let exception = error.call().exception != 0;
+                    self.lifecycle(
+                        LifecycleKind::TerminationUnresolved,
+                        serial,
+                        LifecycleCause::None,
+                        if exception {
+                            Unresolved::Exception
+                        } else {
+                            Unresolved::IdentityFailure
+                        },
+                    );
+                    if exception {
+                        self.invalidate_word(true);
+                        return E_FAIL;
+                    }
+                    return S_OK;
+                }
+            };
+            let current = self.owned();
+            if generation != self.state.borrow().generation || current.is_none() {
+                self.lifecycle(
+                    LifecycleKind::TerminationUnresolved,
+                    serial,
+                    LifecycleCause::None,
+                    Unresolved::Stale,
+                );
+                return S_OK;
+            }
+            let same_word = current
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(&current.identity, &owned.identity));
+            if identity.address() == owned.composition_id.address() && same_word {
+                self.lifecycle(
+                    if same_word {
+                        LifecycleKind::ExactTermination
+                    } else {
+                        LifecycleKind::TerminationUnresolved
+                    },
+                    serial,
+                    LifecycleCause::None,
+                    if same_word {
+                        Unresolved::None
+                    } else {
+                        Unresolved::Stale
+                    },
+                );
+                self.invalidate();
+                let retired = self.state.borrow_mut().owned.take();
+                drop(retired);
+            } else {
+                self.lifecycle(
+                    if same_word {
+                        LifecycleKind::DifferentTermination
+                    } else {
+                        LifecycleKind::TerminationUnresolved
+                    },
+                    serial,
+                    LifecycleCause::None,
+                    if same_word {
+                        Unresolved::None
+                    } else {
+                        Unresolved::Stale
+                    },
+                );
+            }
+            S_OK
+        })
     }
 
     fn preparing(&self, epoch: u64) -> bool {
@@ -516,10 +675,29 @@ impl Service {
                 }
                 state.activation = Activation::Draining;
                 state.mode = 0;
-                (state.resources.take(), state.diagnostic_source.take())
+                (
+                    state.resources.take(),
+                    state.diagnostic_source.take(),
+                    state.owned.take(),
+                )
             };
-            self.invalidate();
-            let (resources, diagnostic_source) = retired;
+            let (resources, diagnostic_source, owned) = retired;
+            let serial = owned.as_ref().map_or(0, |owned| owned.serial);
+            self.lifecycle(
+                LifecycleKind::LifecycleInvalidation,
+                serial,
+                LifecycleCause::Deactivate,
+                Unresolved::None,
+            );
+            self.invalidate_word(owned.is_some());
+            if owned.is_some() {
+                self.lifecycle(
+                    LifecycleKind::Detached,
+                    serial,
+                    LifecycleCause::None,
+                    Unresolved::None,
+                );
+            }
             let result = resources
                 .as_ref()
                 .map_or(S_OK, |resources| resources.drain());
@@ -527,6 +705,7 @@ impl Service {
                 tsf::unadvise_single(source, native.client);
             }
             drop(diagnostic_source);
+            drop(owned);
             drop(resources);
             result
         })
@@ -583,7 +762,7 @@ impl Service {
         flags: u32,
     ) -> HRESULT {
         self.checked(|| {
-            self.invalidate();
+            self.invalidate_for_lifecycle(LifecycleCause::ProfileChanged);
             let mut state = self.state.borrow_mut();
             state.mode = if service == SERVICE_ID && flags & TF_IPSINK_FLAG_ACTIVE != 0 {
                 PROFILES
@@ -608,6 +787,280 @@ impl Service {
         })
     }
 
+    pub(crate) unsafe fn execute(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        event: NativeEvent,
+    ) -> bool {
+        use crate::edit::{Effect, Frame};
+        self.count(Counter::HandleEntered);
+        let authority = {
+            let state = self.state.borrow();
+            let cause = if state.activation != Activation::Active {
+                Some(Cause::Inactive)
+            } else if state.stopped {
+                Some(Cause::Stopped)
+            } else if context.is_null() {
+                Some(Cause::Missing)
+            } else if state.busy {
+                Some(Cause::Reentry)
+            } else {
+                None
+            };
+            drop(state);
+            if let Some(cause) = cause {
+                self.refuse(Stage::Handle, cause, S_OK);
+                if cause == Cause::Reentry {
+                    self.invalidate_word(self.owned().is_some());
+                }
+                return false;
+            }
+            self.capture_authority()
+        };
+        let Some(authority) = authority else {
+            return false;
+        };
+        self.state.borrow_mut().busy = true;
+        let _busy = ExecutionCall(self);
+        // SAFETY: the inbound transport retains context throughout capture and the synchronous request.
+        let frame =
+            match unsafe { Frame::editing(Rc::clone(self), owner, context, event, authority) } {
+                Ok(frame) => frame,
+                Err(call) => {
+                    self.refuse(
+                        Stage::Handle,
+                        if call.exception != 0 {
+                            Cause::Exception
+                        } else {
+                            Cause::Native
+                        },
+                        call.result,
+                    );
+                    if call.exception != 0 {
+                        self.invalidate_word(true);
+                    }
+                    return false;
+                }
+            };
+        if !frame.alive() {
+            self.refuse(Stage::Session, Cause::Stale, S_OK);
+            return false;
+        }
+        self.count(Counter::Requested);
+        {
+            let mut state = self.state.borrow_mut();
+            state.diagnostics.request_present = 0;
+            state.diagnostics.session_present = 0;
+            state.diagnostics.request_result = 0;
+            state.diagnostics.session_result = 0;
+        }
+        let result = frame.request_editing();
+        {
+            let mut state = self.state.borrow_mut();
+            state.diagnostics.request_present = 1;
+            state.diagnostics.session_present = 1;
+            state.diagnostics.request_result = result.outer.result.0 as u32;
+            state.diagnostics.session_result = result.callback.0 as u32;
+        }
+        if result.outer.exception == 0
+            && result.outer.result.is_ok()
+            && result.callback.is_ok()
+            && result.completed
+        {
+            frame.eaten()
+        } else {
+            if result.outer.exception != 0 {
+                self.refuse(Stage::Request, Cause::Exception, S_OK);
+            } else if result.outer.result.is_err() {
+                self.refuse(Stage::Request, Cause::Native, result.outer.result);
+            } else if result.callback.is_err() {
+                self.refuse(Stage::Session, Cause::Native, result.callback);
+            } else {
+                self.refuse(Stage::Session, Cause::Predicate, S_OK);
+            }
+            let eaten = frame.unknown_disposition();
+            self.invalidate_word(
+                result.outer.exception != 0
+                    || frame.effect() != Effect::Unattempted
+                    || self.owned().is_some(),
+            );
+            eaten
+        }
+    }
+
+    fn state_current(&self, state: &State, guard: Guard) -> bool {
+        !self.poisoned.get()
+            && !state.stopped
+            && state.activation == Activation::Active
+            && state.epoch == guard.epoch
+            && state.generation == guard.generation
+    }
+
+    pub(crate) fn capture_authority(&self) -> Option<Authority> {
+        if !self.owner_thread() {
+            return None;
+        }
+        let state = self.state.borrow();
+        let guard = Guard {
+            epoch: state.epoch,
+            generation: state.generation,
+        };
+        if !self.state_current(&state, guard) {
+            return None;
+        }
+        let resources = state.resources.as_ref()?;
+        Some(Authority {
+            manager: resources.manager.as_ref()?.clone(),
+            client: resources.client,
+            guard,
+            owned: state.owned.clone(),
+            host_identity: state.host_identity,
+            _resources: Rc::clone(resources),
+        })
+    }
+
+    pub(crate) fn current_owned(&self, guard: Guard, expected: Option<&Rc<OwnedIdentity>>) -> bool {
+        if !self.owner_thread() {
+            return false;
+        }
+        let state = self.state.borrow();
+        self.state_current(&state, guard)
+            && match (expected, state.owned.as_ref()) {
+                (None, None) => true,
+                (Some(expected), Some(owned)) => Rc::ptr_eq(expected, &owned.identity),
+                _ => false,
+            }
+    }
+
+    pub(crate) fn owned(&self) -> Option<Rc<Owned>> {
+        self.state.borrow().owned.clone()
+    }
+    pub(crate) fn count(&self, counter: Counter) {
+        diagnostics::count(&mut self.state.borrow_mut().diagnostics, counter);
+    }
+    pub(crate) fn refuse(&self, stage: Stage, cause: Cause, result: HRESULT) {
+        diagnostics::refuse(
+            &mut self.state.borrow_mut().diagnostics,
+            stage,
+            cause,
+            result,
+        );
+    }
+    pub(crate) fn refusal_counts(&self) -> [u32; 26] {
+        self.state.borrow().diagnostics.refusals
+    }
+
+    pub(crate) fn invalidate_word(&self, stop: bool) {
+        self.state.borrow_mut().stopped |= stop;
+        self.invalidate();
+    }
+
+    pub(crate) fn publish_owned(&self, guard: Guard, mut owned: Owned) -> Option<Rc<Owned>> {
+        let mut state = self.state.borrow_mut();
+        if !self.state_current(&state, guard) || state.owned.is_some() {
+            return None;
+        }
+        owned.serial = state.lifecycle.acquire();
+        let owned = Rc::new(owned);
+        state.owned = Some(Rc::clone(&owned));
+        Some(owned)
+    }
+
+    pub(crate) fn verify_owned(
+        &self,
+        guard: Guard,
+        identity: &Rc<OwnedIdentity>,
+        text: &[u16],
+    ) -> bool {
+        let previous = self.owned();
+        let Some(previous) = previous else {
+            return false;
+        };
+        let mut replacement = previous.as_ref().clone();
+        replacement.verified = text.to_vec();
+        let replacement = Rc::new(replacement);
+        let retired = {
+            let mut state = self.state.borrow_mut();
+            if !self.state_current(&state, guard)
+                || !state
+                    .owned
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(identity, &current.identity))
+            {
+                return false;
+            }
+            state.owned.replace(replacement)
+        };
+        drop(retired);
+        self.current_owned(guard, Some(identity))
+    }
+
+    pub(crate) fn take_owned(
+        &self,
+        guard: Guard,
+        identity: &Rc<OwnedIdentity>,
+    ) -> Option<Rc<Owned>> {
+        let mut state = self.state.borrow_mut();
+        if !self.state_current(&state, guard)
+            || !state
+                .owned
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(identity, &current.identity))
+        {
+            return None;
+        }
+        state.owned.take()
+    }
+
+    pub(crate) fn lifecycle(
+        &self,
+        kind: LifecycleKind,
+        serial: u32,
+        cause: LifecycleCause,
+        unresolved: Unresolved,
+    ) {
+        self.state
+            .borrow_mut()
+            .lifecycle
+            .record(kind, serial, cause, unresolved);
+    }
+
+    pub(crate) fn propose(&self, guard: Guard, event: &NativeEvent) -> Result<Plan, u32> {
+        let mut state = self.state.borrow_mut();
+        if !self.state_current(&state, guard) {
+            return Err(5);
+        }
+        state.engine.as_mut().ok_or(5u32)?.plan(event)
+    }
+
+    pub(crate) fn acknowledge(&self, guard: Guard, id: u64, outcome: u32) -> Result<(), u32> {
+        let mut state = self.state.borrow_mut();
+        if !self.state_current(&state, guard) {
+            return Err(5);
+        }
+        state.engine.as_mut().ok_or(5u32)?.commit(id, outcome)
+    }
+
+    pub(crate) fn capture_field(
+        &self,
+        window: windows::Win32::Foundation::HWND,
+        host: HostIdentity,
+    ) -> foreign::Returned<crate::field_contract::Facts> {
+        if let Some(dependencies) = &self._dependencies
+            && dependencies.table.capture.is_some()
+        {
+            return foreign::document::capture(&dependencies.table, window, &host);
+        }
+        foreign::Returned {
+            call: Call {
+                result: S_OK,
+                exception: 0,
+            },
+            value: crate::field::capture(window, host),
+        }
+    }
+
     pub(crate) fn copy_snapshot(&self) -> Result<Snapshot, HRESULT> {
         let state = self.state.borrow();
         if state.diagnostic_depth != 0 {
@@ -622,7 +1075,11 @@ impl Service {
 
     pub(crate) fn copy_snapshot_v2(&self) -> Result<SnapshotV2, HRESULT> {
         let base = self.copy_snapshot()?;
-        let lifecycle = self.state.borrow().lifecycle.copy(false, 0);
+        let state = self.state.borrow();
+        let lifecycle = state.lifecycle.copy(
+            state.owned.is_some(),
+            state.owned.as_ref().map_or(0, |owned| owned.serial),
+        );
         Ok(SnapshotV2 { base, lifecycle })
     }
 

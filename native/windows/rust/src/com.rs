@@ -152,21 +152,33 @@ struct ServiceCom {
 }
 
 pub(crate) fn create(service: Rc<Service>) -> ITfTextInputProcessorEx {
-    ServiceCom { service }.into()
+    create_owned(service).processor()
 }
 
-#[cfg(feature = "test-api")]
+struct OwnInterfaces {
+    processor: ITfTextInputProcessorEx,
+    composition: *mut c_void,
+}
+
 #[derive(Clone)]
-pub(crate) struct OwnServiceLease(Rc<ITfTextInputProcessorEx>);
+pub(crate) struct OwnServiceLease(Rc<OwnInterfaces>);
 
-#[cfg(feature = "test-api")]
+pub(crate) fn create_owned(service: Rc<Service>) -> OwnServiceLease {
+    let object = windows_core::ComObject::new(ServiceCom { service });
+    let processor = object.to_interface::<ITfTextInputProcessorEx>();
+    let composition = object.as_interface::<ITfCompositionSink>().as_raw();
+    OwnServiceLease(Rc::new(OwnInterfaces {
+        processor,
+        composition,
+    }))
+}
+
 impl OwnServiceLease {
-    pub(crate) fn new(processor: ITfTextInputProcessorEx) -> Self {
-        Self(Rc::new(processor))
-    }
-
     pub(crate) fn processor(&self) -> ITfTextInputProcessorEx {
-        self.0.as_ref().clone()
+        self.0.processor.clone()
+    }
+    pub(crate) fn composition_sink(&self) -> *mut c_void {
+        self.0.composition
     }
 }
 
@@ -218,7 +230,8 @@ impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
     fn OnUninitDocumentMgr(&self, _: Ref<'_, ITfDocumentMgr>) -> Result<()> {
         self.service
             .checked(|| {
-                self.service.invalidate();
+                self.service
+                    .invalidate_for_lifecycle(diagnostics::LifecycleCause::DocumentUninit);
                 S_OK
             })
             .ok()
@@ -226,7 +239,8 @@ impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
     fn OnSetFocus(&self, _: Ref<'_, ITfDocumentMgr>, _: Ref<'_, ITfDocumentMgr>) -> Result<()> {
         self.service
             .checked(|| {
-                self.service.invalidate();
+                self.service
+                    .invalidate_for_lifecycle(diagnostics::LifecycleCause::DocumentFocus);
                 S_OK
             })
             .ok()
@@ -237,7 +251,8 @@ impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
     ) -> Result<()> {
         self.service
             .checked(|| {
-                self.service.invalidate();
+                self.service
+                    .invalidate_for_lifecycle(diagnostics::LifecycleCause::ContextPush);
                 S_OK
             })
             .ok()
@@ -245,7 +260,8 @@ impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
     fn OnPopContext(&self, _: Ref<'_, windows::Win32::UI::TextServices::ITfContext>) -> Result<()> {
         self.service
             .checked(|| {
-                self.service.invalidate();
+                self.service
+                    .invalidate_for_lifecycle(diagnostics::LifecycleCause::ContextPop);
                 S_OK
             })
             .ok()
@@ -272,8 +288,14 @@ impl ITfInputProcessorProfileActivationSink_Impl for ServiceCom_Impl {
 }
 
 impl ITfCompositionSink_Impl for ServiceCom_Impl {
-    fn OnCompositionTerminated(&self, _: u32, _: Ref<'_, ITfComposition>) -> Result<()> {
-        self.service.checked(|| S_OK).ok()
+    fn OnCompositionTerminated(&self, _: u32, composition: Ref<'_, ITfComposition>) -> Result<()> {
+        self.service
+            .terminated(
+                composition
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), Interface::as_raw),
+            )
+            .ok()
     }
 }
 
@@ -290,7 +312,8 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
     unsafe fn OnSetFocus(&self, foreground: BOOL) -> HRESULT {
         self.service.checked(|| {
             if !foreground.as_bool() {
-                self.service.invalidate();
+                self.service
+                    .invalidate_for_lifecycle(diagnostics::LifecycleCause::ForegroundLost);
             }
             S_OK
         })

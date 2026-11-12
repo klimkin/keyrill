@@ -26,7 +26,7 @@ mod observation;
 mod build_identity {
     include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 }
-#[cfg(all(windows, feature = "test-api"))]
+#[cfg(windows)]
 mod edit;
 #[cfg(windows)]
 #[allow(

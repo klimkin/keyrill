@@ -295,8 +295,7 @@ unsafe extern "system" fn KeyrillTestCreate(
             }
         };
         let service = Service::with_dependencies(dependencies);
-        let object = com::create(Rc::clone(&service));
-        let owner = com::OwnServiceLease::new(object);
+        let owner = com::create_owned(Rc::clone(&service));
         let output_object = owner.processor();
         let owner = Box::new(Handle { service, owner });
         // SAFETY: outputs transfer one handle and one COM reference to the test caller.
@@ -326,7 +325,17 @@ unsafe extern "system" fn KeyrillTestEvent(
         }
         // SAFETY: the test caller retains its live handle for this synchronous entry.
         let handle = unsafe { &*handle.cast::<Handle>() };
-        handle.service.checked(|| S_OK)
+        handle.service.checked(|| {
+            // SAFETY: transport retains the context and complete bounded wire object through this entry.
+            let accepted = unsafe {
+                handle
+                    .service
+                    .execute(handle.owner.clone(), context, event.read())
+            };
+            // SAFETY: checked writable output belongs to this synchronous caller.
+            unsafe { eaten.write(BOOL(accepted as i32)) };
+            S_OK
+        })
     })
 }
 

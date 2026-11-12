@@ -263,8 +263,18 @@ pub(crate) unsafe fn query<T: Interface>(pointer: *mut c_void) -> Result<Lease<T
     // SAFETY: the caller retains the live host and output is a distinct writable pointer slot.
     let result = unsafe { kr_foreign_query(pointer, &T::IID, &mut output) };
     if !result.exact() {
-        if result.exception != 0 || !output.is_null() {
+        if result.exception != 0 {
             quarantine();
+        } else {
+            let retired = returned_interface::<T>(result, output).value;
+            let witness = retired.as_ref().map(Lease::release_witness);
+            drop(retired);
+            if witness.is_some_and(|witness| witness.failed()) {
+                return Err(InterfaceError::Native(Call {
+                    result: E_UNEXPECTED,
+                    exception: 1,
+                }));
+            }
         }
         return Err(InterfaceError::Native(result));
     }

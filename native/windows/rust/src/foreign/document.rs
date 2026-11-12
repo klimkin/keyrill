@@ -213,6 +213,13 @@ impl Value {
         // SAFETY: vt is an initialized scalar discriminator.
         unsafe { self.raw.Anonymous.Anonymous.vt == VT_UNKNOWN }
     }
+    pub(crate) fn has_unknown(&self) -> bool {
+        if !self.unknown() {
+            return false;
+        }
+        // SAFETY: VT_UNKNOWN identifies this initialized interface slot.
+        unsafe { self.raw.Anonymous.Anonymous.Anonymous.punkVal.is_some() }
+    }
     pub(crate) fn input_scope(&self) -> Result<Lease<ITfInputScope>, InterfaceError> {
         if !self.unknown() {
             return Err(InterfaceError::Missing);
