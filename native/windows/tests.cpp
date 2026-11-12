@@ -2073,14 +2073,14 @@ void CommandRetentionSchedules() {
           cancel();
       };
     if (scenario == 3)
-      profile.release_hook = cancel;
+      h.a.release_hook = cancel;
     if (scenario == 4)
       h.manager.release_hook = cancel;
     Require(!RetentionRelease(h) && nested,
             "native metadata and COM cleanup reentry cancel final spending");
     profile.hook = nullptr;
-    profile.release_hook = nullptr;
     h.a.hook = nullptr;
+    h.a.release_hook = nullptr;
     h.manager.release_hook = nullptr;
     Require(!RetentionRelease(h), "cancelled release never revives after cleanup");
   }
