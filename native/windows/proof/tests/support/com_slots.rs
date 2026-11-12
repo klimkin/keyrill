@@ -54,6 +54,9 @@ unsafe extern "system" fn query(
             }
             out.write(std::ptr::null_mut());
             p.hit("QI");
+            if *id == windows::Win32::UI::TextServices::ITfRangeACP::IID {
+                p.hit("range.ACP");
+            }
             if matches!(p.kind, super::providers::Kind::Diagnostic(_)) {
                 p.hit(if *id == windows_core::IUnknown::IID {
                     "identity"

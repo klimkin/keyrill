@@ -54,6 +54,7 @@ impl HostCapsule {
         });
     }
     pub fn check(&self) {
+        assert_eq!(super::client::layout_panics(), 0, "layout callback panic");
         assert_eq!(
             self.panic_count.get(),
             0,

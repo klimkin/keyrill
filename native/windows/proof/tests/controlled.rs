@@ -1,5 +1,7 @@
 #![cfg(windows)]
+mod scenarios_admission;
 mod scenarios_boundary;
+mod scenarios_editing;
 mod scenarios_finish;
 mod support;
 use support::{client::Client, oracle};

@@ -478,3 +478,403 @@ fn finish_selection_failures_stop_without_replan_or_retry() {
         c.host.drained();
     }
 }
+#[test]
+fn finish_replacement_failures_stop_after_one_write() {
+    use windows_core::Interface;
+    for case in 0..10 {
+        let c = Client::notepad();
+        c.type_text("hello");
+        let before = crate::support::dll::snapshot(&c.service);
+        let writes = c.a.writes.get();
+        let ends = c.a.ends.get();
+        let starts = c.a.starts.get();
+        let d = Rc::clone(&c.a);
+        let span = Rc::clone(&d.active.borrow().as_ref().unwrap().span);
+        let other = c.context_b.as_raw() as usize;
+        let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+        let termination = c.service.cast::<ITfCompositionSink>().unwrap();
+        let service_event = c.api.event;
+        let handle = c.handle as usize;
+        let context = c.context_a.as_raw() as usize;
+        let at_write = Rc::new(std::cell::Cell::new(0));
+        let record = Rc::clone(&at_write);
+        c.host.on("SetText.after", 0, move || {
+            record.set(d.reads.get());
+            match case {
+                0 => {
+                    d.results.borrow_mut().insert("SetText", E_FAIL);
+                }
+                1 => d.text.borrow_mut()[7] = b'!' as u16,
+                2 => {
+                    let mut value = span.get();
+                    value.length += 1;
+                    span.set(value);
+                }
+                3 => d.range_context.set(other as *mut _),
+                4 => d.status.set(TF_SD_READONLY),
+                5 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("scope.GetValue", E_ACCESSDENIED);
+                }
+                6 => unsafe {
+                    assert_eq!(
+                        (sink.vtable().OnPushContext)(sink.as_raw(), other as *mut _),
+                        S_OK
+                    );
+                },
+                7 => {
+                    let active = d.active.borrow_mut().take().unwrap();
+                    unsafe {
+                        assert_eq!(
+                            (termination.vtable().OnCompositionTerminated)(
+                                termination.as_raw(),
+                                123,
+                                active.pointer
+                            ),
+                            S_OK
+                        );
+                    }
+                }
+                8 => {
+                    let mut eaten = 1;
+                    unsafe {
+                        assert_eq!(
+                            service_event(
+                                handle as *mut _,
+                                context as *mut _,
+                                &Event::text(b'x' as u16),
+                                &mut eaten
+                            ),
+                            S_OK
+                        );
+                    }
+                    assert_eq!(eaten, 0);
+                }
+                9 => {
+                    d.results.borrow_mut().insert("EndComposition", E_FAIL);
+                }
+                _ => unreachable!(),
+            }
+        });
+        assert!(!c.event(Event::command(6)), "case{case}");
+        assert_eq!(c.a.writes.get(), writes + 1);
+        assert_eq!(c.a.ends.get(), ends + u32::from(case == 9));
+        assert_eq!(c.a.starts.get(), starts);
+        assert!(stopped(&c));
+        assert_eq!(
+            crate::support::dll::snapshot(&c.service).counts[11],
+            before.counts[11] + 1
+        );
+        if case == 4 || case == 5 {
+            assert_eq!(c.a.reads.get(), at_write.get());
+        }
+        oracle::document(&c, if case == 1 { "!ello" } else { "hello" }, 12);
+        let reads = c.a.reads.get();
+        assert!(!c.key(b'y' as u16, false));
+        assert_eq!(c.a.reads.get(), reads);
+        assert_eq!(c.a.writes.get(), writes + 1);
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Counts {
+    reads: u32,
+    writes: u32,
+    starts: u32,
+    ends: u32,
+    selections: usize,
+}
+fn counts(c: &Client) -> Counts {
+    Counts {
+        reads: c.a.reads.get(),
+        writes: c.a.writes.get(),
+        starts: c.a.starts.get(),
+        ends: c.a.ends.get(),
+        selections: c
+            .a
+            .operations
+            .borrow()
+            .iter()
+            .filter(|o| o.effect == Effect::Selection)
+            .count(),
+    }
+}
+fn prepare_selection(c: &Client) {
+    c.type_text("ghbdtn ");
+    c.a.selection.set(Span {
+        start: 6,
+        length: 10,
+    });
+    c.a.style.set(TF_SELECTIONSTYLE {
+        ase: TF_AE_START,
+        fInterimChar: false.into(),
+    });
+    c.a.move_clones.set(true);
+    let d = Rc::clone(&c.a);
+    c.host.on("EndComposition.after", 0, move || {
+        d.selection.set(Span {
+            start: 7,
+            length: 0,
+        });
+        d.style.set(TF_SELECTIONSTYLE {
+            ase: TF_AE_NONE,
+            fInterimChar: false.into(),
+        });
+    });
+}
+fn inject_policy(
+    c: &Client,
+    boundary: &'static str,
+    skip: usize,
+    policy: usize,
+) -> Rc<std::cell::Cell<Option<Counts>>> {
+    use windows_core::Interface;
+    let observed = Rc::new(std::cell::Cell::new(None));
+    let record = Rc::clone(&observed);
+    let d = Rc::clone(&c.a);
+    let host = Rc::clone(&c.host);
+    let manager = Rc::clone(&c.manager);
+    let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+    let other = c.context_b.as_raw() as usize;
+    c.host.on(boundary, skip, move || {
+        record.set(Some(Counts {
+            reads: d.reads.get(),
+            writes: d.writes.get(),
+            starts: d.starts.get(),
+            ends: d.ends.get(),
+            selections: d
+                .operations
+                .borrow()
+                .iter()
+                .filter(|o| o.effect == Effect::Selection)
+                .count(),
+        }));
+        match policy {
+            0 => d.status.set(TF_SD_READONLY),
+            1 => d.disabled.set(true),
+            2 => d.empty_disabled.set(true),
+            3 => manager.disabled.set(true),
+            4 => d.scope.set(IS_PRIVATE),
+            5 => {
+                d.results
+                    .borrow_mut()
+                    .insert("scope.GetValue", E_ACCESSDENIED);
+            }
+            6 => host.field_facts.borrow_mut().as_mut().unwrap().field.style |= 0x800,
+            7 => unsafe {
+                assert_eq!(
+                    (sink.vtable().OnPushContext)(sink.as_raw(), other as *mut _),
+                    S_OK
+                );
+            },
+            _ => unreachable!(),
+        }
+    });
+    observed
+}
+#[test]
+fn finish_selection_policy_is_rechecked_after_native_preparation() {
+    for effect in [
+        "SetText.before",
+        "ShiftEnd",
+        "ShiftStart",
+        "SetSelection",
+        "GetText",
+    ] {
+        let skip = {
+            let c = Client::notepad();
+            prepare_selection(&c);
+            c.host.trace.borrow_mut().clear();
+            assert!(!c.event(Event::command(6)));
+            assert!(!stopped(&c));
+            let trace = c.host.trace.borrow();
+            let operation = if effect == "GetText" {
+                trace.iter().rposition(|s| *s == effect)
+            } else {
+                trace.iter().position(|s| *s == effect)
+            }
+            .unwrap();
+            let preparation = trace[..=operation]
+                .iter()
+                .rposition(|s| *s == "GetExtent")
+                .unwrap();
+            trace[..preparation]
+                .iter()
+                .filter(|s| **s == "GetExtent")
+                .count()
+        };
+        for policy in 0..8 {
+            let c = Client::notepad();
+            prepare_selection(&c);
+            let initial = counts(&c);
+            let before = crate::support::dll::snapshot(&c.service);
+            let recorded = inject_policy(&c, "GetExtent", skip, policy);
+            assert!(!c.event(Event::command(6)), "effect{effect},policy{policy}");
+            let recorded = recorded.get().unwrap();
+            assert_eq!(counts(&c), recorded, "effect{effect},policy{policy}");
+            assert!(stopped(&c));
+            let attempted = recorded.writes > initial.writes;
+            let after = crate::support::dll::snapshot(&c.service);
+            assert_eq!(after.counts[11], before.counts[11] + u32::from(attempted));
+            assert_eq!(after.counts[10], before.counts[10] + u32::from(!attempted));
+            assert_eq!(
+                *c.a.text.borrow(),
+                "prefix привет suffix".encode_utf16().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                *c.b.text.borrow(),
+                "prefix suffix".encode_utf16().collect::<Vec<_>>()
+            );
+            assert!(!c.key(b'y' as u16, false));
+            assert_eq!(counts(&c), recorded);
+            let pending = c.host.actions.take();
+            assert!(
+                pending.iter().all(|a| a.boundary == "EndComposition.after"),
+                "only unreached movement hook"
+            );
+        }
+    }
+}
+#[test]
+fn fresh_policy_blocks_all_character_access_and_effects() {
+    for (operation, preparation, owned, finish) in [
+        ("GetText", "ShiftStart", false, false),
+        ("GetText", "GetExtent", true, false),
+        ("StartComposition", "enumerator.Next", false, false),
+        ("SetText.before", "GetExtent", true, false),
+        ("SetSelection", "Collapse", true, false),
+        ("EndComposition", "GetText.after", true, true),
+    ] {
+        let event = if finish {
+            Event::command(6)
+        } else {
+            Event::text(b'b' as u16)
+        };
+        let skip = {
+            let c = Client::notepad();
+            if owned {
+                c.type_text("hello");
+            }
+            c.host.trace.borrow_mut().clear();
+            c.event(event);
+            let trace = c.host.trace.borrow();
+            let position = trace.iter().position(|s| *s == operation).unwrap();
+            let preparation_index = trace[..=position]
+                .iter()
+                .rposition(|s| *s == preparation)
+                .unwrap();
+            trace[..preparation_index]
+                .iter()
+                .filter(|s| **s == preparation)
+                .count()
+        };
+        for policy in 0..8 {
+            let c = Client::notepad();
+            if owned {
+                c.type_text("hello");
+            }
+            let initial = counts(&c);
+            let before = crate::support::dll::snapshot(&c.service);
+            let recorded = inject_policy(&c, preparation, skip, policy);
+            let eaten = c.event(event);
+            let recorded = recorded.get().unwrap();
+            let attempted = recorded.writes > initial.writes;
+            assert_eq!(eaten, attempted && !finish, "{operation}/{policy}");
+            assert_eq!(counts(&c), recorded, "{operation}/{policy}");
+            assert_eq!(
+                crate::support::dll::snapshot(&c.service).counts[11],
+                before.counts[11] + u32::from(attempted)
+            );
+            if attempted {
+                assert!(stopped(&c));
+            }
+            oracle::document(
+                &c,
+                if attempted && !finish {
+                    "hellob"
+                } else if owned {
+                    "hello"
+                } else {
+                    ""
+                },
+                if owned { 12 } else { 7 },
+            );
+            if policy != 7 || owned {
+                assert!(!c.key(b'x' as u16, false));
+                assert_eq!(counts(&c), recorded);
+            }
+        }
+    }
+}
+#[test]
+fn owned_scope_drift_cannot_borrow_selection_authority() {
+    let c = Client::notepad();
+    c.type_text("ghbdtn ");
+    c.a.selection.set(Span {
+        start: 6,
+        length: 10,
+    });
+    let before = counts(&c);
+    let diagnostics = crate::support::dll::snapshot(&c.service);
+    let d = Rc::clone(&c.a);
+    let reads = Rc::new(std::cell::Cell::new(0));
+    let record = Rc::clone(&reads);
+    c.host.on("GetSelection", 2, move || {
+        d.excluded_scope.set(Some(Span {
+            start: 7,
+            length: 7,
+        }));
+        record.set(d.reads.get());
+    });
+    assert!(!c.key(b'x' as u16, false));
+    assert_eq!(c.a.reads.get(), reads.get());
+    assert_eq!(c.a.writes.get(), before.writes);
+    assert_eq!(c.a.ends.get(), before.ends);
+    assert!(stopped(&c));
+    assert_eq!(
+        crate::support::dll::snapshot(&c.service).counts[10],
+        diagnostics.counts[10] + 1
+    );
+    oracle::selection(
+        &c,
+        "привет ",
+        Span {
+            start: 6,
+            length: 10,
+        },
+        c.a.style.get(),
+    );
+}
+#[test]
+fn empty_start_exclusion_stops_before_character_access() {
+    for readonly in [false, true] {
+        let c = Client::notepad();
+        let d = Rc::clone(&c.a);
+        let reads = Rc::new(std::cell::Cell::new(0));
+        let record = Rc::clone(&reads);
+        let before = crate::support::dll::snapshot(&c.service);
+        c.host.on("composition.QI", 0, move || {
+            record.set(d.reads.get());
+            if readonly {
+                d.status.set(TF_SD_READONLY);
+            } else {
+                d.results
+                    .borrow_mut()
+                    .insert("scope.GetValue", E_ACCESSDENIED);
+            }
+        });
+        assert!(!c.key(b'g' as u16, false));
+        assert_eq!(c.a.reads.get(), reads.get());
+        assert_eq!(
+            (c.a.starts.get(), c.a.writes.get(), c.a.ends.get()),
+            (1, 0, 0)
+        );
+        assert!(stopped(&c));
+        let after = crate::support::dll::snapshot(&c.service);
+        assert_eq!(after.counts[10], before.counts[10] + 1);
+        assert_eq!(after.counts[11], before.counts[11]);
+        oracle::document(&c, "", 7);
+        assert!(!c.key(b'x' as u16, false));
+        assert_eq!(c.a.reads.get(), reads.get());
+    }
+}

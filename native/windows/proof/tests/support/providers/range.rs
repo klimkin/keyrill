@@ -64,6 +64,9 @@ unsafe extern "system" fn ITfRange_SetText(
         boundary(this, |p| {
             p.hit("SetText");
             p.hit("SetText.before");
+            if p.result("SetText.before") != S_OK {
+                return p.result("SetText.before");
+            }
             let d = p.document();
             let span = p.span();
             let old = span.get();

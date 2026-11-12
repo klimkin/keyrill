@@ -260,7 +260,22 @@ fn layout_callback(host: &Rc<HostCapsule>) -> unsafe extern "system" fn(i32, *mu
     ];
     CALLBACKS[index]
 }
+static LAYOUT_PANICS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub fn layout_panics() -> usize {
+    LAYOUT_PANICS.load(std::sync::atomic::Ordering::Relaxed)
+}
 unsafe extern "system" fn layouts<const INDEX: usize>(capacity: i32, out: *mut isize) -> i32 {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        layout_call::<INDEX>(capacity, out)
+    })) {
+        Ok(result) => result,
+        Err(_) => {
+            LAYOUT_PANICS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            0
+        }
+    }
+}
+unsafe fn layout_call<const INDEX: usize>(capacity: i32, out: *mut isize) -> i32 {
     let host = LAYOUT_HOSTS
         .with(|slots| slots.borrow()[INDEX].upgrade())
         .expect("callback retains dependency capsule");
@@ -331,14 +346,16 @@ unsafe extern "system" fn capture(
             proof_process: 1,
             ..Default::default()
         };
-        out.write(
-            owner
-                .field_facts
-                .borrow()
-                .as_ref()
-                .copied()
-                .unwrap_or(facts),
-        );
+        let mut facts = owner
+            .field_facts
+            .borrow()
+            .as_ref()
+            .copied()
+            .unwrap_or(facts);
+        if facts.view != view {
+            facts.focus = HWND::default();
+        }
+        out.write(facts);
         S_OK
     })
 }
