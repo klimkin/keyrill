@@ -351,7 +351,7 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
         None
     };
     fixture.context.source.replace(source.clone());
-    if let Some(source) = &source {
+    if source.is_some() {
         set_text(window, source::TITLE)?;
         row(window, source::MODE_ID, source::MODE_STATUS, 552, 24)?;
         row(
@@ -569,4 +569,32 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
         0
     };
     Ok(ExitCode::from(verdict))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn actual_rich_edit_fixture_preserves_ids_exclusion_styles_and_tsf_setup() {
+        let _apartment = Apartment::initialize().unwrap();
+        let manager: ITfThreadMgr =
+            unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }.unwrap();
+        unsafe { manager.Activate() }.unwrap();
+        let activated = Activated(manager.clone(), Cell::new(true));
+        let fixture = create_fixture(manager, None).unwrap();
+        for id in [101, 102, 103, 104] {
+            let field = unsafe { GetDlgItem(Some(fixture.window), id) }.unwrap();
+            let facts = crate::uia::describe(field);
+            assert!(facts.complete && facts.enabled);
+            assert_eq!(facts.control, id);
+            assert_eq!(String::from_utf16_lossy(&facts.class_name), "RICHEDIT50W");
+            assert_eq!(facts.style & ES_READONLY as isize != 0, id == 103);
+            assert_eq!(facts.style & ES_PASSWORD as isize != 0, id == 104);
+            let style = unsafe { SendMessageW(field, EM_GETEDITSTYLE, None, None) }.0;
+            assert_ne!(style & SES_USECTF as isize, 0);
+        }
+        assert_eq!(reset_scopes(fixture.window, fixture.context.scope), S_OK);
+        drop(fixture);
+        assert_eq!(activated.deactivate(), S_OK);
+    }
 }
