@@ -1,6 +1,8 @@
 #![cfg(windows)]
 mod scenarios_admission;
 mod scenarios_boundary;
+mod scenarios_commands;
+mod scenarios_sources;
 mod scenarios_diagnostics;
 mod scenarios_editing;
 mod scenarios_finish;

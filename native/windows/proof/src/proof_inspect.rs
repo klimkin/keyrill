@@ -344,7 +344,9 @@ pub fn denial_matches(first: &Publication, second: &Publication) -> bool {
     }
     true
 }
-fn parse_runtime(text: &str) -> Option<[u32; 12]> {
+/// Parse a complete canonical runtime status row and validate every field.
+#[must_use]
+pub fn parse_runtime(text: &str) -> Option<[u32; 12]> {
     let fields: Vec<_> = text.split("; ").collect();
     if fields.len() != 12 || fields[0] != "Keyrill runtime v1" {
         return None;
