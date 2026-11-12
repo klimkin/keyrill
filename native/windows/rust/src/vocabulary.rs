@@ -1,0 +1,1494 @@
+//! Bounded local-file acquisition and cancellable immutable vocabulary publication.
+
+use crate::service::WORKERS;
+use crate::vocabulary_contract::{
+    Boundary, Config, DictionaryOwner, Error, Model, ModuleOwner, Path, Ready, Source, SourceReady,
+    Status,
+};
+use keyrill_ffi::{kr_abi_version, kr_prepare_model};
+use std::ffi::c_void;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows::Wdk::Storage::FileSystem::{
+    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile,
+};
+use windows::Win32::Foundation::*;
+use windows::Win32::Storage::FileSystem::*;
+use windows::Win32::System::Environment::GetEnvironmentVariableW;
+use windows::Win32::System::IO::*;
+use windows::Win32::System::LibraryLoader::{
+    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExW,
+};
+use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::Threading::*;
+use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
+use windows_core::{BOOL, PCWSTR, PWSTR};
+
+const MAX_BYTES: usize = 1024 * 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NativeCalls {
+    pub(crate) open: *mut c_void,
+    pub(crate) read: *mut c_void,
+    pub(crate) completion: *mut c_void,
+    pub(crate) cancel: *mut c_void,
+    pub(crate) event: *mut c_void,
+    pub(crate) pin: *mut c_void,
+    pub(crate) submit: *mut c_void,
+    pub(crate) long_running: *mut c_void,
+    pub(crate) volume_paths: *mut c_void,
+}
+
+/// Callback owners guarantee concurrent-safe targets and context until the paired release.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Hooks {
+    pub(crate) call: *mut c_void,
+    pub(crate) context: *mut c_void,
+    pub(crate) native: NativeCalls,
+    pub(crate) retain_context: *mut c_void,
+    pub(crate) release_context: *mut c_void,
+}
+
+#[cfg(feature = "test-api")]
+static TEST_HOOKS: std::sync::OnceLock<Mutex<Hooks>> = std::sync::OnceLock::new();
+
+// SAFETY: the dependency boundary requires every callback and context to support worker threads.
+unsafe impl Send for Hooks {}
+// SAFETY: Hooks is immutable and its external owner guarantees concurrent-safe callback storage.
+unsafe impl Sync for Hooks {}
+
+#[repr(C)]
+struct Call {
+    value: usize,
+    error: u32,
+    exception: u32,
+}
+
+impl Call {
+    fn boolean(result: windows_core::Result<()>) -> Self {
+        match result {
+            Ok(()) => Self {
+                value: 1,
+                error: 0,
+                exception: 0,
+            },
+            Err(error) => Self {
+                value: 0,
+                error: error.code().0 as u32 & 0xffff,
+                exception: 0,
+            },
+        }
+    }
+
+    fn checked(self) -> Result<Self, Error> {
+        if self.exception != 0 {
+            crate::foreign::quarantine();
+            return Err(Error::Startup);
+        }
+        Ok(self)
+    }
+}
+
+unsafe extern "C" {
+    fn kr_worker_hook(
+        target: *mut c_void,
+        context: *mut c_void,
+        boundary: u32,
+        handle: HANDLE,
+        index: usize,
+    ) -> Call;
+    fn kr_worker_lifetime(target: *mut c_void, context: *mut c_void) -> Call;
+    fn kr_worker_open(
+        target: *mut c_void,
+        output: *mut HANDLE,
+        access: u32,
+        attributes: *mut OBJECT_ATTRIBUTES,
+        io: *mut IO_STATUS_BLOCK,
+        file_attributes: u32,
+        sharing: u32,
+        disposition: u32,
+        options: u32,
+    ) -> Call;
+    fn kr_worker_read(
+        target: *mut c_void,
+        file: HANDLE,
+        buffer: *mut u8,
+        count: u32,
+        operation: *mut OVERLAPPED,
+    ) -> Call;
+    fn kr_worker_completion(
+        target: *mut c_void,
+        file: HANDLE,
+        operation: *mut OVERLAPPED,
+        count: *mut u32,
+        wait: BOOL,
+    ) -> Call;
+    fn kr_worker_cancel(target: *mut c_void, file: HANDLE, operation: *mut OVERLAPPED) -> Call;
+    fn kr_worker_event(target: *mut c_void) -> Call;
+    fn kr_worker_pin(
+        target: *mut c_void,
+        flags: u32,
+        address: PCWSTR,
+        module: *mut HMODULE,
+    ) -> Call;
+    fn kr_worker_submit(
+        target: *mut c_void,
+        callback: PTP_SIMPLE_CALLBACK,
+        context: *mut c_void,
+    ) -> Call;
+    fn kr_worker_long_running(target: *mut c_void, instance: PTP_CALLBACK_INSTANCE) -> Call;
+    fn kr_worker_volume_paths(
+        target: *mut c_void,
+        guid: PCWSTR,
+        paths: PWSTR,
+        capacity: u32,
+        length: *mut u32,
+    ) -> Call;
+}
+
+impl Hooks {
+    fn at(self, boundary: Boundary, handle: HANDLE, index: usize) -> Result<(), Error> {
+        if !self.call.is_null() {
+            // SAFETY: validated callback storage lives through the dependency lease. C++ catches throws.
+            unsafe { kr_worker_hook(self.call, self.context, boundary as u32, handle, index) }
+                .checked()?;
+        }
+        Ok(())
+    }
+
+    fn event(self, failure: Error) -> Result<Handle, Error> {
+        // SAFETY: the event has no borrowed security descriptor or name. Injected calls are fenced.
+        let handle = unsafe {
+            if self.native.event.is_null() {
+                CreateEventW(None, true, false, PCWSTR::null()).map_err(|_| failure)?
+            } else {
+                HANDLE(kr_worker_event(self.native.event).checked()?.value as *mut c_void)
+            }
+        };
+        Handle::new(handle).ok_or(failure)
+    }
+
+    fn completion(
+        self,
+        file: HANDLE,
+        operation: &mut OVERLAPPED,
+        count: &mut u32,
+        wait: bool,
+    ) -> Call {
+        // SAFETY: the file, operation, buffer and event remain owned until completion drains.
+        unsafe {
+            if self.native.completion.is_null() {
+                Call::boolean(GetOverlappedResult(file, operation, count, wait))
+            } else {
+                kr_worker_completion(
+                    self.native.completion,
+                    file,
+                    operation,
+                    count,
+                    BOOL::from(wait),
+                )
+            }
+        }
+    }
+}
+
+struct HookLease(Hooks);
+
+impl HookLease {
+    fn acquire(hooks: Hooks) -> Result<Self, Error> {
+        if hooks.retain_context.is_null() != hooks.release_context.is_null() {
+            return Err(Error::Startup);
+        }
+        if !hooks.retain_context.is_null() {
+            // SAFETY: the caller supplies one paired acquisition and release for the complete table.
+            unsafe { kr_worker_lifetime(hooks.retain_context, hooks.context) }.checked()?;
+        }
+        Ok(Self(hooks))
+    }
+}
+
+impl Drop for HookLease {
+    fn drop(&mut self) {
+        if !self.0.release_context.is_null() {
+            // SAFETY: this is the sole release paired with the successful retained callback owner.
+            let _ = unsafe { kr_worker_lifetime(self.0.release_context, self.0.context) }.checked();
+        }
+    }
+}
+
+#[derive(Default)]
+struct Handle(HANDLE);
+
+impl Handle {
+    fn new(value: HANDLE) -> Option<Self> {
+        (!value.is_invalid()).then_some(Self(value))
+    }
+}
+
+// SAFETY: file/event handles are kernel objects and move between threads with unique ownership.
+unsafe impl Send for Handle {}
+// SAFETY: shared use is restricted to kernel synchronization and immutable metadata queries.
+unsafe impl Sync for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: this wrapper uniquely owns the handle, and pending I/O has drained.
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+fn environment(name: &str) -> Result<Option<Vec<u16>>, Error> {
+    let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    let mut buffer = [0; 4096];
+    // SAFETY: name is terminated and buffer supplies the advertised capacity.
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+        let length = GetEnvironmentVariableW(PCWSTR(name.as_ptr()), Some(&mut buffer)) as usize;
+        if length == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND {
+            return Ok(None);
+        }
+        if length == 0 || length >= buffer.len() {
+            return Err(Error::Configuration);
+        }
+        Ok(Some(buffer[..length].to_vec()))
+    }
+}
+
+fn device_name(part: &[u16]) -> bool {
+    let stem = part
+        .split(|unit| *unit == b'.' as u16)
+        .next()
+        .unwrap_or_default();
+    let uppercase: Vec<u16> = stem
+        .iter()
+        .map(|unit| match *unit {
+            97..=122 => *unit - 32,
+            _ => *unit,
+        })
+        .collect();
+    let equals = |text: &str| uppercase.iter().copied().eq(text.encode_utf16());
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .into_iter()
+        .any(equals)
+    {
+        return true;
+    }
+    uppercase.len() == 4
+        && (uppercase[..3] == [67, 79, 77] || uppercase[..3] == [76, 80, 84])
+        && matches!(uppercase[3], 48..=57 | 0xb9 | 0xb2 | 0xb3)
+}
+
+pub(crate) fn parse_path(text: &[u16]) -> Option<Path> {
+    if !(4..=4095).contains(&text.len())
+        || !matches!(text[0], 65..=90 | 97..=122)
+        || text[1..3] != [58, 92]
+    {
+        return None;
+    }
+    let mut path = Path {
+        drive: text[..3].to_vec(),
+        components: Vec::new(),
+    };
+    for part in text[3..].split(|unit| *unit == 92) {
+        if part.is_empty()
+            || part.len() > 255
+            || part == [46]
+            || part == [46, 46]
+            || matches!(part.last(), Some(46 | 32))
+            || device_name(part)
+            || part
+                .iter()
+                .any(|unit| *unit < 32 || [47, 58, 42, 63, 34, 60, 62, 124].contains(unit))
+            || path.components.len() >= 64
+        {
+            return None;
+        }
+        path.components.push(part.to_vec());
+    }
+    Some(path)
+}
+
+pub(crate) fn capture_config() -> Option<Config> {
+    let policy = environment("KEYRILL_WINDOWS_POLICY").ok()?;
+    let english = environment("KEYRILL_WINDOWS_EN_DICTIONARY").ok()?;
+    let russian = environment("KEYRILL_WINDOWS_RU_DICTIONARY").ok()?;
+    let explicit = [english, russian].map(|value| match value {
+        None => Some(None),
+        Some(path) => parse_path(&path).map(Some),
+    });
+    let [english, russian] = explicit;
+    let english = english?;
+    let russian = russian?;
+    let equals = |text: &str| {
+        policy
+            .as_ref()
+            .is_some_and(|value| value.iter().copied().eq(text.encode_utf16()))
+    };
+    if policy.is_none() || equals("fixture") {
+        return Some(Config::Fixture);
+    }
+    if equals("off") {
+        return Some(Config::Off);
+    }
+    if !equals("model") {
+        return None;
+    }
+    let profile = environment("USERPROFILE").ok()?;
+    let source = |path: Option<Path>, language: &str| {
+        path.map(Source::Explicit).unwrap_or_else(|| {
+            let path = profile.as_ref().and_then(|profile| {
+                let mut text = profile.clone();
+                text.extend(format!("\\vimfiles\\spell\\{language}.utf-8.add").encode_utf16());
+                parse_path(&text)
+            });
+            Source::Default(path)
+        })
+    };
+    Some(Config::Model(Model {
+        sources: [source(english, "en"), source(russian, "ru")],
+    }))
+}
+
+fn volume(drive: &[u16], hooks: Hooks) -> Result<Vec<u16>, Error> {
+    struct Enumeration(HANDLE);
+    impl Drop for Enumeration {
+        fn drop(&mut self) {
+            // SAFETY: this owns the volume enumeration returned by FindFirstVolumeW.
+            let _ = unsafe { FindVolumeClose(self.0) };
+        }
+    }
+    let mut guid = [0; 64];
+    // SAFETY: guid is writable for the generated binding's advertised capacity.
+    let enumeration =
+        Enumeration(unsafe { FindFirstVolumeW(&mut guid) }.map_err(|_| Error::Unavailable)?);
+    let mut selected = None;
+    for _ in 0..1024 {
+        let mut paths = vec![0; 32768];
+        let mut length = 0;
+        // SAFETY: guid is terminated by volume enumeration. All output storage is live for the call.
+        let result = unsafe {
+            if hooks.native.volume_paths.is_null() {
+                Call::boolean(GetVolumePathNamesForVolumeNameW(
+                    PCWSTR(guid.as_ptr()),
+                    Some(&mut paths),
+                    &mut length,
+                ))
+            } else {
+                kr_worker_volume_paths(
+                    hooks.native.volume_paths,
+                    PCWSTR(guid.as_ptr()),
+                    PWSTR(paths.as_mut_ptr()),
+                    paths.len() as u32,
+                    &mut length,
+                )
+            }
+        }
+        .checked()?;
+        if result.value == 0 || length as usize > paths.len() {
+            return Err(Error::Unavailable);
+        }
+        for path in paths
+            .split(|unit| *unit == 0)
+            .take_while(|path| !path.is_empty())
+        {
+            if path.len() == drive.len()
+                && path
+                    .iter()
+                    .zip(drive)
+                    .all(|(a, b)| ascii_fold(*a) == ascii_fold(*b))
+            {
+                if selected.is_some() {
+                    return Err(Error::Unavailable);
+                }
+                let end = guid
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .ok_or(Error::Unavailable)?;
+                selected = Some(guid[..end].to_vec());
+            }
+        }
+        // SAFETY: enumeration and guid remain owned by this function.
+        if unsafe { FindNextVolumeW(enumeration.0, &mut guid) }.is_err() {
+            // SAFETY: last error is read immediately after the failed enumeration call.
+            return if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
+                selected.ok_or(Error::Unavailable)
+            } else {
+                Err(Error::Unavailable)
+            };
+        }
+    }
+    Err(Error::Unavailable)
+}
+
+fn ascii_fold(unit: u16) -> u16 {
+    match unit {
+        65..=90 => unit + 32,
+        _ => unit,
+    }
+}
+
+#[derive(Clone, Default)]
+struct Metadata {
+    id: FILE_ID_INFO,
+    basic: FILE_BASIC_INFO,
+    standard: FILE_STANDARD_INFO,
+}
+
+impl Metadata {
+    fn same_id(&self, other: &Self) -> bool {
+        self.id.VolumeSerialNumber == other.id.VolumeSerialNumber
+            && self.id.FileId.Identifier == other.id.FileId.Identifier
+    }
+    fn same_file(&self, other: &Self) -> bool {
+        self.same_id(other)
+            && self.standard.EndOfFile == other.standard.EndOfFile
+            && self.basic.CreationTime == other.basic.CreationTime
+            && self.basic.LastWriteTime == other.basic.LastWriteTime
+            && self.basic.ChangeTime == other.basic.ChangeTime
+            && self.basic.FileAttributes == other.basic.FileAttributes
+    }
+}
+
+fn inspect(handle: HANDLE, directory: bool, volume: Option<u64>) -> Result<Metadata, Error> {
+    let mut metadata = Metadata::default();
+    let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+    let prohibited = FILE_ATTRIBUTE_REPARSE_POINT.0
+        | FILE_ATTRIBUTE_OFFLINE.0
+        | FILE_ATTRIBUTE_RECALL_ON_OPEN.0
+        | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0;
+    // SAFETY: every information class is paired with its exact SDK structure and writable capacity.
+    unsafe {
+        if GetFileType(handle) != FILE_TYPE_DISK {
+            return Err(Error::Unavailable);
+        }
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&mut metadata.id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+        .map_err(|_| Error::Unavailable)?;
+        GetFileInformationByHandleEx(
+            handle,
+            FileBasicInfo,
+            (&mut metadata.basic as *mut FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+        .map_err(|_| Error::Unavailable)?;
+        GetFileInformationByHandleEx(
+            handle,
+            FileStandardInfo,
+            (&mut metadata.standard as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+        .map_err(|_| Error::Unavailable)?;
+        GetFileInformationByHandleEx(
+            handle,
+            FileAttributeTagInfo,
+            (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+        .map_err(|_| Error::Unavailable)?;
+    }
+    if metadata.standard.DeletePending
+        || metadata.standard.Directory != directory
+        || tag.FileAttributes & prohibited != 0
+        || metadata.basic.FileAttributes & prohibited != 0
+        || tag.ReparseTag != 0
+        || volume.is_some_and(|volume| metadata.id.VolumeSerialNumber != volume)
+    {
+        return Err(Error::Unavailable);
+    }
+    Ok(metadata)
+}
+
+fn open(
+    parent: HANDLE,
+    name: &[u16],
+    directory: bool,
+    missing: Error,
+    hooks: Hooks,
+) -> Result<Handle, Error> {
+    if name.len() > 32760 {
+        return Err(Error::Unavailable);
+    }
+    struct OpenOperation {
+        name: Vec<u16>,
+        text: UNICODE_STRING,
+        attributes: OBJECT_ATTRIBUTES,
+        io: IO_STATUS_BLOCK,
+        raw: HANDLE,
+    }
+    let mut owned = Box::new(OpenOperation {
+        name: name.to_vec(),
+        text: UNICODE_STRING::default(),
+        attributes: OBJECT_ATTRIBUTES::default(),
+        io: IO_STATUS_BLOCK::default(),
+        raw: HANDLE::default(),
+    });
+    owned.text = UNICODE_STRING {
+        Length: (owned.name.len() * 2) as u16,
+        MaximumLength: (owned.name.len() * 2) as u16,
+        Buffer: PWSTR(owned.name.as_mut_ptr()),
+    };
+    owned.attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent,
+        ObjectName: &owned.text,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        ..Default::default()
+    };
+    let access = FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE
+        | if directory {
+            FILE_TRAVERSE
+        } else {
+            FILE_READ_DATA
+        };
+    let sharing = FILE_SHARE_READ
+        | FILE_SHARE_WRITE
+        | if directory {
+            FILE_SHARE_MODE(0)
+        } else {
+            FILE_SHARE_DELETE
+        };
+    let options = FILE_OPEN_REPARSE_POINT
+        | if directory {
+            FILE_SYNCHRONOUS_IO_NONALERT
+        } else {
+            FILE_NON_DIRECTORY_FILE
+        };
+    // SAFETY: native object/name/IOSB storage remains live through pending completion below.
+    let mut status = unsafe {
+        if hooks.native.open.is_null() {
+            NtCreateFile(
+                &mut owned.raw,
+                access,
+                &owned.attributes,
+                &mut owned.io,
+                None,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                sharing,
+                FILE_OPEN,
+                options,
+                None,
+                0,
+            )
+            .0
+        } else {
+            let result = kr_worker_open(
+                hooks.native.open,
+                &mut owned.raw,
+                access.0,
+                &mut owned.attributes,
+                &mut owned.io,
+                0,
+                sharing.0,
+                FILE_OPEN.0,
+                options.0,
+            );
+            if result.exception != 0 {
+                crate::foreign::quarantine();
+                // The thrown callback may have initiated an asynchronous open into this storage.
+                std::mem::forget(owned);
+                return Err(Error::Startup);
+            }
+            result.value as i32
+        }
+    };
+    let handle = Handle::new(owned.raw);
+    if status == 0x103 {
+        loop {
+            // SAFETY: the pending open owns its IOSB, name storage and any returned handle.
+            if handle.as_ref().is_some_and(
+                |handle| unsafe { WaitForSingleObject(handle.0, INFINITE) } == WAIT_OBJECT_0,
+            ) {
+                break;
+            }
+            // SAFETY: wait backs off while preserving all pending-open storage.
+            unsafe { Sleep(1000) };
+        }
+        // SAFETY: STATUS_PENDING selected the Status union variant and the operation has completed.
+        status = unsafe { owned.io.Anonymous.Status.0 };
+    }
+    if matches!(status as u32, 0xc0000034 | 0xc000003a) {
+        return Err(missing);
+    }
+    if status < 0 {
+        return Err(Error::Unavailable);
+    }
+    handle.ok_or(Error::Unavailable)
+}
+
+fn check_stop(stop: HANDLE) -> Result<(), Error> {
+    // SAFETY: the State owns this event throughout every worker operation.
+    if unsafe { WaitForSingleObject(stop, 0) } == WAIT_TIMEOUT {
+        Ok(())
+    } else {
+        Err(Error::Cancelled)
+    }
+}
+
+struct ReadOperation {
+    operation: OVERLAPPED,
+    event: Handle,
+    bytes: Vec<u8>,
+}
+
+fn drain(file: &mut Handle, pending: &mut Option<Box<ReadOperation>>, hooks: Hooks) {
+    let operation = &mut pending.as_mut().expect("pending I/O is owned").operation;
+    // SAFETY: this is the one cancellation attempt for the still-owned operation.
+    let cancel = unsafe {
+        if hooks.native.cancel.is_null() {
+            Call::boolean(CancelIoEx(file.0, Some(operation)))
+        } else {
+            kr_worker_cancel(hooks.native.cancel, file.0, operation)
+        }
+    };
+    let _ = cancel.checked();
+    let mut count = 0;
+    let completion = hooks.completion(file.0, operation, &mut count, true);
+    if completion.exception != 0
+        || (completion.value == 0 && completion.error == ERROR_IO_INCOMPLETE.0)
+    {
+        crate::foreign::quarantine();
+        // Completion is uncertain. Kernel references may still target this storage and file.
+        std::mem::forget(pending.take());
+        std::mem::forget(std::mem::take(file));
+    }
+}
+
+fn read(file: &mut Handle, stop: HANDLE, length: usize, hooks: Hooks) -> Result<Vec<u8>, Error> {
+    let event = hooks.event(Error::Read)?;
+    let mut pending = Some(Box::new(ReadOperation {
+        operation: OVERLAPPED::default(),
+        event,
+        bytes: vec![0; length + 1],
+    }));
+    let mut offset = 0;
+    // SAFETY: monotonic tick count has no borrowed inputs.
+    let deadline = unsafe { GetTickCount64() } + 2000;
+    while offset <= length {
+        check_stop(stop)?;
+        let owned = pending.as_mut().expect("read owns its operation");
+        owned.operation = OVERLAPPED {
+            hEvent: owned.event.0,
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: offset as u32,
+                    OffsetHigh: 0,
+                },
+            },
+            ..Default::default()
+        };
+        // SAFETY: the owned manual-reset event belongs exclusively to this read.
+        unsafe { ResetEvent(owned.event.0) }.map_err(|_| Error::Read)?;
+        let count = (owned.bytes.len() - offset).min(65536);
+        // SAFETY: Box fixes the operation address and the vector will not reallocate until drained.
+        let result = unsafe {
+            if hooks.native.read.is_null() {
+                Call::boolean(ReadFile(
+                    file.0,
+                    Some(&mut owned.bytes[offset..offset + count]),
+                    None,
+                    Some(&mut owned.operation),
+                ))
+            } else {
+                kr_worker_read(
+                    hooks.native.read,
+                    file.0,
+                    owned.bytes.as_mut_ptr().add(offset),
+                    count as u32,
+                    &mut owned.operation,
+                )
+            }
+        };
+        if result.exception != 0 {
+            crate::foreign::quarantine();
+            drain(file, &mut pending, hooks);
+            return Err(Error::Startup);
+        }
+        if result.value == 0 && result.error == ERROR_IO_PENDING.0 {
+            // SAFETY: both wait handles remain owned through the following drain/completion.
+            let waited = unsafe {
+                let now = GetTickCount64();
+                WaitForMultipleObjects(
+                    &[stop, owned.event.0],
+                    false,
+                    deadline.saturating_sub(now) as u32,
+                )
+            };
+            if waited.0 != WAIT_OBJECT_0.0 + 1 {
+                drain(file, &mut pending, hooks);
+                return Err(if waited == WAIT_OBJECT_0 {
+                    Error::Cancelled
+                } else {
+                    Error::Read
+                });
+            }
+        }
+        let mut transferred = 0;
+        let result = if result.value != 0 || result.error == ERROR_IO_PENDING.0 {
+            hooks.completion(file.0, &mut owned.operation, &mut transferred, false)
+        } else {
+            result
+        };
+        if result.exception != 0 || (result.value == 0 && result.error == ERROR_IO_INCOMPLETE.0) {
+            crate::foreign::quarantine();
+            drain(file, &mut pending, hooks);
+            return Err(Error::Startup);
+        }
+        if result.value == 0 && result.error != ERROR_HANDLE_EOF.0 {
+            return Err(Error::Read);
+        }
+        if transferred == 0 {
+            if offset != length {
+                return Err(Error::Unstable);
+            }
+            let mut owned = pending.take().expect("completed operation is owned");
+            owned.bytes.truncate(length);
+            return Ok(owned.bytes);
+        }
+        offset += transferred as usize;
+        if offset > length {
+            return Err(Error::Unstable);
+        }
+    }
+    Err(Error::Unstable)
+}
+
+struct Observation {
+    metadata: Metadata,
+    bytes: Vec<u8>,
+}
+struct Parent {
+    handle: Handle,
+    metadata: Metadata,
+}
+
+fn revalidate(
+    parents: &[Parent],
+    drive: &[u16],
+    original_volume: &[u16],
+    hooks: Hooks,
+) -> Result<(), Error> {
+    let serial = parents[0].metadata.id.VolumeSerialNumber;
+    for parent in parents {
+        if !parent
+            .metadata
+            .same_id(&inspect(parent.handle.0, true, Some(serial))?)
+        {
+            return Err(Error::Unstable);
+        }
+    }
+    match volume(drive, hooks) {
+        Ok(current) if current == original_volume => {}
+        Err(Error::Startup) => return Err(Error::Startup),
+        _ => return Err(Error::Unstable),
+    }
+    Ok(())
+}
+
+fn observe(path: &Path, stop: HANDLE, hooks: Hooks) -> Result<Observation, Error> {
+    check_stop(stop)?;
+    if path.components.is_empty() {
+        return Err(Error::Unavailable);
+    }
+    let selected_volume = volume(&path.drive, hooks)?;
+    let terminated: Vec<u16> = selected_volume.iter().copied().chain(Some(0)).collect();
+    // SAFETY: terminated holds a live zero-terminated volume GUID name.
+    if unsafe { GetDriveTypeW(PCWSTR(terminated.as_ptr())) } != DRIVE_FIXED {
+        return Err(Error::Unavailable);
+    }
+    if selected_volume.len() < 4 {
+        return Err(Error::Unavailable);
+    }
+    let native: Vec<u16> = "\\??\\"
+        .encode_utf16()
+        .chain(selected_volume[4..].iter().copied())
+        .collect();
+    let root = open(HANDLE::default(), &native, true, Error::Unavailable, hooks)?;
+    let root_meta = inspect(root.0, true, None)?;
+    let serial = root_meta.id.VolumeSerialNumber;
+    let mut filesystem = [0; 32];
+    // SAFETY: root is an owned directory handle and output storage has its advertised capacity.
+    unsafe { GetVolumeInformationByHandleW(root.0, None, None, None, None, Some(&mut filesystem)) }
+        .map_err(|_| Error::Unavailable)?;
+    if filesystem[..5]
+        .iter()
+        .copied()
+        .map(ascii_fold)
+        .ne("ntfs\0".encode_utf16())
+    {
+        return Err(Error::Unavailable);
+    }
+    let mut parents = vec![Parent {
+        handle: root,
+        metadata: root_meta,
+    }];
+    let child = |parents: &[Parent], name: &[u16], directory: bool| {
+        let parent = parents.last().ok_or(Error::Unavailable)?;
+        inspect(parent.handle.0, true, Some(serial))?;
+        open(parent.handle.0, name, directory, Error::Missing, hooks).map_err(|error| {
+            if error == Error::Startup {
+                return error;
+            }
+            revalidate(parents, &path.drive, &selected_volume, hooks)
+                .err()
+                .unwrap_or(error)
+        })
+    };
+    for (index, component) in path
+        .components
+        .iter()
+        .enumerate()
+        .take(path.components.len() - 1)
+    {
+        hooks.at(
+            Boundary::ParentOpened,
+            parents.last().ok_or(Error::Unavailable)?.handle.0,
+            index,
+        )?;
+        check_stop(stop)?;
+        let handle = child(&parents, component, true)?;
+        let metadata = inspect(handle.0, true, Some(serial))?;
+        parents.push(Parent { handle, metadata });
+    }
+    hooks.at(
+        Boundary::ParentOpened,
+        parents.last().ok_or(Error::Unavailable)?.handle.0,
+        path.components.len() - 1,
+    )?;
+    let mut file = child(
+        &parents,
+        path.components.last().ok_or(Error::Unavailable)?,
+        false,
+    )?;
+    let before = inspect(file.0, false, Some(serial))?;
+    for parent in &parents {
+        if !parent
+            .metadata
+            .same_id(&inspect(parent.handle.0, true, Some(serial))?)
+        {
+            return Err(Error::Unstable);
+        }
+    }
+    if before.standard.EndOfFile < 0 || before.standard.EndOfFile as u64 > MAX_BYTES as u64 {
+        return Err(Error::Unavailable);
+    }
+    hooks.at(Boundary::BeforeRead, file.0, 0)?;
+    let bytes = read(&mut file, stop, before.standard.EndOfFile as usize, hooks)?;
+    hooks.at(Boundary::AfterRead, file.0, 0)?;
+    if !before.same_file(&inspect(file.0, false, Some(serial))?) {
+        return Err(Error::Unstable);
+    }
+    let mut cursor: Option<Handle> = None;
+    for (index, component) in path.components.iter().enumerate() {
+        let directory = index + 1 < path.components.len();
+        let previous = cursor
+            .as_ref()
+            .map_or(parents[0].handle.0, |cursor| cursor.0);
+        let next =
+            open(previous, component, directory, Error::Unstable, hooks).map_err(|error| {
+                if error == Error::Startup {
+                    return error;
+                }
+                revalidate(&parents, &path.drive, &selected_volume, hooks)
+                    .err()
+                    .unwrap_or(error)
+            })?;
+        let metadata = inspect(next.0, directory, Some(serial))?;
+        if if directory {
+            !metadata.same_id(&parents[index + 1].metadata)
+        } else {
+            !metadata.same_file(&before)
+        } {
+            return Err(Error::Unstable);
+        }
+        cursor = Some(next);
+    }
+    revalidate(&parents, &path.drive, &selected_volume, hooks)?;
+    check_stop(stop)?;
+    Ok(Observation {
+        metadata: before,
+        bytes,
+    })
+}
+
+struct Candidate {
+    observation: Observation,
+    dictionary: Arc<DictionaryOwner>,
+}
+
+#[derive(Default)]
+struct SourceState {
+    staged: Option<Candidate>,
+    published: Option<Candidate>,
+    absent: Option<Arc<DictionaryOwner>>,
+    ready: SourceReady,
+}
+
+impl SourceState {
+    fn retained(&self) -> Option<Arc<DictionaryOwner>> {
+        self.published
+            .as_ref()
+            .map(|published| Arc::clone(&published.dictionary))
+            .or_else(|| self.absent.clone())
+    }
+
+    fn step(&mut self, source: &Source, stop: HANDLE, hooks: Hooks) -> Result<(), Error> {
+        if let Err(error) = self.observe(source, stop, hooks) {
+            self.staged = None;
+            if matches!(error, Error::Cancelled | Error::Startup) {
+                return Err(error);
+            }
+            if error == Error::Missing
+                && matches!(source, Source::Default(_))
+                && self.published.is_none()
+            {
+                if self.absent.is_none() {
+                    self.absent = Some(DictionaryOwner::parse(&[])?);
+                }
+                self.ready = SourceReady {
+                    status: Status::Ready,
+                    error: Error::None,
+                    dictionary: self.absent.clone(),
+                };
+            } else {
+                let dictionary = self.retained();
+                self.ready = SourceReady {
+                    status: if dictionary.is_some() {
+                        Status::Retained
+                    } else {
+                        Status::Missing
+                    },
+                    error,
+                    dictionary,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    fn observe(&mut self, source: &Source, stop: HANDLE, hooks: Hooks) -> Result<(), Error> {
+        let path = match source {
+            Source::Default(path) => path.as_ref().ok_or(Error::Unavailable)?,
+            Source::Explicit(path) => path,
+        };
+        let observation = observe(path, stop, hooks)?;
+        let same = |candidate: &Candidate| {
+            candidate
+                .observation
+                .metadata
+                .same_file(&observation.metadata)
+                && candidate.observation.bytes == observation.bytes
+        };
+        if self.published.as_ref().is_some_and(same) {
+            self.staged = None;
+            self.ready = SourceReady {
+                status: Status::Ready,
+                error: Error::None,
+                dictionary: self.retained(),
+            };
+        } else if self.staged.as_ref().is_some_and(same) {
+            let staged = self.staged.take().ok_or(Error::Startup)?;
+            self.published = Some(Candidate {
+                observation,
+                dictionary: staged.dictionary,
+            });
+            self.absent = None;
+            self.ready = SourceReady {
+                status: Status::Ready,
+                error: Error::None,
+                dictionary: self.retained(),
+            };
+        } else {
+            self.staged = None;
+            hooks.at(Boundary::BeforeParse, HANDLE::default(), 0)?;
+            check_stop(stop)?;
+            let dictionary = DictionaryOwner::parse(&observation.bytes)?;
+            check_stop(stop)?;
+            self.staged = Some(Candidate {
+                observation,
+                dictionary,
+            });
+            let dictionary = self.retained();
+            self.ready = SourceReady {
+                status: if dictionary.is_some() {
+                    Status::Retained
+                } else {
+                    Status::Pending
+                },
+                error: Error::None,
+                dictionary,
+            };
+        }
+        Ok(())
+    }
+}
+
+struct State {
+    config: Model,
+    activation: u32,
+    stop: Handle,
+    revoked: AtomicBool,
+    mailbox: Mutex<Option<Ready>>,
+    hooks: Hooks,
+}
+
+impl State {
+    fn publish(&self, ready: Ready) -> Result<(), Error> {
+        self.hooks
+            .at(Boundary::BeforePublish, HANDLE::default(), 0)?;
+        let replaced = {
+            let mut mailbox = self.mailbox.lock().map_err(|_| Error::Startup)?;
+            if self.revoked.load(Ordering::Acquire) {
+                None
+            } else {
+                mailbox.replace(ready)
+            }
+        };
+        drop(replaced);
+        self.hooks.at(Boundary::Published, HANDLE::default(), 0)
+    }
+
+    fn run(&self, instance: PTP_CALLBACK_INSTANCE, ready: &mut Ready) -> Result<(), Error> {
+        self.hooks.at(Boundary::BeforeWork, HANDLE::default(), 0)?;
+        check_stop(self.stop.0)?;
+        // SAFETY: instance is provided by the native threadpool for this callback.
+        let long_running = unsafe {
+            if self.hooks.native.long_running.is_null() {
+                Call {
+                    value: CallbackMayRunLong(instance).0 as usize,
+                    error: 0,
+                    exception: 0,
+                }
+            } else {
+                kr_worker_long_running(self.hooks.native.long_running, instance)
+            }
+        }
+        .checked()?;
+        if long_running.value == 0 {
+            return Err(Error::Startup);
+        }
+        if kr_prepare_model(kr_abi_version()) != 0 {
+            return Err(Error::Model);
+        }
+        check_stop(self.stop.0)?;
+        let mut sources = [SourceState::default(), SourceState::default()];
+        ready.model = true;
+        loop {
+            ready.revision = ready.revision.checked_add(1).ok_or(Error::Startup)?;
+            for (index, source) in sources.iter_mut().enumerate() {
+                source.step(&self.config.sources[index], self.stop.0, self.hooks)?;
+                ready.sources[index] = source.ready.clone();
+            }
+            check_stop(self.stop.0)?;
+            self.publish(ready.clone())?;
+            // SAFETY: State retains the stop event throughout this callback.
+            if unsafe { WaitForSingleObject(self.stop.0, 500) } != WAIT_TIMEOUT {
+                return Ok(());
+            }
+        }
+    }
+}
+
+struct Launch {
+    state: Arc<State>,
+    module: HMODULE,
+    lease: HookLease,
+}
+
+unsafe extern "system" fn work(instance: PTP_CALLBACK_INSTANCE, context: *mut c_void) {
+    // SAFETY: successful submission transfers this Box exactly once to the native callback.
+    let launch = unsafe { Box::from_raw(context.cast::<Launch>()) };
+    if !launch.module.is_invalid() {
+        // SAFETY: the successful module pin belongs to this callback and is released after its return.
+        unsafe { FreeLibraryWhenCallbackReturns(instance, launch.module) };
+    }
+    let hooks = launch.lease.0;
+    let mut ready = Ready {
+        activation: launch.state.activation,
+        ..Default::default()
+    };
+    let result = catch_unwind(AssertUnwindSafe(|| launch.state.run(instance, &mut ready)));
+    let error = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(Error::Cancelled)) => None,
+        Ok(Err(error)) => Some(error),
+        Err(_) => Some(Error::Startup),
+    };
+    if let Some(error) = error {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            if let Some(revision) = ready.revision.checked_add(1) {
+                ready.revision = revision;
+                ready.error = error;
+                let _ = launch.state.publish(ready);
+            }
+        }));
+    }
+    let _ = hooks.at(Boundary::Cleanup, HANDLE::default(), 0);
+    let Launch {
+        state,
+        module: _,
+        lease,
+    } = *launch;
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(state)));
+    WORKERS.fetch_sub(1, Ordering::AcqRel);
+    let _ = hooks.at(Boundary::AfterCount, HANDLE::default(), 0);
+    drop(lease);
+}
+
+#[derive(Default)]
+pub(crate) struct Worker {
+    state: Option<Arc<State>>,
+}
+
+impl Worker {
+    pub(crate) fn start(
+        &mut self,
+        model: &Model,
+        activation: u32,
+        owner: ModuleOwner,
+        hooks: Hooks,
+    ) -> bool {
+        self.stop();
+        #[cfg(feature = "test-api")]
+        let hooks = if hooks.call.is_null() {
+            TEST_HOOKS
+                .get_or_init(|| Mutex::new(Hooks::default()))
+                .lock()
+                .map(|hooks| *hooks)
+                .unwrap_or_default()
+        } else {
+            hooks
+        };
+        catch_unwind(AssertUnwindSafe(|| {
+            self.launch(model, activation, owner, hooks)
+        }))
+        .unwrap_or(false)
+    }
+
+    fn launch(&mut self, model: &Model, activation: u32, owner: ModuleOwner, hooks: Hooks) -> bool {
+        let Ok(lease) = HookLease::acquire(hooks) else {
+            return false;
+        };
+        let Ok(stop) = hooks.event(Error::Startup) else {
+            return false;
+        };
+        let state = Arc::new(State {
+            config: model.clone(),
+            activation,
+            stop,
+            revoked: AtomicBool::new(false),
+            mailbox: Mutex::new(None),
+            hooks,
+        });
+        let mut launch = Box::new(Launch {
+            state: Arc::clone(&state),
+            module: HMODULE::default(),
+            lease,
+        });
+        if owner == ModuleOwner::Dll {
+            // SAFETY: FROM_ADDRESS interprets the callback address as code. Output belongs to Launch.
+            let pinned = unsafe {
+                if hooks.native.pin.is_null() {
+                    Call::boolean(GetModuleHandleExW(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                        PCWSTR(work as *const () as *const u16),
+                        &mut launch.module,
+                    ))
+                } else {
+                    kr_worker_pin(
+                        hooks.native.pin,
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                        PCWSTR(work as *const () as *const u16),
+                        &mut launch.module,
+                    )
+                }
+            };
+            if pinned.exception != 0 {
+                crate::foreign::quarantine();
+                return false;
+            }
+            if pinned.value == 0 || launch.module.is_invalid() {
+                return false;
+            }
+        }
+        WORKERS.fetch_add(1, Ordering::AcqRel);
+        let raw = Box::into_raw(launch);
+        // SAFETY: submission transfers the owned Launch to one callback on success only.
+        let submitted = unsafe {
+            if hooks.native.submit.is_null() {
+                Call::boolean(TrySubmitThreadpoolCallback(
+                    Some(work),
+                    Some(raw.cast()),
+                    None,
+                ))
+            } else {
+                kr_worker_submit(hooks.native.submit, Some(work), raw.cast())
+            }
+        };
+        if submitted.exception != 0 {
+            crate::foreign::quarantine();
+            state.revoked.store(true, Ordering::Release);
+            // SAFETY: the independently retained state owns this stop event.
+            let _ = unsafe { SetEvent(state.stop.0) };
+            // Submission may have transferred ownership. The callback or quarantine keeps Launch alive.
+            return false;
+        }
+        if submitted.value == 0 {
+            // SAFETY: exact failed submission did not transfer ownership to a callback.
+            let launch = unsafe { Box::from_raw(raw) };
+            let module = launch.module;
+            drop(launch);
+            WORKERS.fetch_sub(1, Ordering::AcqRel);
+            if !module.is_invalid() {
+                // SAFETY: the unsubmitted callback still owns the successful module reference.
+                let _ = unsafe { FreeLibrary(module) };
+            }
+            return false;
+        }
+        self.state = Some(state);
+        true
+    }
+
+    pub(crate) fn stop(&mut self) {
+        if let Some(state) = self.state.take() {
+            state.revoked.store(true, Ordering::Release);
+            // SAFETY: state retains the event and no wait is performed on the owner thread.
+            let _ = unsafe { SetEvent(state.stop.0) };
+        }
+    }
+
+    pub(crate) fn poll(&mut self) -> Option<Ready> {
+        self.state.as_ref()?.mailbox.try_lock().ok()?.take()
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[cfg(test)]
+#[path = "vocabulary_tests.rs"]
+mod tests;
+
+#[cfg(feature = "test-api")]
+mod test_api {
+    use super::*;
+    use std::ptr::{null, null_mut};
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerHooks(hooks: *const Hooks) -> BOOL {
+        if hooks.is_null() {
+            return BOOL(0);
+        }
+        BOOL::from(
+            catch_unwind(AssertUnwindSafe(|| {
+                // SAFETY: the test caller lends a complete hooks table during this call.
+                let hooks = unsafe { *hooks };
+                if hooks.retain_context.is_null() != hooks.release_context.is_null() {
+                    return false;
+                }
+                let Ok(mut destination) = TEST_HOOKS
+                    .get_or_init(|| Mutex::new(Hooks::default()))
+                    .lock()
+                else {
+                    return false;
+                };
+                *destination = hooks;
+                true
+            }))
+            .unwrap_or(false),
+        )
+    }
+
+    #[repr(C)]
+    pub(crate) struct RawSource {
+        default_source: u32,
+        path: *const u16,
+        length: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(crate) struct RawSourceReady {
+        status: u32,
+        error: u32,
+        dictionary: *const keyrill_ffi::Dictionary,
+        owner: *const DictionaryOwner,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(crate) struct RawReady {
+        activation: u32,
+        model: u32,
+        revision: u64,
+        error: u32,
+        reserved: u32,
+        sources: [RawSourceReady; 2],
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) extern "system" fn KeyrillTestWorkerCreate() -> *mut Worker {
+        catch_unwind(|| Box::into_raw(Box::new(Worker::default()))).unwrap_or(null_mut())
+    }
+
+    fn source(input: &RawSource) -> Option<Source> {
+        if input.default_source > 1 || input.length > 4095 {
+            return None;
+        }
+        let path = if input.path.is_null() {
+            if input.length != 0 || input.default_source == 0 {
+                return None;
+            }
+            None
+        } else {
+            // SAFETY: test callers lend an input UTF-16 span for the complete export call.
+            Some(parse_path(unsafe {
+                std::slice::from_raw_parts(input.path, input.length as usize)
+            })?)
+        };
+        if input.default_source != 0 {
+            Some(Source::Default(path))
+        } else {
+            Some(Source::Explicit(path?))
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerStart(
+        worker: *mut Worker,
+        sources: *const RawSource,
+        activation: u32,
+        dll_owner: u32,
+        hooks: *const Hooks,
+    ) -> BOOL {
+        if worker.is_null() || sources.is_null() || hooks.is_null() || dll_owner > 1 {
+            return BOOL(0);
+        }
+        BOOL::from(
+            catch_unwind(AssertUnwindSafe(|| {
+                // SAFETY: validated test inputs contain exactly two sources and live worker/hooks values.
+                let (worker, sources, hooks) =
+                    unsafe { (&mut *worker, std::slice::from_raw_parts(sources, 2), *hooks) };
+                let Some(first) = source(&sources[0]) else {
+                    return false;
+                };
+                let Some(second) = source(&sources[1]) else {
+                    return false;
+                };
+                worker.start(
+                    &Model {
+                        sources: [first, second],
+                    },
+                    activation,
+                    if dll_owner != 0 {
+                        ModuleOwner::Dll
+                    } else {
+                        ModuleOwner::Process
+                    },
+                    hooks,
+                )
+            }))
+            .unwrap_or(false),
+        )
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerStop(worker: *mut Worker) {
+        if !worker.is_null() {
+            // SAFETY: the caller owns this worker and serializes owner-side operations.
+            let _ = catch_unwind(AssertUnwindSafe(|| unsafe { &mut *worker }.stop()));
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerPoll(
+        worker: *mut Worker,
+        output: *mut RawReady,
+    ) -> BOOL {
+        if worker.is_null() || output.is_null() {
+            return BOOL(0);
+        }
+        BOOL::from(
+            catch_unwind(AssertUnwindSafe(|| {
+                // SAFETY: the caller serializes worker access and lends distinct writable output storage.
+                let Some(ready) = unsafe { &mut *worker }.poll() else {
+                    return false;
+                };
+                let sources = ready.sources.map(|source| {
+                    let (dictionary, owner) = match source.dictionary {
+                        Some(dictionary) => (dictionary.pointer(), Arc::into_raw(dictionary)),
+                        None => (null(), null()),
+                    };
+                    RawSourceReady {
+                        status: source.status as u32,
+                        error: source.error as u32,
+                        dictionary,
+                        owner,
+                    }
+                });
+                // SAFETY: output is one complete caller-owned RawReady and receives the token ownership.
+                unsafe {
+                    output.write(RawReady {
+                        activation: ready.activation,
+                        model: u32::from(ready.model),
+                        revision: ready.revision,
+                        error: ready.error as u32,
+                        reserved: 0,
+                        sources,
+                    })
+                };
+                true
+            }))
+            .unwrap_or(false),
+        )
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerFree(worker: *mut Worker) {
+        if !worker.is_null() {
+            // SAFETY: this consumes the worker token exactly once after owner calls have stopped.
+            let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(worker) })));
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerDictionaryRelease(
+        owner: *const DictionaryOwner,
+    ) {
+        if !owner.is_null() {
+            // SAFETY: this consumes one returned Arc token exactly once after dictionary borrows drain.
+            let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Arc::from_raw(owner) })));
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub(crate) unsafe extern "system" fn KeyrillTestWorkerParsePath(
+        text: *const u16,
+        length: u32,
+    ) -> BOOL {
+        if text.is_null() || length > 4095 {
+            return BOOL(0);
+        }
+        BOOL::from(
+            catch_unwind(|| {
+                // SAFETY: the test caller lends the bounded input span for this call.
+                parse_path(unsafe { std::slice::from_raw_parts(text, length as usize) }).is_some()
+            })
+            .unwrap_or(false),
+        )
+    }
+}

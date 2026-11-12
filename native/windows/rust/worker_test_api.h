@@ -27,7 +27,7 @@ extern "C" {
 BOOL WINAPI KeyrillTestWorkerHooks(const KrWorkerHooks *) noexcept;
 void *WINAPI KeyrillTestWorkerCreate() noexcept;
 BOOL WINAPI KeyrillTestWorkerStart(void *, const KrWorkerSource *, uint32_t activation,
-                                  uint32_t dll_owner, const KrWorkerHooks *) noexcept;
+                                   uint32_t dll_owner, const KrWorkerHooks *) noexcept;
 void WINAPI KeyrillTestWorkerStop(void *) noexcept;
 BOOL WINAPI KeyrillTestWorkerPoll(void *, KrWorkerReady *) noexcept;
 void WINAPI KeyrillTestWorkerFree(void *) noexcept;
