@@ -1,6 +1,6 @@
 //! Typed TSF calls. The C++ side invokes each host method inside its exception fence.
 
-use super::{Call, Lease, adopt, quarantine};
+use super::{Call, InterfaceError, Lease, adopt, quarantine};
 use crate::keys::Binding;
 use std::ffi::c_void;
 use windows::Win32::Foundation::{E_UNEXPECTED, S_OK};
@@ -74,15 +74,21 @@ fn pointer<T: Interface>(lease: &Lease<T>) -> *mut c_void {
     lease.owner.pointer.as_ptr()
 }
 
-pub(crate) fn acquired<T: Interface>(call: Call, output: *mut c_void) -> Result<Lease<T>, Call> {
+pub(crate) fn acquired<T: Interface>(
+    call: Call,
+    output: *mut c_void,
+) -> Result<Lease<T>, InterfaceError> {
     if !call.exact() {
         if call.exception != 0 || !output.is_null() {
             quarantine();
         }
-        return Err(call);
+        return Err(InterfaceError::Native(call));
+    }
+    if output.is_null() {
+        return Err(InterfaceError::Missing);
     }
     // SAFETY: the typed call returned exact S_OK, transferring one interface reference.
-    unsafe { adopt(output) }
+    unsafe { adopt(output) }.map_err(InterfaceError::Native)
 }
 
 pub(crate) fn advise(source: &Lease<ITfSource>, id: &GUID, sink: *mut c_void) -> (Call, u32) {
@@ -127,7 +133,7 @@ pub(crate) fn unpreserve(keys: &Lease<ITfKeystrokeMgr>, binding: &Binding) -> Ca
     unsafe { kr_foreign_unpreserve(pointer(keys), &binding.id, &binding.key) }
 }
 
-pub(crate) fn create_profiles() -> Result<Lease<ITfInputProcessorProfileMgr>, Call> {
+pub(crate) fn create_profiles() -> Result<Lease<ITfInputProcessorProfileMgr>, InterfaceError> {
     let mut output = std::ptr::null_mut();
     // SAFETY: initialized output is distinct writable pointer storage.
     let call = unsafe { kr_foreign_create_profiles(&mut output) };

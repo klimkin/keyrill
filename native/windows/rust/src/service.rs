@@ -172,7 +172,7 @@ impl Drop for Resources {
         if let Some(owner) = self.owner.upgrade() {
             let mut state = owner.state.borrow_mut();
             if state.epoch == self.epoch && state.activation == Activation::Draining {
-                state.activation = if self.uncertain.get() {
+                state.activation = if self.uncertain.get() || owner.poisoned.get() {
                     Activation::Faulted
                 } else {
                     Activation::Inactive
@@ -238,6 +238,10 @@ impl Service {
         if self.poisoned.get() {
             return E_FAIL;
         }
+        self.fenced(call)
+    }
+
+    fn fenced(&self, call: impl FnOnce() -> HRESULT) -> HRESULT {
         match catch_unwind(AssertUnwindSafe(call)) {
             Ok(result) => result,
             Err(_) => {
@@ -252,16 +256,29 @@ impl Service {
         if !self.owner_thread() {
             return RPC_E_WRONG_THREAD;
         }
-        self.entry(|| {
-            self.state.borrow_mut().diagnostic_depth += 1;
-            let _depth = DiagnosticDepth(self);
-            call()
-        })
+        self.entry(|| self.callback_scope(call))
+    }
+
+    fn callback_scope(&self, call: impl FnOnce() -> HRESULT) -> HRESULT {
+        self.state.borrow_mut().diagnostic_depth += 1;
+        let _depth = DiagnosticDepth(self);
+        call()
+    }
+
+    fn cleanup(&self, call: impl FnOnce() -> HRESULT) -> HRESULT {
+        if !self.owner_thread() {
+            return RPC_E_WRONG_THREAD;
+        }
+        self.fenced(|| self.callback_scope(call))
     }
 
     pub(crate) fn invalidate(&self) {
         let mut state = self.state.borrow_mut();
-        state.generation = state.generation.wrapping_add(1);
+        if let Some(generation) = state.generation.checked_add(1) {
+            state.generation = generation;
+        } else {
+            state.stopped = true;
+        }
         if let Some(engine) = state.engine.as_mut() {
             engine.reset();
         }
@@ -299,11 +316,19 @@ impl Service {
             return Err(E_FAIL);
         }
         let manager = native.manager.as_ref().ok_or(E_FAIL)?;
-        native.source = Some(manager.query().map_err(tsf::failure)?);
+        native.source = Some(
+            manager
+                .query()
+                .map_err(|error| tsf::failure(error.call()))?,
+        );
         if !self.preparing(native.epoch) {
             return Err(E_FAIL);
         }
-        native.keys = Some(manager.query().map_err(tsf::failure)?);
+        native.keys = Some(
+            manager
+                .query()
+                .map_err(|error| tsf::failure(error.call()))?,
+        );
         if !self.preparing(native.epoch) {
             return Err(E_FAIL);
         }
@@ -476,7 +501,7 @@ impl Service {
     }
 
     pub(crate) fn deactivate(&self) -> HRESULT {
-        self.checked(|| {
+        self.cleanup(|| {
             let retired = {
                 let mut state = self.state.borrow_mut();
                 if state.activation == Activation::Preparing {
@@ -629,7 +654,7 @@ impl Service {
 
     #[cfg(feature = "test-api")]
     pub(crate) fn stopped(&self) -> bool {
-        self.poisoned.get()
+        self.poisoned.get() || self.state.borrow().stopped
     }
 }
 

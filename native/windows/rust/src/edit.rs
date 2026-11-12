@@ -1,3 +1,4 @@
+use crate::com::OwnServiceLease;
 use crate::foreign::{self, Call, Lease};
 use crate::service::Service;
 use std::cell::Cell;
@@ -22,16 +23,18 @@ pub(crate) struct Frame {
     completed: Cell<bool>,
     expired: Cell<bool>,
     effect: Cell<Effect>,
+    _owner: OwnServiceLease,
 }
 
 impl Frame {
-    pub(crate) fn new(service: Rc<Service>) -> Rc<Self> {
+    pub(crate) fn new(service: Rc<Service>, owner: OwnServiceLease) -> Rc<Self> {
         Rc::new(Self {
             service,
             entered: Cell::new(false),
             completed: Cell::new(false),
             expired: Cell::new(false),
             effect: Cell::new(Effect::Unattempted),
+            _owner: owner,
         })
     }
 

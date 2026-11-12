@@ -38,6 +38,7 @@ unsafe extern "system" fn KeyrillTestBuildDigest(count: u32, output: *mut u32) -
 
 struct Handle {
     service: Rc<Service>,
+    owner: com::OwnServiceLease,
 }
 
 #[repr(C)]
@@ -295,11 +296,13 @@ unsafe extern "system" fn KeyrillTestCreate(
         };
         let service = Service::with_dependencies(dependencies);
         let object = com::create(Rc::clone(&service));
-        let owner = Box::new(Handle { service });
+        let owner = com::OwnServiceLease::new(object);
+        let output_object = owner.processor();
+        let owner = Box::new(Handle { service, owner });
         // SAFETY: outputs transfer one handle and one COM reference to the test caller.
         unsafe {
             handle.write(Box::into_raw(owner).cast());
-            output.write(object.into_raw());
+            output.write(output_object.into_raw());
         }
         S_OK
     })
@@ -344,6 +347,11 @@ unsafe extern "system" fn KeyrillTestRelease(handle: *mut c_void) -> HRESULT {
         if handle.is_null() {
             return E_POINTER;
         }
+        // SAFETY: the caller retains this live handle until an owner-thread release succeeds.
+        let retained = unsafe { &*handle.cast::<Handle>() };
+        if !retained.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
         // SAFETY: the test caller surrenders its unique handle exactly once after calls drain.
         drop(unsafe { Box::from_raw(handle.cast::<Handle>()) });
         S_OK
@@ -378,6 +386,9 @@ unsafe extern "system" fn KeyrillTestStopped(handle: *mut c_void, output: *mut B
         }
         // SAFETY: test transport keeps this handle live until Release.
         let handle = unsafe { &*handle.cast::<Handle>() };
+        if !handle.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
         // SAFETY: output is initialized even when the service has been poisoned.
         unsafe { output.write(BOOL(handle.service.stopped() as i32)) };
         S_OK
@@ -428,8 +439,13 @@ unsafe extern "system" fn KeyrillTestProbe(
                         output.identity = identity.address();
                         output.outer = S_OK;
                     }
-                    Err(call) => {
-                        output.outer = call.result;
+                    Err(error) => {
+                        let call = error.call();
+                        output.outer = if matches!(error, foreign::InterfaceError::Missing) {
+                            E_UNEXPECTED
+                        } else {
+                            call.result
+                        };
                         output.foreign_exception = call.exception;
                     }
                 }
@@ -437,7 +453,7 @@ unsafe extern "system" fn KeyrillTestProbe(
                 // SAFETY: operation 1 requires an ITfContext pointer retained by the test caller.
                 match unsafe { foreign::retain::<ITfContext>(host) } {
                     Ok(context) => {
-                        let frame = Frame::new(Rc::clone(&handle.service));
+                        let frame = Frame::new(Rc::clone(&handle.service), handle.owner.clone());
                         let result = frame.request(&context, 42);
                         output.outer = result.outer.result;
                         output.callback = result.callback;

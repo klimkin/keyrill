@@ -30,6 +30,24 @@ impl Call {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InterfaceError {
+    Native(Call),
+    Missing,
+}
+
+impl InterfaceError {
+    pub(crate) fn call(self) -> Call {
+        match self {
+            Self::Native(call) => call,
+            Self::Missing => Call {
+                result: S_OK,
+                exception: 0,
+            },
+        }
+    }
+}
+
 unsafe extern "C" {
     fn kr_foreign_query(object: *mut c_void, id: *const GUID, output: *mut *mut c_void) -> Call;
     fn kr_foreign_add_ref(object: *mut c_void, count: *mut u32) -> Call;
@@ -163,7 +181,7 @@ impl<T: Interface> Lease<T> {
         ReleaseWitness(Rc::clone(&self.owner.release_failed))
     }
 
-    pub(crate) fn query<U: Interface>(&self) -> Result<Lease<U>, Call> {
+    pub(crate) fn query<U: Interface>(&self) -> Result<Lease<U>, InterfaceError> {
         // SAFETY: this Rust lease retains the host across the complete fenced acquisition.
         unsafe { query(self.owner.pointer.as_ptr()) }
     }
@@ -210,12 +228,12 @@ pub(crate) unsafe fn retain<T: Interface>(pointer: *mut c_void) -> Result<Lease<
     })
 }
 
-pub(crate) unsafe fn query<T: Interface>(pointer: *mut c_void) -> Result<Lease<T>, Call> {
+pub(crate) unsafe fn query<T: Interface>(pointer: *mut c_void) -> Result<Lease<T>, InterfaceError> {
     if pointer.is_null() {
-        return Err(Call {
+        return Err(InterfaceError::Native(Call {
             result: E_POINTER,
             exception: 0,
-        });
+        }));
     }
     let mut output = std::ptr::null_mut();
     // SAFETY: the caller retains the live host and output is a distinct writable pointer slot.
@@ -224,10 +242,13 @@ pub(crate) unsafe fn query<T: Interface>(pointer: *mut c_void) -> Result<Lease<T
         if result.exception != 0 || !output.is_null() {
             quarantine();
         }
-        return Err(result);
+        return Err(InterfaceError::Native(result));
+    }
+    if output.is_null() {
+        return Err(InterfaceError::Missing);
     }
     // SAFETY: exact S_OK transfers one reference. Null output is rejected by adopt.
-    unsafe { adopt(output) }
+    unsafe { adopt(output) }.map_err(InterfaceError::Native)
 }
 
 pub(crate) fn request(

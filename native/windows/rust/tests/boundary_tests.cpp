@@ -198,6 +198,13 @@ void DependencyLifetime(Api &api) {
   {
     Instance instance(api, &dependencies);
     Require(owner.references == 2 && owner.retained == 1, "dependency table retained once");
+    std::thread wrong_thread([&] {
+      BOOL stopped = TRUE;
+      Require(api.release(instance.handle) == RPC_E_WRONG_THREAD &&
+                  api.stopped(instance.handle, &stopped) == RPC_E_WRONG_THREAD && !stopped,
+              "wrong-thread handle calls leave its owned lifetime intact");
+    });
+    wrong_thread.join();
     Host host;
     kr_event event{KR_TEXT, KR_EN, KR_CTX_BOUNDARY, 1, {L'g'}};
     BOOL eaten = TRUE;
@@ -207,6 +214,12 @@ void DependencyLifetime(Api &api) {
     Require(api.maintain(instance.handle) == S_OK, "maintenance enters shared service");
     const auto result = instance.Probe(host, 1);
     Require(result.entered && owner.references == 2, "frame retains dependency lifetime");
+    auto *retained_service = instance.service;
+    IUnknown *original_identity = nullptr;
+    Require(retained_service->QueryInterface(IID_PPV_ARGS(&original_identity)) == S_OK,
+            "capture original generated identity");
+    const auto identity_address = reinterpret_cast<uintptr_t>(original_identity);
+    original_identity->Release();
     instance.service->Release();
     instance.service = nullptr;
     Require(api.unload() == S_FALSE, "test handle and retained callback prevent unload");
@@ -214,6 +227,11 @@ void DependencyLifetime(Api &api) {
     instance.handle = nullptr;
     Require(owner.references == 2 && api.unload() == S_FALSE,
             "captured frame retains service and dependency after external owners drain");
+    IUnknown *captured_identity = nullptr;
+    Require(retained_service->QueryInterface(IID_PPV_ARGS(&captured_identity)) == S_OK &&
+                reinterpret_cast<uintptr_t>(captured_identity) == identity_address,
+            "captured frame keeps the generated COM allocation and exact identity alive");
+    captured_identity->Release();
     Require(host.retained->DoEditSession(123) == E_FAIL, "expired retained callback stays refused");
     host.retained->Release();
     host.retained = nullptr;
@@ -402,7 +420,9 @@ void Basic(Api &api) {
       BOOL stopped = FALSE;
       Require(api.stopped(instance.handle, &stopped) == S_OK && stopped,
               "panic permanently poisons");
-      Require(instance.service->Deactivate() == E_FAIL, "poison refuses later callbacks");
+      Require(instance.service->Deactivate() == S_OK &&
+                  instance.service->Activate(nullptr, 0) == E_FAIL,
+              "poison permits drained cleanup and permanently refuses fresh activation");
     }
   }
   Require(api.unload() == S_OK, "final generated Release contains destructor panic");

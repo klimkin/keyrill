@@ -155,6 +155,21 @@ pub(crate) fn create(service: Rc<Service>) -> ITfTextInputProcessorEx {
     ServiceCom { service }.into()
 }
 
+#[cfg(feature = "test-api")]
+#[derive(Clone)]
+pub(crate) struct OwnServiceLease(Rc<ITfTextInputProcessorEx>);
+
+#[cfg(feature = "test-api")]
+impl OwnServiceLease {
+    pub(crate) fn new(processor: ITfTextInputProcessorEx) -> Self {
+        Self(Rc::new(processor))
+    }
+
+    pub(crate) fn processor(&self) -> ITfTextInputProcessorEx {
+        self.0.as_ref().clone()
+    }
+}
+
 impl ITfTextInputProcessor_Impl for ServiceCom_Impl {
     fn Activate(&self, manager: Ref<'_, ITfThreadMgr>, client: u32) -> Result<()> {
         self.activate(manager, client, 0).ok()

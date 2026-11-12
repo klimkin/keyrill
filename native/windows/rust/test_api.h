@@ -6,6 +6,7 @@
 
 // A test handle and its COM object share the production Service. Release both after callbacks
 // drain.
+// Handle-based calls run on the creation thread. A rejected Release leaves the handle owned.
 inline constexpr uint32_t KR_WINDOWS_TEST_VERSION = 2;
 struct KrWindowsHostIdentity {
   uint32_t process;
