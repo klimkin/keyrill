@@ -8,6 +8,7 @@ mod scenarios_editing;
 mod scenarios_finish;
 mod scenarios_lifecycle;
 mod scenarios_metadata;
+mod scenarios_service_publication;
 mod support;
 use support::{client::Client, oracle};
 use windows::Win32::{Foundation::*, UI::TextServices::*};

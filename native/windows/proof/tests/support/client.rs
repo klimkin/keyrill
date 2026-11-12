@@ -216,7 +216,9 @@ impl Drop for Client {
         unsafe {
             assert_eq!((self.api.release)(self.handle), S_OK);
         }
-        self.host.check();
+        if !std::thread::panicking() {
+            self.host.check();
+        }
     }
 }
 pub unsafe extern "system" fn retain(context: *mut c_void) {

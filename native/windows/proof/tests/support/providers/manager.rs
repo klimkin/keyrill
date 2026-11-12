@@ -126,6 +126,9 @@ unsafe extern "system" fn ITfThreadMgr_GetFunctionProvider(
             if result != S_OK {
                 return result;
             }
+            if p.null("GetFunctionProvider") {
+                return S_OK;
+            }
             let raw = p.manager().diagnostic.borrow().as_ref().map(|s| s.as_raw());
             if let Some(raw) = raw {
                 let table = *(raw.cast::<*const windows_core::IUnknown_Vtbl>());
