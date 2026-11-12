@@ -5570,7 +5570,33 @@ struct TerminationAlias final : ITfComposition {
   STUB(ShiftStart, (TfEditCookie, ITfRange *));
   STUB(ShiftEnd, (TfEditCookie, ITfRange *));
 };
+void StaleTerminationException() {
+  Harness h;
+  h.Type(L"g");
+  ComPtr<Composition> old = h.a.composition;
+  bool injected = false;
+  h.a.hook = [&](const char *name) {
+    if (std::string(name) != "composition.QI" || injected)
+      return;
+    injected = true;
+    Require(h.service->Deactivate() == S_OK,
+            "old activation drains during termination identity query");
+    h.a.active_composition = false;
+    h.a.caret = 7;
+    Require(h.service->Activate(&h.manager, 42) == S_OK,
+            "new activation starts during old termination");
+    h.Type(L"x");
+    throw 1;
+  };
+  Require(h.service->OnCompositionTerminated(123, old.Get()) == E_FAIL && injected,
+          "stale termination exception is contained");
+  h.a.hook = nullptr;
+  Require(!h.service->stopped(), "stale termination cannot stop the new activation");
+  Require(h.Key(L'y'), "new owned word continues after old termination failure");
+  h.Oracle(L"xyg", 9);
+}
 void LifecycleServiceSchedules() {
+  StaleTerminationException();
   using namespace diagnostics;
   {
     Harness h;
@@ -7696,6 +7722,7 @@ int wmain(int argc, wchar_t **argv) {
     return 0;
   }
   if (composition_only) {
+    StaleTerminationException();
     CorrectionAndReversal();
     NativeWhitespaceBoundary();
     Continuation();
