@@ -121,7 +121,18 @@ unsafe extern "system" fn ITfThreadMgr_GetFunctionProvider(
     unsafe {
         boundary(this, |p| {
             p.hit("GetFunctionProvider");
-            E_NOTIMPL
+            a2.write(std::ptr::null_mut());
+            let result = p.result("GetFunctionProvider");
+            if result != S_OK {
+                return result;
+            }
+            let raw = p.manager().diagnostic.borrow().as_ref().map(|s| s.as_raw());
+            if let Some(raw) = raw {
+                let table = *(raw.cast::<*const windows_core::IUnknown_Vtbl>());
+                ((*table).QueryInterface)(raw, &ITfFunctionProvider::IID, a2)
+            } else {
+                TF_E_NOPROVIDER
+            }
         })
     }
 }
@@ -250,13 +261,20 @@ unsafe extern "system" fn ITfSource_AdviseSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
-            p.hit("AdviseSink");
-            a3.write(if *a1 == ITfThreadMgrEventSink::IID {
-                1
+            let m = p.manager();
+            let index = if *a1 == ITfThreadMgrEventSink::IID {
+                0
             } else {
-                2
+                1
+            };
+            m.advises[index].set(m.advises[index].get() + 1);
+            a3.write(if m.sink_results[index].get() == S_OK {
+                index as u32 + 1
+            } else {
+                TF_INVALID_COOKIE
             });
-            p.result("AdviseSink")
+            p.hit("AdviseSink");
+            m.sink_results[index].get()
         })
     }
 }
@@ -267,8 +285,12 @@ unsafe extern "system" fn ITfSource_UnadviseSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            let m = p.manager();
+            assert!(a1 == 1 || a1 == 2);
+            let index = (a1 - 1) as usize;
+            m.unadvises[index].set(m.unadvises[index].get() + 1);
             p.hit("UnadviseSink");
-            p.result("UnadviseSink")
+            m.unsink_results[index].get()
         })
     }
 }
@@ -335,8 +357,11 @@ unsafe extern "system" fn ITfKeystrokeMgr_AdviseKeyEventSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            let m = p.manager();
+            assert_eq!(a1, 42);
+            m.advises[2].set(m.advises[2].get() + 1);
             p.hit("AdviseKeyEventSink");
-            p.result("AdviseKeyEventSink")
+            m.sink_results[2].get()
         })
     }
 }
@@ -347,8 +372,11 @@ unsafe extern "system" fn ITfKeystrokeMgr_UnadviseKeyEventSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            let m = p.manager();
+            assert_eq!(a1, 42);
+            m.unadvises[2].set(m.unadvises[2].get() + 1);
             p.hit("UnadviseKeyEventSink");
-            p.result("UnadviseKeyEventSink")
+            m.unsink_results[2].get()
         })
     }
 }
@@ -459,8 +487,23 @@ unsafe extern "system" fn ITfKeystrokeMgr_PreserveKey(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            let m = p.manager();
+            let registration = Registration {
+                client: a1,
+                id: *a2,
+                key: *a3,
+            };
+            let index = match (*a3).uVKey {
+                75 => 0,
+                90 => 1,
+                _ => 2,
+            };
+            m.preserve_calls.borrow_mut().push(registration);
+            if m.preserve_results[index].get() == S_OK {
+                m.preserved_keys.borrow_mut().push(registration);
+            }
             p.hit("PreserveKey");
-            p.result("PreserveKey")
+            m.preserve_results[index].get()
         })
     }
 }
@@ -472,8 +515,20 @@ unsafe extern "system" fn ITfKeystrokeMgr_UnpreserveKey(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            let m = p.manager();
+            let registration = Registration {
+                client: 42,
+                id: *a1,
+                key: *a2,
+            };
+            let index = match (*a2).uVKey {
+                75 => 0,
+                90 => 1,
+                _ => 2,
+            };
+            m.unpreserved_keys.borrow_mut().push(registration);
             p.hit("UnpreserveKey");
-            p.result("UnpreserveKey")
+            m.unpreserve_results[index].get()
         })
     }
 }

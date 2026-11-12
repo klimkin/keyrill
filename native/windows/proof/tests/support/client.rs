@@ -15,6 +15,7 @@ pub struct Client {
     pub context_b: ITfContext,
     pub thread: ITfThreadMgr,
     pub profiles: IUnknown,
+    pub profile_state: Rc<Profile>,
     pub service: ITfTextInputProcessorEx,
     pub handle: *mut c_void,
     pub api: Api,
@@ -44,9 +45,10 @@ impl Client {
                 Kind::Manager(Rc::clone(&manager)),
                 ITfThreadMgr::IID,
             ));
+            let profile_state = Rc::new(Profile::default());
             let profiles = IUnknown::from_raw(Provider::create(
                 Rc::clone(&host),
-                Kind::Profiles,
+                Kind::Profiles(Rc::clone(&profile_state)),
                 IUnknown::IID,
             ));
             let dependencies = Dependencies {
@@ -56,7 +58,7 @@ impl Client {
                 retain: Some(retain),
                 release: Some(release),
                 profiles: profiles.as_raw(),
-                layouts: Some(layouts),
+                layouts: Some(layout_callback(&host)),
                 capture: Some(capture),
             };
             let mut handle = std::ptr::null_mut();
@@ -78,6 +80,7 @@ impl Client {
                 context_b,
                 thread,
                 profiles,
+                profile_state,
                 service,
                 handle,
                 api,
@@ -135,7 +138,8 @@ impl Drop for Client {
         if !std::thread::panicking() {
             self.host.drained();
         }
-        self.host.actions.borrow_mut().clear();
+        let actions = self.host.actions.take();
+        drop(actions);
         let _ = self.deactivate();
         self.a.drain_retained();
         self.b.drain_retained();
@@ -163,18 +167,86 @@ pub unsafe extern "system" fn release(context: *mut c_void) {
             .set(owner.dependency_releases.get() + 1);
     });
 }
-unsafe extern "system" fn layouts(capacity: i32, out: *mut isize) -> i32 {
-    if capacity == 0 {
-        return 2;
-    }
-    if capacity < 2 || out.is_null() {
-        return 0;
-    }
-    unsafe {
-        out.write(0x04090409);
-        out.add(1).write(0x04190419);
-    }
-    2
+thread_local! {static LAYOUT_HOSTS:std::cell::RefCell<Vec<std::rc::Weak<HostCapsule>>>=const{std::cell::RefCell::new(Vec::new())};}
+fn layout_callback(host: &Rc<HostCapsule>) -> unsafe extern "system" fn(i32, *mut isize) -> i32 {
+    let index = LAYOUT_HOSTS.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        if let Some(index) = slots.iter().position(|s| s.strong_count() == 0) {
+            slots[index] = Rc::downgrade(host);
+            index
+        } else {
+            let index = slots.len();
+            assert!(index < 32, "at most32 simultaneous dependency capsules");
+            slots.push(Rc::downgrade(host));
+            index
+        }
+    });
+    const CALLBACKS: [unsafe extern "system" fn(i32, *mut isize) -> i32; 32] = [
+        layouts::<0>,
+        layouts::<1>,
+        layouts::<2>,
+        layouts::<3>,
+        layouts::<4>,
+        layouts::<5>,
+        layouts::<6>,
+        layouts::<7>,
+        layouts::<8>,
+        layouts::<9>,
+        layouts::<10>,
+        layouts::<11>,
+        layouts::<12>,
+        layouts::<13>,
+        layouts::<14>,
+        layouts::<15>,
+        layouts::<16>,
+        layouts::<17>,
+        layouts::<18>,
+        layouts::<19>,
+        layouts::<20>,
+        layouts::<21>,
+        layouts::<22>,
+        layouts::<23>,
+        layouts::<24>,
+        layouts::<25>,
+        layouts::<26>,
+        layouts::<27>,
+        layouts::<28>,
+        layouts::<29>,
+        layouts::<30>,
+        layouts::<31>,
+    ];
+    CALLBACKS[index]
+}
+unsafe extern "system" fn layouts<const INDEX: usize>(capacity: i32, out: *mut isize) -> i32 {
+    let host = LAYOUT_HOSTS
+        .with(|slots| slots.borrow()[INDEX].upgrade())
+        .expect("callback retains dependency capsule");
+    com_slots::fence(&host, 0, || {
+        host.layout_calls.set(host.layout_calls.get() + 1);
+        host.hit("Layouts");
+        let result = {
+            let mut results = host.layout_results.borrow_mut();
+            if results.is_empty() {
+                host.layouts.borrow().len() as i32
+            } else {
+                results.remove(0)
+            }
+        };
+        if capacity > 0 && !out.is_null() {
+            for (index, value) in host
+                .layouts
+                .borrow()
+                .iter()
+                .take(capacity as usize)
+                .enumerate()
+            {
+                unsafe {
+                    out.add(index).write(*value);
+                }
+            }
+        }
+        result
+    })
 }
 unsafe extern "system" fn capture(
     context: *mut c_void,

@@ -40,6 +40,7 @@ unsafe extern "system" fn ITfRange_GetText(
             let d = p.document();
             let span = p.span().get();
             d.reads.set(d.reads.get() + 1);
+            d.text_reads.borrow_mut().push(span);
             let text = d.text.borrow();
             let range = &text[span.start as usize..(span.start + span.length) as usize];
             let count = range.len().min(a4 as usize);
@@ -62,6 +63,7 @@ unsafe extern "system" fn ITfRange_SetText(
     unsafe {
         boundary(this, |p| {
             p.hit("SetText");
+            p.hit("SetText.before");
             let d = p.document();
             let span = p.span();
             let old = span.get();
@@ -82,6 +84,13 @@ unsafe extern "system" fn ITfRange_SetText(
                 "one write per composition plan"
             );
             let replacement = std::slice::from_raw_parts(a3.0, a4 as usize).to_vec();
+            let unchanged = d.text.borrow()[old.start as usize..(old.start + old.length) as usize]
+                == replacement;
+            d.finish_selection.set(if unchanged {
+                Some((d.request.get(), d.selection.get(), d.style.get()))
+            } else {
+                None
+            });
             d.writes.set(d.writes.get() + 1);
             d.effect(Effect::Text, old, replacement.clone());
             d.text.borrow_mut().splice(

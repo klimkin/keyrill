@@ -136,17 +136,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_GetActiveProfile(
     unsafe {
         boundary(this, |p| {
             p.hit("GetActiveProfile");
-            a2.write(TF_INPUTPROCESSORPROFILE {
-                dwProfileType: TF_PROFILETYPE_INPUTPROCESSOR,
-                langid: 0x409,
-                clsid: SERVICE_ID,
-                guidProfile: PROFILE_EN,
-                catid: GUID_TFCAT_TIP_KEYBOARD,
-                hkl: HKL(0xe0200409usize as *mut _),
-                dwFlags: TF_IPP_FLAG_ACTIVE,
-                ..Default::default()
-            });
-            S_OK
+            a2.write(p.profile().profile.get());
+            p.result("GetActiveProfile")
         })
     }
 }
@@ -167,8 +158,8 @@ unsafe extern "system" fn ITfInputProcessorProfileSubstituteLayout_GetSubstitute
     unsafe {
         boundary(this, |p| {
             p.hit("GetSubstituteKeyboardLayout");
-            a4.write(HKL(0x04090409usize as *mut _));
-            S_OK
+            a4.write(p.profile().substitute.get());
+            p.result("GetSubstituteKeyboardLayout")
         })
     }
 }

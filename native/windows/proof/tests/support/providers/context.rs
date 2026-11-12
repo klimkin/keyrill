@@ -33,7 +33,6 @@ unsafe extern "system" fn ITfContext_RequestEditSession(
             assert_eq!(a3, TF_ES_SYNC | TF_ES_READWRITE);
             let d = p.document();
             d.request.set(d.request.get() + 1);
-            p.hit("RequestEditSession");
             let session = IUnknown::from_raw(retain(a2));
             if d.retain_callback.get() || !d.invoke.get() {
                 replace_reference(&d.retained, Some(session.clone()));
@@ -116,6 +115,20 @@ unsafe extern "system" fn ITfContext_SetSelection(
             let span = owner(range.as_raw()).span().get();
             if d.active.borrow().is_some() {
                 assert_eq!(span.length, 0, "no temporary selection");
+            } else {
+                let (request, expected, style) = d
+                    .finish_selection
+                    .get()
+                    .expect("selection restoration requires unchanged owned finish");
+                assert_eq!(request, d.request.get());
+                assert_eq!(span, expected);
+                assert_eq!(value.style.ase, style.ase);
+                assert_eq!(value.style.fInterimChar, style.fInterimChar);
+                assert_eq!(
+                    d.operations.borrow().last().unwrap().effect,
+                    Effect::End,
+                    "only one selection restoration after EndComposition"
+                );
             }
             d.selection.set(span);
             d.style.set(value.style);
@@ -733,6 +746,7 @@ unsafe extern "system" fn ITfCompartment_GetValue(
                         d.disabled.get()
                     }
                 }
+                Kind::Manager(m) => m.disabled.get(),
                 _ => false,
             };
             a1.write(VARIANT::from(disabled as i32));

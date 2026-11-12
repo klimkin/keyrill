@@ -8,8 +8,10 @@ pub struct Action {
     pub skip: usize,
     pub run: Rc<dyn Fn()>,
 }
-#[derive(Default)]
 pub struct HostCapsule {
+    pub layouts: RefCell<Vec<isize>>,
+    pub layout_results: RefCell<Vec<i32>>,
+    pub layout_calls: Cell<usize>,
     pub panic_count: Cell<u32>,
     pub trace: RefCell<Vec<&'static str>>,
     pub actions: RefCell<Vec<Action>>,
@@ -68,5 +70,24 @@ impl HostCapsule {
                 .map(|a| a.boundary)
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+impl Default for HostCapsule {
+    fn default() -> Self {
+        Self {
+            layouts: RefCell::new(vec![0x04090409, 0x04190419]),
+            layout_results: RefCell::new(vec![]),
+            layout_calls: Cell::new(0),
+            panic_count: Cell::new(0),
+            trace: RefCell::new(vec![]),
+            actions: RefCell::new(vec![]),
+            live_objects: Cell::new(0),
+            adds: Cell::new(0),
+            releases: Cell::new(0),
+            final_releases: Cell::new(0),
+            dependency_retains: Cell::new(0),
+            dependency_releases: Cell::new(0),
+        }
     }
 }

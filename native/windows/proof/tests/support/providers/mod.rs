@@ -23,7 +23,49 @@ use windows::Win32::{
 use windows_core::{GUID, HRESULT, IUnknown, Interface};
 pub const SERVICE_ID: GUID = GUID::from_u128(0x1a746212_84db_4acf_88b3_caaa26352774);
 pub const PROFILE_EN: GUID = GUID::from_u128(0x0d52a994_9eb5_44ab_b18f_603dc5f69671);
+#[derive(Clone, Copy, Debug)]
+pub struct Registration {
+    pub client: u32,
+    pub id: GUID,
+    pub key: TF_PRESERVEDKEY,
+}
+pub struct Profile {
+    pub profile: Cell<TF_INPUTPROCESSORPROFILE>,
+    pub substitute: Cell<HKL>,
+    pub results: RefCell<std::collections::BTreeMap<&'static str, HRESULT>>,
+    pub nulls: RefCell<Vec<&'static str>>,
+}
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            profile: Cell::new(TF_INPUTPROCESSORPROFILE {
+                dwProfileType: TF_PROFILETYPE_INPUTPROCESSOR,
+                langid: 0x409,
+                clsid: SERVICE_ID,
+                guidProfile: PROFILE_EN,
+                catid: GUID_TFCAT_TIP_KEYBOARD,
+                hkl: HKL(0xe0200409usize as *mut _),
+                dwFlags: TF_IPP_FLAG_ACTIVE,
+                ..Default::default()
+            }),
+            substitute: Cell::new(HKL(0x04090409usize as *mut _)),
+            results: RefCell::new(Default::default()),
+            nulls: RefCell::new(vec![]),
+        }
+    }
+}
 pub struct Manager {
+    pub disabled: Cell<bool>,
+    pub preserve_calls: RefCell<Vec<Registration>>,
+    pub preserved_keys: RefCell<Vec<Registration>>,
+    pub unpreserved_keys: RefCell<Vec<Registration>>,
+    pub preserve_results: [Cell<HRESULT>; 3],
+    pub unpreserve_results: [Cell<HRESULT>; 3],
+    pub sink_results: [Cell<HRESULT>; 3],
+    pub unsink_results: [Cell<HRESULT>; 3],
+    pub advises: [Cell<u32>; 3],
+    pub unadvises: [Cell<u32>; 3],
+
     pub top: RefCell<IUnknown>,
     pub host: Rc<HostCapsule>,
     pub diagnostic: RefCell<Option<IUnknown>>,
@@ -32,6 +74,16 @@ pub struct Manager {
 impl Manager {
     pub fn new(host: Rc<HostCapsule>, top: *mut c_void) -> Rc<Self> {
         Rc::new(Self {
+            disabled: Cell::new(false),
+            preserve_calls: RefCell::new(vec![]),
+            preserved_keys: RefCell::new(vec![]),
+            unpreserved_keys: RefCell::new(vec![]),
+            preserve_results: std::array::from_fn(|_| Cell::new(S_OK)),
+            unpreserve_results: std::array::from_fn(|_| Cell::new(S_OK)),
+            sink_results: std::array::from_fn(|_| Cell::new(S_OK)),
+            unsink_results: std::array::from_fn(|_| Cell::new(S_OK)),
+            advises: std::array::from_fn(|_| Cell::new(0)),
+            unadvises: std::array::from_fn(|_| Cell::new(0)),
             top: RefCell::new(unsafe { IUnknown::from_raw(retain(top)) }),
             host,
             diagnostic: RefCell::new(None),
@@ -45,7 +97,7 @@ pub enum Kind {
     Composition(Rc<Document>, Rc<Cell<Span>>),
     Enumeration(Rc<Document>, Cell<u32>, bool),
     Manager(Rc<Manager>),
-    Profiles,
+    Profiles(Rc<Profile>),
 }
 pub struct Provider {
     pub host: Rc<HostCapsule>,
@@ -157,7 +209,7 @@ impl Provider {
                 ITfCompartment::IID,
             ]
             .contains(&id),
-            Kind::Profiles => {
+            Kind::Profiles(_) => {
                 id == ITfInputProcessorProfileMgr::IID
                     || id == ITfInputProcessorProfileSubstituteLayout::IID
             }
@@ -169,7 +221,7 @@ impl Provider {
                 Kind::Composition(_, _) => ITfComposition::IID,
                 Kind::Enumeration(_, _, _) => IEnumITfCompositionView::IID,
                 Kind::Manager(_) => ITfThreadMgr::IID,
-                Kind::Profiles => ITfInputProcessorProfileMgr::IID,
+                Kind::Profiles(_) => ITfInputProcessorProfileMgr::IID,
             }
         } else if allowed {
             id
@@ -295,6 +347,12 @@ impl Provider {
             _ => panic!("not a range"),
         }
     }
+    pub fn profile(&self) -> &Profile {
+        match &self.kind {
+            Kind::Profiles(p) => p,
+            _ => panic!("not profiles"),
+        }
+    }
     pub fn manager(&self) -> &Rc<Manager> {
         match &self.kind {
             Kind::Manager(m) => m,
@@ -302,18 +360,32 @@ impl Provider {
         }
     }
     pub fn hit(&self, name: &'static str) {
-        self.host.hit(name)
+        self.host.hit(name);
+        let qualified = match (name, &self.kind) {
+            ("QI", Kind::Document(_)) => Some("context.QI"),
+            ("QI", Kind::Range(_, _)) => Some("range.QI"),
+            ("QI", Kind::Composition(_, _)) => Some("composition.QI"),
+            ("QI", Kind::Manager(_)) => Some("manager.QI"),
+            ("QI", Kind::Profiles(_)) => Some("profiles.QI"),
+            ("Next", _) => Some("enumerator.Next"),
+            ("GetFocus", _) => Some("manager.GetFocus"),
+            _ => None,
+        };
+        if let Some(name) = qualified {
+            self.host.hit(name);
+        }
     }
     pub fn result(&self, name: &'static str) -> HRESULT {
         match &self.kind {
-            Kind::Profiles => S_OK,
+            Kind::Profiles(state) => state.results.borrow().get(name).copied().unwrap_or(S_OK),
             Kind::Manager(m) => m.results.borrow().get(name).copied().unwrap_or(S_OK),
             _ => self.document().result(name),
         }
     }
     pub fn null(&self, name: &'static str) -> bool {
         match &self.kind {
-            Kind::Profiles | Kind::Manager(_) => false,
+            Kind::Profiles(state) => state.nulls.borrow().contains(&name),
+            Kind::Manager(_) => false,
             _ => self.document().null(name),
         }
     }
@@ -345,6 +417,14 @@ impl Drop for Provider {
     }
 }
 pub const BOUNDARIES: &[&str] = &[
+    "Layouts",
+    "context.QI",
+    "range.QI",
+    "composition.QI",
+    "manager.QI",
+    "profiles.QI",
+    "enumerator.Next",
+    "manager.GetFocus",
     "Activate",
     "ActivateProfile",
     "AddRef.after",
@@ -449,6 +529,7 @@ pub const BOUNDARIES: &[&str] = &[
     "SetSelection",
     "SetSelection.after",
     "SetText",
+    "SetText.before",
     "SetText.after",
     "SetValue",
     "SetValueStore",
