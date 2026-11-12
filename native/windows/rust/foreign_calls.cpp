@@ -1,4 +1,10 @@
 #include "foreign_calls.h"
+#include <cwctype>
+
+extern "C" KrCall kr_foreign_whitespace(WCHAR unit, BOOL *output) noexcept {
+  try { *output = iswspace(unit) != 0; return {S_OK, 0}; }
+  catch (...) { return {E_UNEXPECTED, 1}; }
+}
 
 extern "C" KrCall kr_foreign_advise_single(ITfSourceSingle *source, TfClientId client,
                                            IUnknown *provider) noexcept {
@@ -121,4 +127,101 @@ extern "C" KrCall kr_foreign_compartment_value(ITfCompartment *compartment,
   } catch (...) {
     return {E_UNEXPECTED, 1};
   }
+}
+
+extern "C" KrCall kr_foreign_focus(ITfThreadMgr *manager, ITfDocumentMgr **output) noexcept {
+  KR_RETURN(manager->GetFocus(output))
+}
+extern "C" KrCall kr_foreign_top(ITfDocumentMgr *document, ITfContext **output) noexcept {
+  KR_RETURN(document->GetTop(output))
+}
+extern "C" KrCall kr_foreign_view(ITfContext *context, ITfContextView **output) noexcept {
+  KR_RETURN(context->GetActiveView(output))
+}
+extern "C" KrCall kr_foreign_window(ITfContextView *view, HWND *output) noexcept {
+  KR_RETURN(view->GetWnd(output))
+}
+extern "C" KrCall kr_foreign_status(ITfContext *context, TF_STATUS *output) noexcept {
+  KR_RETURN(context->GetStatus(output))
+}
+extern "C" KrCall kr_foreign_compartment(ITfCompartmentMgr *manager, const GUID *id,
+                                         ITfCompartment **output) noexcept {
+  KR_RETURN(manager->GetCompartment(*id, output))
+}
+extern "C" KrCall kr_foreign_property(ITfContext *context, const GUID *id, ITfReadOnlyProperty **output) noexcept {
+  KR_RETURN(context->GetAppProperty(*id, output))
+}
+extern "C" KrCall kr_foreign_property_value(ITfReadOnlyProperty *property, TfEditCookie cookie,
+                                            ITfRange *range, VARIANT *output) noexcept {
+  KR_RETURN(property->GetValue(cookie, range, output))
+}
+extern "C" KrCall kr_foreign_variant_clear(VARIANT *value) noexcept {
+  KR_RETURN(VariantClear(value))
+}
+extern "C" KrCall kr_foreign_scopes(ITfInputScope *scope, InputScope **output,
+                                    UINT *count) noexcept {
+  KR_RETURN(scope->GetInputScopes(output, count))
+}
+extern "C" KrCall kr_foreign_range_context(ITfRange *range, ITfContext **output) noexcept {
+  KR_RETURN(range->GetContext(output))
+}
+extern "C" KrCall kr_foreign_extent(ITfRangeACP *range, LONG *start, LONG *length) noexcept {
+  KR_RETURN(range->GetExtent(start, length))
+}
+extern "C" KrCall kr_foreign_selection(ITfContext *context, TfEditCookie cookie,
+                                       TF_SELECTION *output, ULONG *fetched) noexcept {
+  KR_RETURN(context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, output, fetched))
+}
+extern "C" KrCall kr_foreign_set_selection(ITfContext *context, TfEditCookie cookie,
+                                           const TF_SELECTION *selection) noexcept {
+  KR_RETURN(context->SetSelection(cookie, 1, selection))
+}
+extern "C" KrCall kr_foreign_clone(ITfRange *range, ITfRange **output) noexcept {
+  KR_RETURN(range->Clone(output))
+}
+extern "C" KrCall kr_foreign_shift_start(ITfRange *range, TfEditCookie cookie, LONG amount,
+                                         LONG *shifted) noexcept {
+  KR_RETURN(range->ShiftStart(cookie, amount, shifted, nullptr))
+}
+extern "C" KrCall kr_foreign_shift_end(ITfRange *range, TfEditCookie cookie, LONG amount,
+                                       LONG *shifted) noexcept {
+  KR_RETURN(range->ShiftEnd(cookie, amount, shifted, nullptr))
+}
+extern "C" KrCall kr_foreign_collapse(ITfRange *range, TfEditCookie cookie,
+                                      TfAnchor anchor) noexcept {
+  KR_RETURN(range->Collapse(cookie, anchor))
+}
+extern "C" KrCall kr_foreign_compositions(ITfContextComposition *context,
+                                          IEnumITfCompositionView **output) noexcept {
+  KR_RETURN(context->EnumCompositions(output))
+}
+extern "C" KrCall kr_foreign_next(IEnumITfCompositionView *entries, ITfCompositionView **output,
+                                  ULONG *fetched) noexcept {
+  KR_RETURN(entries->Next(1, output, fetched))
+}
+extern "C" KrCall kr_foreign_text(ITfRange *range, TfEditCookie cookie, WCHAR *output,
+                                  ULONG capacity, ULONG *count) noexcept {
+  KR_RETURN(range->GetText(cookie, 0, output, capacity, count))
+}
+extern "C" KrCall kr_foreign_set_text(ITfRange *range, TfEditCookie cookie, const WCHAR *text,
+                                      LONG length) noexcept {
+  KR_RETURN(range->SetText(cookie, 0, text, length))
+}
+extern "C" KrCall kr_foreign_start_composition(ITfContextComposition *context, TfEditCookie cookie,
+                                               ITfRange *range, ITfCompositionSink *sink,
+                                               ITfComposition **output) noexcept {
+  KR_RETURN(context->StartComposition(cookie, range, sink, output))
+}
+extern "C" KrCall kr_foreign_composition_range(ITfComposition *composition,
+                                               ITfRange **output) noexcept {
+  KR_RETURN(composition->GetRange(output))
+}
+extern "C" KrCall kr_foreign_end_composition(ITfComposition *composition,
+                                             TfEditCookie cookie) noexcept {
+  KR_RETURN(composition->EndComposition(cookie))
+}
+extern "C" KrCall kr_foreign_field(decltype(KrWindowsDependencies::capture) capture, void *context,
+                                   HWND window, const KrWindowsHostIdentity *host,
+                                   KrWindowsFieldFacts *output) noexcept {
+  KR_RETURN(capture(context, window, host, output))
 }

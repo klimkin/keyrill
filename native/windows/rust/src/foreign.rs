@@ -1,5 +1,6 @@
 //! The only owner of host COM references. Generated ownership helpers stay out of this module too.
 
+pub(crate) mod document;
 pub(crate) mod registrar;
 pub(crate) mod tsf;
 
@@ -187,7 +188,8 @@ impl<T: Interface> Lease<T> {
     }
 }
 
-/// Take exactly one reference returned by an exact successful foreign acquisition.
+/// Take exactly one live reference transferred by a normally completed typed SDK call.
+/// The caller separately validates its HRESULT before using the object as native evidence.
 pub(crate) unsafe fn adopt<T: Interface>(pointer: *mut c_void) -> Result<Lease<T>, Call> {
     let Some(pointer) = NonNull::new(pointer) else {
         return Err(Call {
@@ -202,6 +204,28 @@ pub(crate) unsafe fn adopt<T: Interface>(pointer: *mut c_void) -> Result<Lease<T
         }),
         interface: PhantomData,
     })
+}
+
+pub(crate) struct Returned<T> {
+    pub(crate) call: Call,
+    pub(crate) value: T,
+}
+
+fn returned_interface<T: Interface>(
+    call: Call,
+    pointer: *mut c_void,
+) -> Returned<Option<Lease<T>>> {
+    let value = if call.exception != 0 {
+        quarantine();
+        None
+    } else if pointer.is_null() {
+        None
+    } else {
+        // SAFETY: the typed SDK output transfers one memory reference on normal completion.
+        // Its HRESULT remains separate and grants no document authority.
+        unsafe { adopt(pointer) }.ok()
+    };
+    Returned { call, value }
 }
 
 /// Acquire a reference from an inbound pointer while its caller retains it.
