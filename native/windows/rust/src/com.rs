@@ -383,8 +383,28 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
         key(&self.service, eaten, true)
     }
 
-    unsafe fn OnPreservedKey(&self, _: *mut c_void, _: *const GUID, eaten: *mut BOOL) -> HRESULT {
-        key(&self.service, eaten, false)
+    unsafe fn OnPreservedKey(
+        &self,
+        context: *mut c_void,
+        id: *const GUID,
+        eaten: *mut BOOL,
+    ) -> HRESULT {
+        if eaten.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK caller supplies a writable BOOL, initialized before fallible work.
+        unsafe { eaten.write(BOOL(0)) };
+        if !self.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
+        if id.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK retains context and both readable GUID/writable BOOL slots through entry.
+        unsafe {
+            self.service
+                .preserved(self.owner_lease(), context, id.read(), eaten)
+        }
     }
 }
 

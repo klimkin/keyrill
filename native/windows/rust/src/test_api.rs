@@ -331,7 +331,8 @@ unsafe extern "system" fn KeyrillTestEvent(
                 handle
                     .service
                     .execute(handle.owner.clone(), context, event.read())
-            };
+            }
+            .eaten;
             // SAFETY: checked writable output belongs to this synchronous caller.
             unsafe { eaten.write(BOOL(accepted as i32)) };
             S_OK

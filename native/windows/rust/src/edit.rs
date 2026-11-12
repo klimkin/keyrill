@@ -1106,6 +1106,10 @@ impl Frame {
             && (self.last_action.get() == 1 || self.last_disposition.get() == 1)
     }
 
+    pub(crate) fn completion(&self) -> Completion {
+        self.completion.get()
+    }
+
     pub(crate) fn eaten(&self) -> bool {
         self.eaten.get()
     }
@@ -1170,6 +1174,7 @@ impl Frame {
         .into();
         let (outer, callback) =
             foreign::request(context, client, &session, TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+        let valid = self.alive();
         self.expired.set(true);
         Request {
             outer,
@@ -1177,6 +1182,7 @@ impl Frame {
             entered: self.entered.get(),
             completed: self.completed.get(),
             effect: self.effect.get(),
+            valid,
         }
     }
 
@@ -1192,6 +1198,7 @@ pub(crate) struct Request {
     pub(crate) entered: bool,
     pub(crate) completed: bool,
     pub(crate) effect: Effect,
+    pub(crate) valid: bool,
 }
 
 #[implement(ITfEditSession, Agile = false)]

@@ -74,6 +74,9 @@ struct State {
     busy: bool,
     admitting_key: bool,
     host_identity: HostIdentity,
+    observations: diagnostics::ObservationJournal,
+    publisher: Option<Rc<crate::observation::Publisher>>,
+    metadata: crate::observation::Metadata,
     worker: Option<vocabulary::Worker>,
     maintenance_window: Option<crate::runtime_window::Window>,
     pending_ready: Option<Ready>,
@@ -105,6 +108,12 @@ pub(crate) struct Authority {
     pub(crate) guard: Guard,
     pub(crate) owned: Option<Rc<Owned>>,
     pub(crate) host_identity: HostIdentity,
+}
+
+#[derive(Default)]
+pub(crate) struct Execution {
+    pub(crate) eaten: bool,
+    completion: crate::edit::Completion,
 }
 
 pub(crate) struct Sinks {
@@ -225,7 +234,13 @@ impl Drop for Resources {
 struct DiagnosticDepth<'a>(&'a Service);
 impl Drop for DiagnosticDepth<'_> {
     fn drop(&mut self) {
-        self.0.state.borrow_mut().diagnostic_depth -= 1;
+        let mut state = self.0.state.borrow_mut();
+        state.diagnostic_depth -= 1;
+        let publish = state.diagnostic_depth == 0;
+        drop(state);
+        if publish {
+            self.0.publish_observation();
+        }
     }
 }
 
@@ -496,6 +511,7 @@ impl Service {
 
     pub(crate) fn invalidate(&self) {
         let mut state = self.state.borrow_mut();
+        state.metadata = crate::observation::Metadata::default();
         if let Some(generation) = state.generation.checked_add(1) {
             state.generation = generation;
         } else {
@@ -841,7 +857,18 @@ impl Service {
                 }
                 .unwrap_or_default();
                 if self.same_activation(epoch) {
-                    self.state.borrow_mut().host_identity = identity;
+                    let retired = self.state.borrow_mut().publisher.take();
+                    drop(retired);
+                    let mut publisher = crate::observation::Publisher::default();
+                    if identity.kind != 0 {
+                        publisher.attach(&identity);
+                    }
+                    if self.same_activation(epoch) {
+                        let mut state = self.state.borrow_mut();
+                        state.host_identity = identity;
+                        state.metadata = crate::observation::Metadata::default();
+                        state.publisher = Some(Rc::new(publisher));
+                    }
                 }
                 self.register_diagnostics(epoch, sinks.provider);
                 if self.same_activation(epoch) {
@@ -1029,7 +1056,11 @@ impl Service {
         Ok(())
     }
 
-    fn admit_key(&self, context: *mut c_void) -> Result<AdmittedKey, HRESULT> {
+    fn admit_key(
+        &self,
+        context: *mut c_void,
+        acquired: Option<&mut diagnostics::ModifierKnowledge>,
+    ) -> Result<AdmittedKey, HRESULT> {
         use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, HKL};
         let state = self.state.borrow();
         if state.busy || state.admitting_key {
@@ -1058,6 +1089,11 @@ impl Service {
             self.refuse(Stage::Keyboard, Cause::Predicate, S_OK);
             self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
             return Err(S_OK);
+        }
+        if let Some(acquired) = acquired {
+            *acquired = diagnostics::ModifierKnowledge::Known(diagnostics::ModifierFacts::project(
+                &keyboard,
+            ));
         }
         let manager = resources
             .as_ref()
@@ -1210,7 +1246,7 @@ impl Service {
             #[cfg(feature = "test-api")]
             self.inject_panic(1);
             self.count(Counter::KeyEntered);
-            let admitted = match self.admit_key(context) {
+            let admitted = match self.admit_key(context, None) {
                 Ok(admitted) => admitted,
                 Err(result) => return result,
             };
@@ -1230,7 +1266,26 @@ impl Service {
                 return S_OK;
             }
             // SAFETY: inbound COM holds context and writable eaten through this synchronous call.
-            let accepted = unsafe { self.execute(owner, context, event) };
+            let role = event.view().map_or(0, |event| event.role);
+            let ticket = if matches!(role, 4 | 5) {
+                let facts = diagnostics::ModifierFacts::project(&admitted.keyboard);
+                let intent = if role == 4 {
+                    diagnostics::ManualIntent::Convert
+                } else {
+                    diagnostics::ManualIntent::Reverse
+                };
+                let ticket = self.begin_command(diagnostics::RecognizedCommand::Ordinary {
+                    intent,
+                    modifiers: facts,
+                });
+                self.command_progress(ticket, diagnostics::CommandStage::ExecutorDispatch(facts));
+                ticket
+            } else {
+                diagnostics::CommandTicket::default()
+            };
+            let execution = unsafe { self.execute(owner, context, event) };
+            self.command_complete(ticket, execution.completion, false);
+            let accepted = execution.eaten;
             if accepted {
                 self.count(Counter::Consumed);
             }
@@ -1240,12 +1295,74 @@ impl Service {
         })
     }
 
+    pub(crate) unsafe fn preserved(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        id: windows_core::GUID,
+        eaten: *mut windows_core::BOOL,
+    ) -> HRESULT {
+        self.checked(|| {
+            let Some(binding) = BINDINGS.iter().find(|binding| binding.id == id) else {
+                return S_OK;
+            };
+            if binding.role == 0 {
+                return S_OK;
+            }
+            let intent = if binding.role == 4 {
+                diagnostics::ManualIntent::Convert
+            } else {
+                diagnostics::ManualIntent::Reverse
+            };
+            let ticket = self.begin_command(diagnostics::RecognizedCommand::Preserved { intent });
+            let mut modifiers = diagnostics::ModifierKnowledge::Unknown;
+            let admitted = match self.admit_key(context, Some(&mut modifiers)) {
+                Ok(admitted) => admitted,
+                Err(result) => {
+                    self.command_progress(
+                        ticket,
+                        if result.is_err() {
+                            diagnostics::CommandStage::Exception(modifiers)
+                        } else {
+                            diagnostics::CommandStage::AdmissionRefused(modifiers)
+                        },
+                    );
+                    return result;
+                }
+            };
+            let facts = diagnostics::ModifierFacts::project(&admitted.keyboard);
+            if !facts.exact() {
+                self.command_progress(
+                    ticket,
+                    diagnostics::CommandStage::ExactModifiersRefused(facts),
+                );
+                return S_OK;
+            }
+            let Ok(event) = NativeEvent::new(binding.role, admitted.mode, 1, &[]) else {
+                return E_FAIL;
+            };
+            if !self.current(admitted.guard) || self.state.borrow().mode != admitted.mode {
+                self.command_progress(ticket, diagnostics::CommandStage::DispatchRefused(facts));
+                self.refuse(Stage::Mode, Cause::Stale, S_OK);
+                self.invalidate_lifecycle_if(admitted.guard, LifecycleCause::KeyAdmission);
+                return S_OK;
+            }
+            self.command_progress(ticket, diagnostics::CommandStage::ExecutorDispatch(facts));
+            // SAFETY: the inbound preserved-key callback retains context/output for this request.
+            let execution = unsafe { self.execute(owner, context, event) };
+            self.command_complete(ticket, execution.completion, false);
+            // SAFETY: raw COM checked and defaulted this writable slot before calling here.
+            unsafe { eaten.write(windows_core::BOOL(execution.eaten as i32)) };
+            S_OK
+        })
+    }
+
     pub(crate) unsafe fn execute(
         self: &Rc<Self>,
         owner: crate::com::OwnServiceLease,
         context: *mut c_void,
         event: NativeEvent,
-    ) -> bool {
+    ) -> Execution {
         use crate::edit::{Effect, Frame};
         self.count(Counter::HandleEntered);
         let authority = {
@@ -1267,12 +1384,12 @@ impl Service {
                 if cause == Cause::Reentry {
                     self.invalidate_word(self.owned().is_some());
                 }
-                return false;
+                return Execution::default();
             }
             self.capture_authority()
         };
         let Some(authority) = authority else {
-            return false;
+            return Execution::default();
         };
         let guard = authority.guard;
         self.state.borrow_mut().busy = true;
@@ -1298,12 +1415,12 @@ impl Service {
                     if call.exception != 0 {
                         self.invalidate_if(guard, true);
                     }
-                    return false;
+                    return Execution::default();
                 }
             };
         if !frame.alive() {
             self.refuse(Stage::Session, Cause::Stale, S_OK);
-            return false;
+            return Execution::default();
         }
         self.count(Counter::Requested);
         {
@@ -1327,7 +1444,16 @@ impl Service {
             && result.entered
             && result.completed
         {
-            frame.eaten()
+            Execution {
+                eaten: frame.eaten(),
+                completion: if (result.outer.exact() && result.callback == S_OK && result.valid)
+                    || frame.completion() == crate::edit::Completion::Unknown
+                {
+                    frame.completion()
+                } else {
+                    crate::edit::Completion::Refused
+                },
+            }
         } else {
             if result.outer.exception != 0 {
                 self.refuse(Stage::Request, Cause::Exception, S_OK);
@@ -1345,7 +1471,14 @@ impl Service {
                     || result.effect != Effect::Unattempted
                     || self.owned().is_some(),
             );
-            eaten
+            Execution {
+                eaten,
+                completion: if result.effect != Effect::Unattempted {
+                    crate::edit::Completion::Unknown
+                } else {
+                    crate::edit::Completion::Refused
+                },
+            }
         }
     }
 
@@ -1546,6 +1679,100 @@ impl Service {
                 exception: 0,
             },
             value: crate::field::capture(window, host),
+        }
+    }
+
+    fn observation_stamp(state: &State) -> diagnostics::ObservationStamp {
+        diagnostics::ObservationStamp {
+            after: diagnostics::LifecycleCursor {
+                value: state.lifecycle.sequence(),
+            },
+            owned: diagnostics::ObservedOwnership {
+                present: state.owned.is_some(),
+                composition_serial: state.owned.as_ref().map_or(0, |owned| owned.serial),
+            },
+        }
+    }
+
+    fn begin_command(
+        &self,
+        recognized: diagnostics::RecognizedCommand,
+    ) -> diagnostics::CommandTicket {
+        let mut state = self.state.borrow_mut();
+        let stamp = Self::observation_stamp(&state);
+        state.observations.begin(recognized, stamp)
+    }
+
+    fn command_progress(
+        &self,
+        ticket: diagnostics::CommandTicket,
+        stage: diagnostics::CommandStage,
+    ) {
+        let mut state = self.state.borrow_mut();
+        let stamp = Self::observation_stamp(&state);
+        state.observations.record(ticket, stage, stamp);
+    }
+
+    fn command_complete(
+        &self,
+        ticket: diagnostics::CommandTicket,
+        completion: crate::edit::Completion,
+        witnessed: bool,
+    ) {
+        let Some(command) = ticket.identity else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        let stamp = Self::observation_stamp(&state);
+        let completion = match completion {
+            crate::edit::Completion::Refused => diagnostics::CommandCompletion::Refused,
+            crate::edit::Completion::Unknown => diagnostics::CommandCompletion::Unknown,
+            crate::edit::Completion::Reserved => diagnostics::CommandCompletion::Reserved,
+            crate::edit::Completion::ManualMark => diagnostics::CommandCompletion::ManualMark,
+        };
+        state.observations.complete(
+            diagnostics::CompletionObservation {
+                command,
+                witnessed,
+                completion,
+            },
+            stamp,
+        );
+    }
+
+    fn publish_observation(&self) {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let state = self.state.borrow();
+            let Some(publisher) = state.publisher.clone() else {
+                return;
+            };
+            if publisher.instance() == 0 {
+                return;
+            }
+            let mut base = state.diagnostics;
+            base.active = (state.activation == Activation::Active) as u32;
+            base.stopped = (state.stopped || self.poisoned.get()) as u32;
+            base.mode = state.mode;
+            let complete = SnapshotV2 {
+                base,
+                lifecycle: state.lifecycle.copy(
+                    state.owned.is_some(),
+                    state.owned.as_ref().map_or(0, |owned| owned.serial),
+                ),
+            };
+            let payload = crate::observation::encode(
+                &state.host_identity,
+                &state.metadata,
+                &complete,
+                &state.runtime,
+                publisher.instance(),
+                &state.observations.copy(),
+            );
+            drop(state);
+            publisher.publish(&payload);
+        }));
+        if let Err(payload) = result {
+            std::mem::forget(payload);
         }
     }
 
