@@ -239,6 +239,265 @@ pub fn existing(identity: &Identity) -> (Availability, Payload) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Publisher {
+        view: Option<View>,
+        mapping: Option<Handle>,
+        instance: u32,
+    }
+    impl Publisher {
+        fn attach(identity: &Identity) -> Self {
+            let mut result = Self {
+                view: None,
+                mapping: None,
+                instance: 0,
+            };
+            let name = wide(&mapping_name(identity));
+            let Ok(mapping) = (unsafe {
+                OpenFileMappingW(
+                    (FILE_MAP_READ | FILE_MAP_WRITE).0,
+                    false,
+                    PCWSTR(name.as_ptr()),
+                )
+            }) else {
+                return result;
+            };
+            let mapping = Handle(mapping);
+            let Ok(view) = View::map(mapping.0, FILE_MAP_READ | FILE_MAP_WRITE) else {
+                return result;
+            };
+            let page = view.page();
+            if !matches(page, identity) {
+                return result;
+            }
+            let allocated = page.allocated.load(Ordering::SeqCst);
+            if allocated >= i32::MAX as u32
+                || page
+                    .allocated
+                    .compare_exchange(allocated, allocated + 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                return result;
+            }
+            let instance = allocated + 1;
+            if page
+                .claim
+                .compare_exchange(0, instance, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return result;
+            }
+            result.instance = instance;
+            result.mapping = Some(mapping);
+            result.view = Some(view);
+            result
+        }
+        fn publish(&self, payload: &Payload) {
+            if let Some(view) = &self.view {
+                publish(view.page(), self.instance, payload);
+            }
+        }
+    }
+    fn publish(page: &Page, instance: u32, payload: &Payload) {
+        if page.claim.load(Ordering::SeqCst) != instance {
+            return;
+        }
+        let sequence = page.sequence.load(Ordering::SeqCst);
+        if sequence & 1 != 0 || sequence >= u32::MAX - 2 {
+            return;
+        }
+        page.sequence.store(sequence + 1, Ordering::SeqCst);
+        for (word, value) in page.words.iter().zip(payload) {
+            word.store(*value, Ordering::SeqCst);
+        }
+        page.sequence.store(sequence + 2, Ordering::SeqCst);
+    }
+    impl Drop for Publisher {
+        fn drop(&mut self) {
+            if let Some(view) = &self.view {
+                let _ = view.page().claim.compare_exchange(
+                    self.instance,
+                    0,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+        }
+    }
+    fn payload(identity: &Identity, instance: u32, serial: u32) -> Payload {
+        let mut words = [0; 512];
+        words[0] = instance;
+        words[1] = identity.kind;
+        words[2..6].copy_from_slice(&identity.version);
+        words[15] = serial;
+        words[24] = serial;
+        words[25] = 1;
+        words[165] = serial;
+        words
+    }
+    fn identity() -> Identity {
+        crate::native::capture_identity(
+            unsafe { GetCurrentProcess() },
+            unsafe { GetCurrentProcessId() },
+            unsafe { GetCurrentThreadId() },
+        )
+        .unwrap()
+    }
+    #[test]
+    fn host_probe_read_only_child() {
+        let Ok(value) = std::env::var("KEYRILL_PROOF_MAPPING_CHILD") else {
+            return;
+        };
+        let parts: Vec<_> = value.split(',').collect();
+        assert_eq!(parts.len(), 4);
+        let pid = parts[0].parse().unwrap();
+        let expected_started = u64::from_str_radix(parts[1], 16).unwrap();
+        let tid = parts[2].parse().unwrap();
+        let process = Handle(
+            unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    false,
+                    pid,
+                )
+            }
+            .unwrap(),
+        );
+        let id = crate::native::capture_identity(process.0, pid, tid).unwrap();
+        assert_eq!(id.started, expected_started);
+        assert_eq!(unsafe { WaitForSingleObject(process.0, 0) }, WAIT_TIMEOUT);
+        let name = wide(&mapping_name(&id));
+        let mapping = Handle(
+            unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(name.as_ptr())) }.unwrap(),
+        );
+        let view = View::map(mapping.0, FILE_MAP_READ).unwrap();
+        let mut information = MEMORY_BASIC_INFORMATION::default();
+        assert_eq!(
+            unsafe {
+                VirtualQuery(
+                    Some(view.0.Value),
+                    &mut information,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            },
+            std::mem::size_of::<MEMORY_BASIC_INFORMATION>()
+        );
+        assert_eq!(information.Protect, PAGE_READONLY);
+        let (state, words) = read(view.page(), &id);
+        assert_eq!(state, Availability::Available);
+        let decoded = decode_payload(&words).unwrap();
+        assert_eq!(
+            (decoded.metadata[1], decoded.service[0], decoded.runtime[0]),
+            (37, 37, 37)
+        );
+        let ready = usize::from_str_radix(parts[3], 16).unwrap();
+        unsafe { SetEvent(HANDLE(ready as *mut _)) }.unwrap();
+    }
+    #[test]
+    fn host_probe_main_mapping_claims_sequences_hostile_headers_and_independent_process() {
+        let id = identity();
+        assert_eq!(Publisher::attach(&id).instance, 0);
+        let armed = ArmedPage::create(id).unwrap();
+        assert!(ArmedPage::create(id).is_err());
+        assert_eq!(armed.read().0, Availability::Missing);
+        let first = Publisher::attach(&id);
+        assert_ne!(first.instance, 0);
+        let collision = Publisher::attach(&id);
+        assert_eq!(collision.instance, 0);
+        first.publish(&payload(&id, first.instance, 37));
+        collision.publish(&payload(&id, 100, 99));
+        assert_eq!(armed.read().0, Availability::Available);
+        assert_eq!(decode_payload(&armed.read().1).unwrap().metadata[1], 37);
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: true.into(),
+        };
+        let ready = Handle(unsafe { CreateEventW(Some(&attributes), true, false, None) }.unwrap());
+        let child = crate::native::baseline_tests::Child::start(
+            "mapping::tests::host_probe_read_only_child",
+            &[(
+                "KEYRILL_PROOF_MAPPING_CHILD",
+                format!(
+                    "{},{:x},{},{:x}",
+                    id.process, id.started, id.thread, ready.0.0 as usize
+                ),
+            )],
+            true,
+        );
+        assert_eq!(
+            unsafe { WaitForSingleObject(ready.0, 10000) },
+            WAIT_OBJECT_0
+        );
+        child.finish();
+        let previous_instance = first.instance;
+        drop(first);
+        assert_eq!(armed.read().0, Availability::Missing);
+        let second = Publisher::attach(&id);
+        assert!(second.instance > previous_instance);
+        second.publish(&payload(&id, second.instance, 38));
+        assert_eq!(armed.read().0, Availability::Available);
+        let page = second.view.as_ref().unwrap().page();
+        page.sequence.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(armed.read().0, Availability::Busy);
+        page.sequence.fetch_add(1, Ordering::SeqCst);
+        for field in 0..8 {
+            let old = page.header[field].fetch_add(1, Ordering::SeqCst);
+            assert_eq!(armed.read().0, Availability::Incompatible);
+            page.header[field].store(old, Ordering::SeqCst);
+        }
+        let mut malformed = payload(&id, second.instance, 38);
+        malformed[511] = 1;
+        second.publish(&malformed);
+        assert_eq!(armed.read().0, Availability::Incompatible);
+        malformed = payload(&id, second.instance, 38);
+        malformed[14] = u32::MAX;
+        second.publish(&malformed);
+        assert_eq!(armed.read().0, Availability::Incompatible);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for value in 1..2001 {
+                    publish(page, second.instance, &payload(&id, second.instance, value));
+                }
+                done.store(true, Ordering::SeqCst);
+            });
+            while !done.load(Ordering::SeqCst) {
+                let (state, words) = armed.read();
+                if state == Availability::Available {
+                    let decoded = decode_payload(&words).unwrap();
+                    assert_eq!(decoded.metadata[1], decoded.service[0]);
+                    assert_eq!(decoded.metadata[1], decoded.runtime[0]);
+                }
+            }
+        });
+        assert_eq!(armed.read().0, Availability::Available);
+        page.sequence.store(u32::MAX - 1, Ordering::SeqCst);
+        assert_eq!(armed.read().0, Availability::Incompatible);
+        second.publish(&payload(&id, second.instance, 40));
+        assert_eq!(armed.read().0, Availability::Incompatible);
+        page.allocated.store(i32::MAX as u32, Ordering::SeqCst);
+        drop(second);
+        assert_eq!(Publisher::attach(&id).instance, 0);
+        let truncated_id = Identity {
+            thread: id.thread.wrapping_add(1),
+            ..id
+        };
+        let name = wide(&mapping_name(&truncated_id));
+        let _truncated = Handle(
+            unsafe {
+                CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    16,
+                    PCWSTR(name.as_ptr()),
+                )
+            }
+            .unwrap(),
+        );
+        assert_eq!(Publisher::attach(&truncated_id).instance, 0);
+    }
     #[test]
     fn mapping_reader_checks_frozen_layout_and_unpublished_busy_stale_payloads() {
         let identity = Identity {

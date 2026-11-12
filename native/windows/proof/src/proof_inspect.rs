@@ -398,6 +398,25 @@ fn expected_case(name: &str) -> Option<(&'static str, &'static str)> {
         if name == "focus" { "x" } else { "" },
     ))
 }
+
+#[cfg(test)]
+pub(crate) fn check_owned_fixture(root: HWND, expected: &str) -> bool {
+    let Ok(target) =
+        Target::open(unsafe { windows::Win32::System::Threading::GetCurrentProcessId() })
+    else {
+        return false;
+    };
+    let Ok(automation) = (unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) })
+    else {
+        return false;
+    };
+    let reader = Reader {
+        target: &target,
+        root,
+        automation,
+    };
+    reader.check_edit(101, expected, true) && reader.check_edit(102, "", false)
+}
 /// Execute one established proof-inspector assertion against an explicit fixture PID.
 pub fn inspect_proof(arguments: &[String]) -> ExitCode {
     if arguments.len() != 2 {

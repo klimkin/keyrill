@@ -323,3 +323,7 @@ mod tests {
         assert!(threads(pid).unwrap().contains(&tid));
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+pub(crate) mod baseline_tests;

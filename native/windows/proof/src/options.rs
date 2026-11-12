@@ -141,7 +141,10 @@ mod tests {
     fn host_inspector_arguments() {
         assert_eq!(parse(&args(&["build"])).unwrap().command, Command::Build);
         for command in ["host", "service", "field"] {
-            assert_eq!(parse(&args(&[command, "123"])).unwrap().pid, 123);
+            let value = parse(&args(&[command, "123"])).unwrap();
+            assert_eq!(value.pid, 123);
+            assert_eq!(value.seconds, 0);
+            assert_eq!(value.expected_build, None);
         }
         for case in PublicCase::ALL {
             assert_eq!(
@@ -150,6 +153,9 @@ mod tests {
                     .command,
                 Command::PublicCase(case)
             );
+        }
+        for name in ["", "anything", "ghbdtn ", "EMPTY", "empty "] {
+            assert!(parse(&args(&["public-case", "123", name])).is_none());
         }
         for value in [
             "",
@@ -167,6 +173,11 @@ mod tests {
             assert!(parse(&args(&["service", "123", "--arm-seconds", value])).is_none());
         }
         let hash = "0123456789abcdefABCDEF019876543200000000ffffffff8000000000000001";
+        let arm = parse(&args(&["service", "123", "--arm-seconds", "3600"])).unwrap();
+        assert_eq!((arm.seconds, arm.expected_build), (3600, None));
+        let build = parse(&args(&["service", "123", "--expect-server-build", hash])).unwrap();
+        assert_eq!(build.seconds, 0);
+        assert_eq!(build.expected_build, digest(hash));
         let options = parse(&args(&[
             "service",
             "123",
@@ -204,7 +215,9 @@ mod tests {
             "",
             "0",
             &hash[..63],
+            "0123456789abcdefABCDEF019876543200000000ffffffff80000000000000011",
             "g123456789abcdefABCDEF019876543200000000ffffffff8000000000000001",
+            " 123456789abcdefABCDEF019876543200000000ffffffff8000000000000001",
         ] {
             assert!(digest(invalid).is_none());
         }
@@ -212,6 +225,7 @@ mod tests {
             vec!["public-case", "123"],
             vec!["public-empty", "123"],
             vec!["public-case", "123", "EMPTY"],
+            vec!["public-case", "123", "empty", "--arm-seconds", "1"],
             vec!["host", "123", "--expect-server-build", hash],
             vec!["service", "123", "--expect-server-build"],
             vec![
@@ -226,6 +240,9 @@ mod tests {
             vec!["service", "123", "--ignore-build", hash],
         ] {
             assert!(parse(&args(&values)).is_none(), "{values:?}");
+        }
+        for command in ["host", "field", "public-case", "build"] {
+            assert!(parse(&args(&[command, "123", "--expect-server-build", hash])).is_none());
         }
     }
     #[test]

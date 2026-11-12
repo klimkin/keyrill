@@ -604,6 +604,24 @@ mod tests {
             let style = unsafe { SendMessageW(field, EM_GETEDITSTYLE, None, None) }.0;
             assert_ne!(style & SES_USECTF as isize, 0);
         }
+        let field = unsafe { GetDlgItem(Some(fixture.window), 101) }.unwrap();
+        set_text(field, "привет ").unwrap();
+        unsafe {
+            SendMessageW(
+                field,
+                windows::Win32::UI::Controls::EM_SETSEL,
+                Some(WPARAM(7)),
+                Some(LPARAM(7)),
+            );
+        }
+        assert!(crate::proof_inspect::check_owned_fixture(
+            fixture.window,
+            "привет "
+        ));
+        assert!(!crate::proof_inspect::check_owned_fixture(
+            fixture.window,
+            "ghbdtn "
+        ));
         assert_eq!(reset_scopes(fixture.window, fixture.context.scope), S_OK);
         drop(fixture);
         assert_eq!(activated.deactivate(), S_OK);

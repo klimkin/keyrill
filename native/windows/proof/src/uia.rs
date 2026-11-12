@@ -192,11 +192,7 @@ impl<'a> NativeProvider<'a> {
     fn attribute(&self, value: &VARIANT) -> ReadOnly {
         let raw = unsafe { &value.Anonymous.Anonymous };
         if raw.vt == VT_BOOL {
-            return match unsafe { raw.Anonymous.boolVal }.0 {
-                0 => ReadOnly::Writable,
-                -1 => ReadOnly::ReadOnly,
-                _ => ReadOnly::Unknown,
-            };
+            return field::attribute_boolean(unsafe { raw.Anonymous.boolVal }.0);
         }
         if raw.vt != VT_UNKNOWN {
             return ReadOnly::Unknown;
@@ -252,7 +248,12 @@ impl<'a> NativeProvider<'a> {
                 from_handle.as_raw()
             )
         })?;
-        if same != BOOL(1) {
+        if !field::bound(
+            &self.native,
+            result.provider_pid,
+            result.provider_window,
+            same.0,
+        ) {
             return Err(Refusal::Binding);
         }
         if let Some(element) = &self.element {
@@ -343,21 +344,13 @@ impl Provider for NativeProvider<'_> {
     }
     fn document(&mut self, bound: usize) -> Result<Vec<u16>, Refusal> {
         let document = self.document.as_ref().ok_or(Refusal::TextUnavailable)?;
-        let text: BSTR = self.call(|| {
+        self.call(|| {
             let mut raw = std::ptr::null_mut();
             let result =
                 unsafe { (document.vtable().GetText)(document.as_raw(), bound as i32, &mut raw) };
             let text = unsafe { BSTR::from_raw(raw.cast()) };
-            if result == S_OK && !raw.is_null() {
-                Ok(text)
-            } else {
-                Err(Refusal::TextUnavailable)
-            }
-        })?;
-        if text.len() > bound {
-            return Err(Refusal::TextUnavailable);
-        }
-        Ok(text.to_vec())
+            field::copy_document_text(result.0, (!raw.is_null()).then_some(&text), bound)
+        })
     }
     fn end_caret(&mut self) -> Result<(), Refusal> {
         let text = self.text.as_ref().ok_or(Refusal::TextUnavailable)?;
@@ -382,7 +375,12 @@ impl Provider for NativeProvider<'_> {
                 document.as_raw(),
                 TextPatternRangeEndpoint_End
             )?;
-            if collapsed == 0 && end == 0 {
+            if field::end_caret(field::Selection {
+                complete: true,
+                count: 1,
+                collapsed,
+                at_end: end,
+            }) {
                 Ok(())
             } else {
                 Err(Refusal::Selection)
@@ -412,11 +410,16 @@ fn sample(
         (focused_thread, focused_started),
     ] {
         let handle = thread.handle.as_ref().ok_or(Refusal::Stale)?.0;
-        if unsafe { WaitForSingleObject(handle, 0) } != WAIT_TIMEOUT
-            || unsafe { GetProcessIdOfThread(handle) } != target.identity.process
-            || unsafe { GetThreadId(handle) } != thread.tid
-            || started(handle, true).ok() != Some(timestamp)
-        {
+        let lifetime = field::LifetimeFacts {
+            process: unsafe { GetProcessId(target.process.0) },
+            process_started: started(target.process.0, false).map_err(|_| Refusal::Stale)?,
+            process_wait: unsafe { WaitForSingleObject(target.process.0, 0) }.0,
+            thread_owner: unsafe { GetProcessIdOfThread(handle) },
+            thread: unsafe { GetThreadId(handle) },
+            thread_started: started(handle, true).map_err(|_| Refusal::Stale)?,
+            thread_wait: unsafe { WaitForSingleObject(handle, 0) }.0,
+        };
+        if !field::current(lifetime, &target.identity, thread.tid, timestamp) {
             return Err(Refusal::Stale);
         }
     }
@@ -448,8 +451,18 @@ fn sample(
         .map_err(|_| Refusal::Stale)?;
     if focused.pid != pid
         || focused.tid != focused_thread.tid
-        || info.hwndFocus != focused_info.hwndFocus
-        || root.handle != foreground.0 as usize
+        || !field::exact_queues(
+            field::QueueFocus {
+                available: true,
+                focused: info.hwndFocus.0 as usize,
+            },
+            field::QueueFocus {
+                available: true,
+                focused: focused_info.hwndFocus.0 as usize,
+            },
+            root.handle,
+            foreground.0 as usize,
+        )
     {
         return Err(Refusal::Stale);
     }

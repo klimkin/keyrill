@@ -239,6 +239,114 @@ pub struct Metadata {
     /// Whether a TextPattern was acquired.
     pub text_pattern: bool,
 }
+/// Retained process/thread facts required before a UIA provider may be used.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LifetimeFacts {
+    /// Process identifier from the retained native handle.
+    pub process: u32,
+    /// Creation FILETIME from the retained process handle.
+    pub process_started: u64,
+    /// Native process wait result.
+    pub process_wait: u32,
+    /// Owning process identifier from the retained thread handle.
+    pub thread_owner: u32,
+    /// Thread identifier from the retained thread handle.
+    pub thread: u32,
+    /// Creation FILETIME from the retained thread handle.
+    pub thread_started: u64,
+    /// Native thread wait result.
+    pub thread_wait: u32,
+}
+/// Require exact live process and thread identities from both retained handles.
+pub fn current(
+    now: LifetimeFacts,
+    target: &crate::protocol::Identity,
+    thread: u32,
+    thread_started: u64,
+) -> bool {
+    now.process_wait == 258
+        && now.thread_wait == 258
+        && now.process == target.process
+        && now.process_started == target.started
+        && now.thread_owner == target.process
+        && now.thread == thread
+        && now.thread_started == thread_started
+}
+/// Focus reported by one independently queried GUI queue.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QueueFocus {
+    /// Whether the queue query completed successfully.
+    pub available: bool,
+    /// Focused native window reported by that queue.
+    pub focused: usize,
+}
+/// Require both GUI queues to identify the same nonzero field under the foreground root.
+pub fn exact_queues(
+    foreground: QueueFocus,
+    focused: QueueFocus,
+    root: usize,
+    foreground_window: usize,
+) -> bool {
+    foreground.available
+        && focused.available
+        && foreground.focused != 0
+        && foreground.focused == focused.focused
+        && root != 0
+        && root == foreground_window
+}
+/// Require exact provider PID, HWND, and UIA comparison evidence.
+pub fn bound(native: &NativeFocus, pid: i32, window: usize, compared: i32) -> bool {
+    pid == native.pid as i32 && window != 0 && window == native.focused.handle && compared == 1
+}
+/// Exact UIA selection endpoint comparison results.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Selection {
+    /// Whether every endpoint query completed successfully.
+    pub complete: bool,
+    /// Number of selections returned by the provider.
+    pub count: i32,
+    /// Start-to-end comparison, with zero establishing a collapsed selection.
+    pub collapsed: i32,
+    /// Selection-end to document-end comparison.
+    pub at_end: i32,
+}
+/// Require exactly one complete collapsed end-of-document caret.
+pub fn end_caret(value: Selection) -> bool {
+    value.complete && value.count == 1 && value.collapsed == 0 && value.at_end == 0
+}
+/// Interpret native Boolean evidence only for exact S_OK and Boolean values.
+pub fn boolean(result: i32, value: i32) -> ReadOnly {
+    if result != 0 {
+        return ReadOnly::Unavailable;
+    }
+    match value {
+        0 => ReadOnly::Writable,
+        1 => ReadOnly::ReadOnly,
+        _ => ReadOnly::Unknown,
+    }
+}
+/// Interpret exact VARIANT Boolean values without coercion.
+pub fn attribute_boolean(value: i16) -> ReadOnly {
+    match value {
+        0 => ReadOnly::Writable,
+        -1 => ReadOnly::ReadOnly,
+        _ => ReadOnly::Unknown,
+    }
+}
+/// Preserve every returned UTF-16 code unit while enforcing exact success and the read bound.
+///
+/// # Errors
+/// Refuses a failed HRESULT, null returned BSTR, or provider text beyond the requested bound.
+pub fn copy_document_text(
+    result: i32,
+    value: Option<&[u16]>,
+    bound: usize,
+) -> Result<Vec<u16>, Refusal> {
+    let value = value
+        .filter(|value| result == 0 && value.len() <= bound)
+        .ok_or(Refusal::TextUnavailable)?;
+    Ok(value.to_vec())
+}
 /// Refuse incomplete, disabled, password, and read-only native controls.
 pub fn native_safety(value: &NativeFocus) -> Refusal {
     if !value.focused.complete || !value.root.complete || value.parents_truncated {
@@ -354,6 +462,10 @@ pub fn check_public_case(provider: &mut impl Provider, case: PublicCase) -> Resu
     provider.end_caret()?;
     revalidate(provider)
 }
+
+#[cfg(test)]
+#[path = "field_tests.rs"]
+mod baseline_tests;
 
 #[cfg(test)]
 mod tests {

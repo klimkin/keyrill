@@ -68,17 +68,13 @@ impl Snapshot {
     pub fn record(&mut self, route: DownRoute) {
         self.counts[0] = self.counts[0].saturating_add(1);
         let (index, failure) = match route {
-            DownRoute::TestRejected {
-                result: i32::MIN..=-1,
-                ..
-            } => (
-                1,
-                match route {
-                    DownRoute::TestRejected { result, .. } => Some((false, result)),
-                    _ => unreachable!(),
-                },
-            ),
-            DownRoute::TestRejected { .. } => (2, None),
+            DownRoute::TestRejected { result, .. } => {
+                if result < 0 {
+                    (1, Some((false, result)))
+                } else {
+                    (2, None)
+                }
+            }
             DownRoute::Dispatched { result, eaten } => {
                 self.counts[3] = self.counts[3].saturating_add(1);
                 if result < 0 {
@@ -190,5 +186,150 @@ mod tests {
         assert!(Snapshot::parse(&(text.clone() + " ")).is_none());
         assert!(Snapshot::parse(&text.replace("publication=0", "publication=00")).is_none());
         assert!(Snapshot::parse(&text.replace("saturated=0", "saturated=1")).is_none());
+    }
+    #[test]
+    fn routing_baseline_outcome_counters_first_error_and_saturation() {
+        let fail = 0x80004005u32 as i32;
+        let denied = 0x80070005u32 as i32;
+        for (tested, interest, handled, eaten, dispatched, consumed, counter) in [
+            (fail, 0, 0, 0, false, false, 1),
+            (denied, 7, 0, 1, false, false, 1),
+            (0, 0, fail, 1, false, false, 2),
+            (1, 0, fail, 1, false, false, 2),
+            (0, 1, fail, 0, true, false, 4),
+            (1, 7, denied, 7, true, false, 4),
+            (0, 1, 0, 0, true, false, 5),
+            (1, 7, 1, 0, true, false, 5),
+            (0, 1, 0, 1, true, true, 6),
+            (1, 7, 1, 7, true, true, 6),
+        ] {
+            let calls = std::cell::Cell::new(0);
+            let route = route_down(
+                |output| {
+                    assert_eq!(calls.get(), 0);
+                    assert!(!*output);
+                    calls.set(1);
+                    *output = interest != 0;
+                    tested
+                },
+                |output| {
+                    assert_eq!(calls.get(), 1);
+                    assert!(!*output);
+                    calls.set(2);
+                    *output = eaten != 0;
+                    handled
+                },
+            );
+            assert_eq!(calls.get(), if dispatched { 2 } else { 1 });
+            assert_eq!(route.consumed(), consumed);
+            let mut snapshot = Snapshot::default();
+            snapshot.record(route);
+            for (index, count) in snapshot.counts.iter().enumerate() {
+                assert_eq!(
+                    *count,
+                    u32::from(index == 0 || index == counter || (dispatched && index == 3))
+                );
+            }
+            assert_eq!(snapshot.publication, 0);
+            assert_eq!(
+                snapshot.first_error,
+                if tested < 0 {
+                    Some((false, tested))
+                } else if handled < 0 && dispatched {
+                    Some((true, handled))
+                } else {
+                    None
+                }
+            );
+        }
+        let mut snapshot = Snapshot::default();
+        snapshot.record(DownRoute::TestRejected {
+            result: denied,
+            interest: true,
+        });
+        snapshot.record(DownRoute::Dispatched {
+            result: fail,
+            eaten: true,
+        });
+        snapshot.record(DownRoute::TestRejected {
+            result: 1,
+            interest: false,
+        });
+        assert_eq!(snapshot.first_error, Some((false, denied)));
+        assert_eq!(Snapshot::parse(&snapshot.format()), Some(snapshot.clone()));
+        snapshot.counts.fill(u32::MAX - 1);
+        snapshot.publication = u32::MAX - 1;
+        for _ in 0..3 {
+            for route in [
+                DownRoute::TestRejected {
+                    result: fail,
+                    interest: true,
+                },
+                DownRoute::TestRejected {
+                    result: 1,
+                    interest: false,
+                },
+                DownRoute::Dispatched {
+                    result: fail,
+                    eaten: true,
+                },
+                DownRoute::Dispatched {
+                    result: 1,
+                    eaten: false,
+                },
+                DownRoute::Dispatched {
+                    result: 1,
+                    eaten: true,
+                },
+            ] {
+                snapshot.record(route);
+            }
+            snapshot.publication = snapshot.publication.saturating_add(1);
+        }
+        assert_eq!(snapshot.counts, [u32::MAX; 7]);
+        assert_eq!(snapshot.publication, u32::MAX);
+        assert!(snapshot.saturated());
+        assert_eq!(Snapshot::parse(&snapshot.format()), Some(snapshot.clone()));
+        assert!(
+            Snapshot::parse(&snapshot.format().replace("saturated=1", "saturated=0")).is_none()
+        );
+    }
+    #[test]
+    fn routing_baseline_parser_negative_matrix() {
+        let zero = Snapshot::default().format();
+        assert_eq!(
+            zero,
+            "Keyrill host routing v1; publication=0; down=0; test_error=0; no_interest=0; dispatch=0; dispatch_error=0; passed=0; eaten=0; saturated=0; first_error=none"
+        );
+        for input in [
+            String::new(),
+            "x".repeat(512),
+            format!("{zero}; unknown=1"),
+            format!("{zero}\0"),
+        ] {
+            assert!(Snapshot::parse(&input).is_none());
+        }
+        for (before, after) in [
+            ("v1", "v2"),
+            ("publication=0", "publication=-1"),
+            ("down=0", "down=00"),
+            ("down=0", "down=4294967296"),
+            ("down=0", "down=+1"),
+            ("down=0", "unknown=0"),
+            ("; down=0", ""),
+            ("; down=0", "; down=0; down=0"),
+            ("saturated=0", "saturated=1"),
+            ("first_error=none", "first_error=anything"),
+            ("first_error=none", "first_error=KeyDown/0x00000001"),
+            ("first_error=none", "first_error=KeyDown/0x8000400"),
+            ("first_error=none", "first_error=KeyDown/0x800040005"),
+            ("first_error=none", "first_error=KeyDown/0x8000400g"),
+            ("first_error=none", "first_error=KeyDown/0x8000400a"),
+        ] {
+            assert!(
+                Snapshot::parse(&zero.replace(before, after)).is_none(),
+                "{before} -> {after}"
+            );
+        }
     }
 }
