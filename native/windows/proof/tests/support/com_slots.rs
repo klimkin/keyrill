@@ -64,7 +64,9 @@ unsafe extern "system" fn query(
                     "interface"
                 });
             }
-            let key = if *id == windows::Win32::UI::TextServices::ITfCompartmentMgr::IID {
+            let key = if *id == windows::Win32::UI::TextServices::ITfSourceSingle::IID {
+                "diagnostic.QI"
+            } else if *id == windows::Win32::UI::TextServices::ITfCompartmentMgr::IID {
                 "compartment.QI"
             } else if *id == windows::Win32::UI::TextServices::ITfInputScope::IID {
                 "scope.QI"

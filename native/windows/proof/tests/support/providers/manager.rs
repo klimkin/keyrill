@@ -308,6 +308,9 @@ unsafe extern "system" fn ITfSourceSingle_AdviseSingleSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            p.manager()
+                .diagnostic_advises
+                .set(p.manager().diagnostic_advises.get() + 1);
             p.hit("AdviseSingleSink");
             replace_reference(
                 &p.manager().diagnostic,
@@ -325,6 +328,9 @@ unsafe extern "system" fn ITfSourceSingle_UnadviseSingleSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            p.manager()
+                .diagnostic_unadvises
+                .set(p.manager().diagnostic_unadvises.get() + 1);
             p.hit("UnadviseSingleSink");
             replace_reference(&p.manager().diagnostic, None);
             p.result("UnadviseSingleSink")

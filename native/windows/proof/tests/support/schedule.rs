@@ -8,7 +8,9 @@ pub struct Action {
     pub skip: usize,
     pub run: Rc<dyn Fn()>,
 }
+pub type Observer = Rc<dyn Fn(&'static str)>;
 pub struct HostCapsule {
+    pub observer: RefCell<Option<Observer>>,
     pub field_facts: RefCell<Option<super::dll::FieldFacts>>,
     pub layouts: RefCell<Vec<isize>>,
     pub layout_results: RefCell<Vec<i32>>,
@@ -26,6 +28,10 @@ pub struct HostCapsule {
 impl HostCapsule {
     pub fn hit(&self, boundary: &'static str) {
         self.trace.borrow_mut().push(boundary);
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(boundary);
+        }
         let action = {
             let mut actions = self.actions.borrow_mut();
             let found = actions.iter().position(|a| a.boundary == boundary);
@@ -78,6 +84,7 @@ impl HostCapsule {
 impl Default for HostCapsule {
     fn default() -> Self {
         Self {
+            observer: RefCell::new(None),
             field_facts: RefCell::new(None),
             layouts: RefCell::new(vec![0x04090409, 0x04190419]),
             layout_results: RefCell::new(vec![]),

@@ -223,7 +223,7 @@ const _: () = {
     assert!(std::mem::offset_of!(Probe, reserved) == 16);
 };
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub activation: u32,
     pub active: u32,
@@ -240,7 +240,7 @@ pub struct Snapshot {
     pub latest: [u32; 4],
 }
 #[windows_core::interface("f75f909b-293a-4a7b-a172-f5a061880352")]
-unsafe trait SnapshotReader: windows_core::IUnknown {
+pub unsafe trait SnapshotReader: windows_core::IUnknown {
     fn copy(&self, size: u32, version: u32, output: *mut Snapshot) -> HRESULT;
 }
 const _: () = {
@@ -259,4 +259,80 @@ pub fn snapshot(service: &windows::Win32::UI::TextServices::ITfTextInputProcesso
         );
     }
     value
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotV2 {
+    pub base: Snapshot,
+    pub lifecycle: [u32; 86],
+}
+impl Default for SnapshotV2 {
+    fn default() -> Self {
+        Self {
+            base: Snapshot::default(),
+            lifecycle: [0; 86],
+        }
+    }
+}
+impl SnapshotV2 {
+    pub fn last(&self) -> [u32; 5] {
+        let count = self.lifecycle[3] as usize;
+        assert!((1..=16).contains(&count));
+        self.lifecycle[6 + (count - 1) * 5..6 + count * 5]
+            .try_into()
+            .unwrap()
+    }
+    pub fn kinds(&self) -> Vec<u32> {
+        self.lifecycle[6..6 + self.lifecycle[3] as usize * 5]
+            .as_chunks::<5>()
+            .0
+            .iter()
+            .map(|e| e[1])
+            .collect()
+    }
+}
+#[windows_core::interface("4f89429e-a955-4885-bb33-c78ad1982481")]
+pub unsafe trait SnapshotReaderV2: windows_core::IUnknown {
+    fn copy(&self, size: u32, version: u32, output: *mut SnapshotV2) -> HRESULT;
+}
+const _: () = {
+    assert!(size_of::<SnapshotV2>() == 564);
+    assert!(std::mem::offset_of!(SnapshotV2, lifecycle) == 220);
+};
+pub fn snapshot_v2(
+    service: &windows::Win32::UI::TextServices::ITfTextInputProcessorEx,
+) -> SnapshotV2 {
+    use windows_core::Interface;
+    let reader = service.cast::<SnapshotReaderV2>().unwrap();
+    let mut value = SnapshotV2::default();
+    unsafe {
+        assert_eq!(reader.copy(564, 2, &mut value), S_OK);
+    }
+    value
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Metadata {
+    pub reason: u32,
+    pub result: u32,
+    pub focus: u32,
+    pub scope: u32,
+    pub request: u32,
+    pub session: u32,
+    pub entered: u32,
+    pub completed: u32,
+    pub selection: u32,
+    pub acp: u32,
+}
+const _: () = assert!(size_of::<Metadata>() == 40);
+impl SnapshotReaderV2 {
+    pub unsafe fn read(&self, size: u32, version: u32, out: *mut SnapshotV2) -> HRESULT {
+        unsafe { self.copy(size, version, out) }
+    }
+}
+impl SnapshotReader {
+    pub unsafe fn read(&self, size: u32, version: u32, out: *mut Snapshot) -> HRESULT {
+        unsafe { self.copy(size, version, out) }
+    }
 }

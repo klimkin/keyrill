@@ -414,3 +414,168 @@ fn late_old_termination_and_focus_roundtrip_cannot_revive_authority() {
         "prefix suffix".encode_utf16().collect::<Vec<_>>()
     );
 }
+#[test]
+fn changing_finish_caret_requires_verified_restoration() {
+    for case in 0..6 {
+        let c = Client::new();
+        c.type_text("ghbdtn ");
+        let before = snapshot(&c.service);
+        let writes = c.a.writes.get();
+        let d = Rc::clone(&c.a);
+        c.host.on("SetText.after", 0, move || {
+            let start = d.active.borrow().as_ref().unwrap().span.get().start;
+            d.selection.set(Span { start, length: 0 });
+        });
+        if case == 1 {
+            c.a.results.borrow_mut().insert("SetSelection", E_FAIL);
+        }
+        if case == 2 {
+            let d = Rc::clone(&c.a);
+            c.host.on("SetSelection.after", 0, move || {
+                d.selection.set(Span {
+                    start: 7,
+                    length: 0,
+                })
+            });
+        }
+        if case == 3 || case == 4 {
+            let d = Rc::clone(&c.a);
+            c.host.on("EndComposition.after", 0, move || {
+                d.selection.set(if case == 3 {
+                    Span {
+                        start: 7,
+                        length: 0,
+                    }
+                } else {
+                    Span {
+                        start: 14,
+                        length: 1,
+                    }
+                })
+            });
+        }
+        if case == 5 {
+            let event = c.api.event;
+            let handle = c.handle as usize;
+            let context = c.context_a.as_raw() as usize;
+            c.host.on("SetSelection.after", 0, move || {
+                let mut eaten = 1;
+                unsafe {
+                    assert_eq!(
+                        event(
+                            handle as *mut _,
+                            context as *mut _,
+                            &Event::text(b'x' as u16),
+                            &mut eaten
+                        ),
+                        S_OK
+                    );
+                }
+                assert_eq!(eaten, 0);
+            });
+        }
+        assert!(c.event(Event::command(3)));
+        assert_eq!(
+            *c.a.text.borrow(),
+            "prefix ghbdtn suffix".encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            *c.b.text.borrow(),
+            "prefix suffix".encode_utf16().collect::<Vec<_>>()
+        );
+        assert_eq!(c.a.writes.get(), writes + 1);
+        let after = snapshot(&c.service);
+        if case == 0 {
+            oracle::document(&c, "ghbdtn ", 14);
+            assert!(c.a.active.borrow().is_none());
+            assert!(!stopped(&c));
+            assert_eq!(after.counts[9], before.counts[9] + 1);
+            assert_eq!(after.counts[11], before.counts[11]);
+        } else {
+            assert!(stopped(&c));
+            assert_eq!(after.counts[9], before.counts[9]);
+            assert_eq!(after.counts[11], before.counts[11] + 1);
+            let selection = c.a.selection.get();
+            assert!(!c.key(b'x' as u16, false));
+            assert_eq!(c.a.selection.get(), selection);
+            assert_eq!(c.a.writes.get(), writes + 1);
+        }
+    }
+}
+#[test]
+fn every_exercised_native_boundary_stops_writes_after_nested_input() {
+    let boundaries = {
+        let c = Client::new();
+        c.type_text("ghbdtn");
+        c.host.trace.borrow_mut().clear();
+        assert!(c.key(b' ' as u16, false));
+        let mut names = c.host.trace.borrow().clone();
+        names.retain(|s| {
+            !s.starts_with("AddRef")
+                && !s.starts_with("Release")
+                && !matches!(
+                    *s,
+                    "QI" | "QI.after"
+                        | "Next"
+                        | "SetText"
+                        | "SetText.after"
+                        | "GetFocus"
+                        | "capture"
+                        | "Layouts"
+                )
+        });
+        names.sort();
+        names.dedup();
+        names
+    };
+    for boundary in boundaries {
+        let c = Client::new();
+        c.type_text("ghbdtn");
+        let before = c.a.writes.get();
+        let event = c.api.event;
+        let handle = c.handle as usize;
+        let context = c.context_a.as_raw() as usize;
+        let d = Rc::clone(&c.a);
+        let observed = Rc::new(std::cell::Cell::new(None));
+        let record = Rc::clone(&observed);
+        c.host.on(boundary, 0, move || {
+            record.set(Some(
+                d.writes.get() + u32::from(boundary == "SetText.before"),
+            ));
+            let mut eaten = 1;
+            unsafe {
+                assert_eq!(
+                    event(
+                        handle as *mut _,
+                        context as *mut _,
+                        &Event::text(b'x' as u16),
+                        &mut eaten
+                    ),
+                    S_OK
+                );
+            }
+            assert_eq!(eaten, 0);
+        });
+        let eaten = c.key(b' ' as u16, false);
+        assert_eq!(
+            c.a.writes.get(),
+            observed.get().unwrap(),
+            "boundary{boundary}"
+        );
+        assert_eq!(eaten, c.a.writes.get() > before, "boundary{boundary}");
+        assert_eq!(
+            *c.a.text.borrow(),
+            if c.a.writes.get() > before {
+                "prefix привет suffix"
+            } else {
+                "prefix ghbdtnsuffix"
+            }
+            .encode_utf16()
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            *c.b.text.borrow(),
+            "prefix suffix".encode_utf16().collect::<Vec<_>>()
+        );
+    }
+}

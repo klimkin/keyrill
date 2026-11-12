@@ -22,6 +22,12 @@ pub struct Client {
 }
 impl Client {
     pub fn new() -> Self {
+        Self::with_layout_callback(true)
+    }
+    pub fn without_layouts() -> Self {
+        Self::with_layout_callback(false)
+    }
+    fn with_layout_callback(with_layout: bool) -> Self {
         let api = Api::load();
         let host = Rc::new(HostCapsule::default());
         let a = Document::new(Rc::clone(&host), 101);
@@ -58,7 +64,11 @@ impl Client {
                 retain: Some(retain),
                 release: Some(release),
                 profiles: profiles.as_raw(),
-                layouts: Some(layout_callback(&host)),
+                layouts: if with_layout {
+                    Some(layout_callback(&host))
+                } else {
+                    None
+                },
                 capture: Some(capture),
             };
             let mut handle = std::ptr::null_mut();
@@ -86,6 +96,21 @@ impl Client {
                 api,
             }
         }
+    }
+    pub fn captured_facts(&self) -> FieldFacts {
+        let mut facts = FieldFacts::default();
+        unsafe {
+            assert_eq!(
+                capture(
+                    Rc::as_ptr(&self.host).cast_mut().cast(),
+                    self.a.window,
+                    &HostIdentity::default(),
+                    &mut facts
+                ),
+                S_OK
+            );
+        }
+        facts
     }
     pub fn notepad() -> Self {
         let c = Self::new();
@@ -181,6 +206,8 @@ impl Drop for Client {
         if !std::thread::panicking() {
             self.host.drained();
         }
+        let observer = self.host.observer.take();
+        drop(observer);
         let actions = self.host.actions.take();
         drop(actions);
         let _ = self.deactivate();

@@ -332,3 +332,146 @@ fn notepad_selection_and_scope_failures_are_metadata_only() {
         no_admission(&c);
     }
 }
+#[test]
+fn notepad_native_policy_uncertainty_has_no_admission_effects() {
+    for case in 0..18 {
+        let c = Client::notepad();
+        match case {
+            0 => c.a.status.set(TF_SD_READONLY),
+            1 => c.a.disabled.set(true),
+            2 => c.a.empty_disabled.set(true),
+            3 => c.manager.disabled.set(true),
+            4..=9 => {
+                let index = (case - 4) % 3;
+                let result = if case < 7 { E_ACCESSDENIED } else { E_FAIL };
+                if index == 2 {
+                    c.manager.compartment_result.set(result);
+                } else {
+                    let mut r = c.a.compartment_results.get();
+                    r[index] = result;
+                    c.a.compartment_results.set(r);
+                }
+            }
+            10..=15 => {
+                let index = (case - 10) % 3;
+                let kind = if case < 13 { VT_UNKNOWN } else { VT_BOOL };
+                if index == 2 {
+                    c.manager.compartment_type.set(kind);
+                } else {
+                    let mut kinds = c.a.compartment_types.get();
+                    kinds[index] = kind;
+                    c.a.compartment_types.set(kinds);
+                }
+            }
+            16 | 17 => {
+                c.a.scope_type.set(VT_EMPTY);
+                c.a.results.borrow_mut().insert(
+                    "scope.GetValue",
+                    if case == 16 { E_FAIL } else { E_ACCESSDENIED },
+                );
+                if case == 16 {
+                    let host = Rc::clone(&c.host);
+                    c.host.on("scope.GetValue", 0, move || {
+                        host.field_facts.borrow_mut().as_mut().unwrap().focus = HWND::default()
+                    });
+                }
+            }
+            _ => unreachable!(),
+        };
+        assert!(!c.key(b'g' as u16, false), "case{case}");
+        no_admission(&c);
+    }
+}
+#[test]
+fn exceptional_notepad_scope_requires_fresh_exact_failure() {
+    for case in 0..5 {
+        let c = Client::notepad();
+        c.a.scope_type.set(VT_EMPTY);
+        c.a.results.borrow_mut().insert(
+            "scope.GetValue",
+            match case {
+                0 => S_OK,
+                1 => S_FALSE,
+                2 => E_ACCESSDENIED,
+                _ => E_FAIL,
+            },
+        );
+        if case == 3 {
+            c.a.results.borrow_mut().insert("GetAppProperty", S_FALSE);
+        }
+        if case == 4 {
+            let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+            let other = c.context_b.as_raw() as usize;
+            c.host.on("scope.GetValue", 0, move || unsafe {
+                assert_eq!(
+                    (sink.vtable().OnPushContext)(sink.as_raw(), other as *mut _),
+                    S_OK
+                );
+            });
+        }
+        assert!(!c.key(b'g' as u16, false));
+        no_admission(&c);
+    }
+}
+#[test]
+fn notepad_executor_refusals_expire_retained_callbacks() {
+    for case in 0..8 {
+        let c = Client::notepad();
+        c.a.scope_type.set(VT_EMPTY);
+        c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
+        match case {
+            0 => c.a.acp.set(false),
+            1 => {
+                c.a.invoke.set(false);
+                c.a.results
+                    .borrow_mut()
+                    .insert("RequestEditSession", E_ACCESSDENIED);
+            }
+            2 => c.a.invoke.set(false),
+            3 => c.a.foreign.set(true),
+            4 => c.a.reject_composition.set(true),
+            5 => {
+                let host = Rc::clone(&c.host);
+                c.host.on("capture", 2, move || {
+                    host.field_facts
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .parent
+                        .handle = HWND(3usize as *mut _)
+                });
+            }
+            6 | 7 => {
+                if case == 7 {
+                    c.a.scope_type.set(VT_UNKNOWN);
+                    c.a.results.borrow_mut().remove("scope.GetValue");
+                }
+                let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+                let other = c.context_b.as_raw() as usize;
+                c.host.on(
+                    if case == 6 {
+                        "range.GetContext"
+                    } else {
+                        "GetInputScopes"
+                    },
+                    0,
+                    move || unsafe {
+                        assert_eq!(
+                            (sink.vtable().OnPushContext)(sink.as_raw(), other as *mut _),
+                            S_OK
+                        );
+                    },
+                );
+            }
+            _ => unreachable!(),
+        };
+        assert!(!c.key(b'g' as u16, false), "case{case}");
+        oracle::document(&c, "", 7);
+        assert_eq!(c.a.writes.get(), 0);
+        if c.a.retained.borrow().is_some() {
+            let trace = c.host.trace.borrow().clone();
+            assert_eq!(c.delayed(), E_FAIL);
+            assert_eq!(*c.host.trace.borrow(), trace);
+        }
+    }
+}

@@ -66,6 +66,8 @@ impl Default for Profile {
     }
 }
 pub struct Manager {
+    pub diagnostic_advises: Cell<u32>,
+    pub diagnostic_unadvises: Cell<u32>,
     pub disabled: Cell<bool>,
     pub compartment_type: Cell<VARENUM>,
     pub compartment_result: Cell<HRESULT>,
@@ -88,6 +90,8 @@ pub struct Manager {
 impl Manager {
     pub fn new(host: Rc<HostCapsule>, top: *mut c_void) -> Rc<Self> {
         Rc::new(Self {
+            diagnostic_advises: Cell::new(0),
+            diagnostic_unadvises: Cell::new(0),
             disabled: Cell::new(false),
             compartment_type: Cell::new(VT_I4),
             compartment_result: Cell::new(S_OK),
