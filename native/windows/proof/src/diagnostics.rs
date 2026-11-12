@@ -267,6 +267,9 @@ fn take_interface<T: Interface>(result: HRESULT, raw: *mut c_void) -> Result<T, 
 struct Runtime([u32; 12]);
 /// Read the external 48-byte runtime snapshot through its versioned interface.
 ///
+/// The returned observation order interleaves each language's source state and
+/// error in words 8 through 11. The native ABI groups both states before both errors.
+///
 /// # Errors
 /// Returns the first failed native operation or evidence predicate.
 pub fn read_runtime(manager: &ITfThreadMgr) -> Result<[u32; 12], HRESULT> {
@@ -288,6 +291,7 @@ pub fn read_runtime(manager: &ITfThreadMgr) -> Result<[u32; 12], HRESULT> {
     let result =
         unsafe { (vtable.copy)(reader.as_raw(), 48, 1, (&mut value as *mut Runtime).cast()) };
     if result == S_OK {
+        value.0.swap(9, 10);
         Ok(value.0)
     } else {
         Err(result)
