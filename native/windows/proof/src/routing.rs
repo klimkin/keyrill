@@ -1,4 +1,5 @@
 //! Host keystroke routing and its canonical status row.
+/// Canonical names of the host routing counters.
 pub const LABELS: [&str; 7] = [
     "down",
     "test_error",
@@ -9,10 +10,24 @@ pub const LABELS: [&str; 7] = [
     "eaten",
 ];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The observed result of the test and optional dispatch callbacks.
 pub enum DownRoute {
-    TestRejected { result: i32, interest: bool },
-    Dispatched { result: i32, eaten: bool },
+    /// Test rejected evidence or outcome.
+    TestRejected {
+        /// Exact native test HRESULT.
+        result: i32,
+        /// Interest reported by the native test callback.
+        interest: bool,
+    },
+    /// Dispatched evidence or outcome.
+    Dispatched {
+        /// Exact native dispatch HRESULT.
+        result: i32,
+        /// Consumption reported by the native dispatch callback.
+        eaten: bool,
+    },
 }
+/// Dispatch a key only after a successful interested test callback.
 pub fn route_down(
     test: impl FnOnce(&mut bool) -> i32,
     dispatch: impl FnOnce(&mut bool) -> i32,
@@ -27,6 +42,7 @@ pub fn route_down(
     DownRoute::Dispatched { result, eaten }
 }
 impl DownRoute {
+    /// Require a successful dispatch callback that explicitly consumed the key.
     pub fn consumed(self) -> bool {
         matches!(
             self,
@@ -38,12 +54,17 @@ impl DownRoute {
     }
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Host routing counters and the first failed native call.
 pub struct Snapshot {
+    /// Monotonic host publication number.
     pub publication: u32,
+    /// Seven counters in LABELS order.
     pub counts: [u32; 7],
+    /// First failed call, where true identifies KeyDown and false TestKeyDown.
     pub first_error: Option<(bool, i32)>,
 }
 impl Snapshot {
+    /// Accumulate the observed routing outcome with saturating counters.
     pub fn record(&mut self, route: DownRoute) {
         self.counts[0] = self.counts[0].saturating_add(1);
         let (index, failure) = match route {
@@ -72,9 +93,11 @@ impl Snapshot {
             self.first_error = failure;
         }
     }
+    /// Report exhausted publication or lifecycle counters.
     pub fn saturated(&self) -> bool {
         self.publication == u32::MAX || self.counts.contains(&u32::MAX)
     }
+    /// Format the established canonical status row.
     pub fn format(&self) -> String {
         let mut result = format!("Keyrill host routing v1; publication={}", self.publication);
         for (label, count) in LABELS.into_iter().zip(self.counts) {
@@ -94,6 +117,7 @@ impl Snapshot {
         }
         result
     }
+    /// Parse an exact canonical command, case name, or status representation.
     pub fn parse(text: &str) -> Option<Self> {
         if text.len() >= 512 {
             return None;

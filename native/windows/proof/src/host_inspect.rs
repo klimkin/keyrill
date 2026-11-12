@@ -86,7 +86,7 @@ fn print_snapshot(thread: u32, state: Availability, words: &Payload, expected: &
         r[10],
         r[11]
     );
-    for event in l[6..6 + l[3] as usize * 5].chunks_exact(5) {
+    for event in l[6..6 + l[3] as usize * 5].as_chunks::<5>().0.iter() {
         println!(
             " lifecycle={} kind={} subject={} cause={} unresolved={}",
             event[0], event[1], event[2], event[3], event[4]
@@ -101,7 +101,11 @@ fn print_snapshot(thread: u32, state: Availability, words: &Payload, expected: &
         l[2],
         u32::from(observations[0] > observations[2])
     );
-    for event in observations[3..3 + observations[2] as usize * 10].chunks_exact(10) {
+    for event in observations[3..3 + observations[2] as usize * 10]
+        .as_chunks::<10>()
+        .0
+        .iter()
+    {
         print!(
             " observation={} lifecycle_after={} owned={} serial={}",
             event[0], event[1], event[2], event[3]
@@ -166,7 +170,9 @@ fn print_snapshot(thread: u32, state: Availability, words: &Payload, expected: &
                 }
                 if event[4] == 1 {
                     let continued = observations[3..3 + observations[2] as usize * 10]
-                        .chunks_exact(10)
+                        .as_chunks::<10>()
+                        .0
+                        .iter()
                         .any(|next| next[0] > event[0] && next[4] <= 6 && next[7] == event[7]);
                     print!(" incomplete={}", u32::from(!continued));
                 }
@@ -181,7 +187,7 @@ fn print_snapshot(thread: u32, state: Availability, words: &Payload, expected: &
     }
     for (label, refusal) in ["first_refusal", "refusal"]
         .into_iter()
-        .zip(s[47..].chunks_exact(4))
+        .zip(s[47..].as_chunks::<4>().0.iter())
     {
         if refusal[0] != 0 {
             println!(
@@ -412,9 +418,9 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
                 ..id
             };
             let (state, words) =
-                if unsafe { WaitForSingleObject(thread.handle.as_ref().unwrap().0, 0) }
-                    != WAIT_TIMEOUT
-                {
+                if thread.handle.as_ref().is_none_or(
+                    |handle| unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT,
+                ) {
                     (Availability::Stale, [0; 512])
                 } else if options.seconds != 0 {
                     armed[index].read()

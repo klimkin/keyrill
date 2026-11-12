@@ -2,6 +2,7 @@
 use crate::diagnostics::{Endpoint, SERVICE_ID, ServiceSnapshot};
 use crate::native::wide;
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::SystemInformation::GetTickCount64;
@@ -12,13 +13,21 @@ use windows::Win32::UI::TextServices::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, GUID, HRESULT, Interface};
 
+/// Control ID of this fixture mode row.
 pub const MODE_ID: i32 = 109;
+/// Control ID of the source-proof result row.
 pub const RESULT_ID: i32 = 110;
+/// Exact native title identifying this fixture mode.
 pub const TITLE: &str = "Keyrill TSF owned source fixture";
+/// Canonical mode-identification status row.
 pub const MODE_STATUS: &str = "Keyrill owned source v1; mode=ProveOwnedEnToRu";
+/// The external English proof-profile identity.
 pub const EN_PROFILE: GUID = GUID::from_u128(0x0d52a994_9eb5_44ab_b18f_603dc5f69671);
+/// The external Russian proof-profile identity.
 pub const RU_PROFILE: GUID = GUID::from_u128(0x4c1e583c_f8e5_4b7d_b66c_b7e7319aed51);
+/// Canonical diagnostic stage labels in wire enumeration order.
 pub const STAGES: [&str; 5] = ["Waiting", "Countdown", "Running", "Verified", "Failed"];
+/// Canonical source-proof refusal labels.
 pub const FAILURES: [&str; 27] = [
     "None",
     "Closed",
@@ -50,37 +59,66 @@ pub const FAILURES: [&str; 27] = [
 ];
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The first source-proof predicate or native operation that failed.
 pub enum Failure {
+    /// The fixture closed during the proof.
     Closed = 1,
+    /// Setup unavailable evidence or outcome.
     SetupUnavailable,
+    /// Wrong thread evidence or outcome.
     WrongThread,
+    /// Provider missing evidence or outcome.
     ProviderMissing,
+    /// Provider changed evidence or outcome.
     ProviderChanged,
+    /// Activation changed evidence or outcome.
     ActivationChanged,
+    /// The native operation or publication remains in flight.
     Busy,
+    /// Invalid evidence evidence or outcome.
     InvalidEvidence,
+    /// Saturated evidence or outcome.
     Saturated,
+    /// Wrong source evidence or outcome.
     WrongSource,
+    /// Target unavailable evidence or outcome.
     TargetUnavailable,
+    /// Focus changed evidence or outcome.
     FocusChanged,
+    /// Word changed evidence or outcome.
     WordChanged,
+    /// Ownership lost evidence or outcome.
     OwnershipLost,
+    /// History lost evidence or outcome.
     HistoryLost,
+    /// Unknown effect evidence or outcome.
     UnknownEffect,
+    /// Native language failed evidence or outcome.
     NativeLanguageFailed,
+    /// Language not changed evidence or outcome.
     LanguageNotChanged,
+    /// Native activation failed evidence or outcome.
     NativeActivationFailed,
+    /// Target not active evidence or outcome.
     TargetNotActive,
+    /// Service not ru evidence or outcome.
     ServiceNotRu,
+    /// No terminal evidence or outcome.
     NoTerminal,
+    /// Detached evidence or outcome.
     Detached,
+    /// Unresolved termination evidence or outcome.
     UnresolvedTermination,
+    /// Input interference evidence or outcome.
     InputInterference,
+    /// Late evidence or outcome.
     Late,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Source result words in the established field order.
 pub struct Status(pub [u32; 15]);
 impl Status {
+    /// Validate every field and reserved slot in this independent representation.
     pub fn valid(&self) -> bool {
         let s = self.0;
         if s[0] >= 5 || s[1] >= 27 || s[2] > 1 || s[3] > s[2] || s[12] > 2 || s[13] > 2 || s[14] > 2
@@ -117,6 +155,7 @@ impl Status {
             _ => s[1..] == [0; 14],
         }
     }
+    /// Format the established canonical status row.
     pub fn format(&self) -> Option<String> {
         if !self.valid() {
             return None;
@@ -148,6 +187,7 @@ impl Status {
         }
         Some(result)
     }
+    /// Parse an exact canonical command, case name, or status representation.
     pub fn parse(text: &str) -> Option<Self> {
         let fields: Vec<_> = text.split("; ").collect();
         if text.len() >= 1024 || fields.len() != 16 || fields[0] != "Keyrill source result v1" {
@@ -168,6 +208,10 @@ impl Status {
         (result.format().as_deref() == Some(text)).then_some(result)
     }
 }
+/// Check active service evidence and reject unknown editing effects.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn active(snapshot: &ServiceSnapshot) -> Result<(), Failure> {
     if !snapshot.valid() {
         return Err(Failure::InvalidEvidence);
@@ -183,9 +227,14 @@ pub fn active(snapshot: &ServiceSnapshot) -> Result<(), Failure> {
     }
     Ok(())
 }
+/// Compare the five input-admission counters used by the source proof.
 pub fn same_input(a: &ServiceSnapshot, b: &ServiceSnapshot) -> bool {
     a.base[9..14] == b.base[9..14]
 }
+/// Require monotonic counts and retained overlapping lifecycle history.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn history(a: &ServiceSnapshot, b: &ServiceSnapshot) -> Result<(), Failure> {
     active(a)?;
     active(b)?;
@@ -204,6 +253,10 @@ pub fn history(a: &ServiceSnapshot, b: &ServiceSnapshot) -> Result<(), Failure> 
     }
     Ok(())
 }
+/// Require an unchanged owned EN mark throughout the activation countdown.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn armed(a: &ServiceSnapshot, b: &ServiceSnapshot) -> Result<(), Failure> {
     history(a, b)?;
     if !same_input(a, b) {
@@ -220,6 +273,10 @@ pub fn armed(a: &ServiceSnapshot, b: &ServiceSnapshot) -> Result<(), Failure> {
     }
     Ok(())
 }
+/// Require exactly the permitted first owned acquisition while the public word grows.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn word_history(empty: &ServiceSnapshot, now: &ServiceSnapshot) -> Result<(), Failure> {
     history(empty, now)?;
     let mut acquired = false;
@@ -246,11 +303,19 @@ pub fn word_history(empty: &ServiceSnapshot, now: &ServiceSnapshot) -> Result<()
     }
 }
 #[derive(Default)]
+/// First verified terminal event and profile-change sequence in an interval.
 pub struct Terminal {
+    /// One for exact termination and two for a verified requested finish.
     pub completion: u32,
+    /// Sequence of the first terminal event.
     pub sequence: u32,
+    /// Sequence of the first profile-change event, or zero when absent.
     pub profile: u32,
 }
+/// Find a verified terminal event without accepting detachment or unknown termination.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn interval(before: &ServiceSnapshot, after: &ServiceSnapshot) -> Result<Terminal, Failure> {
     history(before, after)?;
     if !same_input(before, after) {
@@ -299,6 +364,10 @@ pub fn interval(before: &ServiceSnapshot, after: &ServiceSnapshot) -> Result<Ter
     }
     Ok(terminal)
 }
+/// Evaluate the complete retained lifecycle history for this proof outcome.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn evaluate(
     before: &ServiceSnapshot,
     middle: &ServiceSnapshot,
@@ -357,17 +426,25 @@ struct Native {
     profiles: ITfInputProcessorProfileMgr,
 }
 struct Capabilities {
-    native: Native,
+    native: Rc<Native>,
     endpoint: Endpoint,
-    activation: u32,
+    activation: Cell<u32>,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The proof moves fixed-size wire evidence out of state before each native callback."
+)]
 enum State {
-    AwaitingEmpty(Option<Native>),
-    AwaitingWord(Capabilities, ServiceSnapshot, ServiceSnapshot, u32),
-    Countdown(Capabilities, ServiceSnapshot, u64),
-    InFlight,
+    AwaitingEmpty(Option<Rc<Native>>),
+    AwaitingWord(Rc<Capabilities>, ServiceSnapshot, ServiceSnapshot, u32),
+    Countdown(Rc<Capabilities>, ServiceSnapshot, u64),
+    InFlight {
+        _native: Option<Rc<Native>>,
+        _caps: Option<Rc<Capabilities>>,
+    },
     Done(Status),
 }
+/// Reentrant fixture proof state with capabilities moved out around native calls.
 pub struct Probe {
     state: RefCell<State>,
     window: HWND,
@@ -380,13 +457,22 @@ pub struct Probe {
 /// Controlled callbacks substitute the fixture's native capabilities and public word.
 #[cfg(any(test, feature = "controlled-tests"))]
 pub struct TestHooks {
-    pub acquire: Box<
-        dyn Fn(&Probe) -> Result<(ITfInputProcessorProfiles, ITfInputProcessorProfileMgr), HRESULT>,
-    >,
-    pub read: Box<dyn Fn(&Probe) -> Result<u32, Failure>>,
+    /// Acquire controlled native language and profile capabilities.
+    pub acquire: Box<AcquireNative>,
+    /// Read the controlled public word while allowing lifecycle reentry.
+    pub read: Box<ReadPublicWord>,
+    /// Return the controlled deadline clock value.
     pub clock: Box<dyn Fn(u64) -> u64>,
 }
+/// Controlled acquisition of native profile interfaces.
+#[cfg(any(test, feature = "controlled-tests"))]
+pub type AcquireNative =
+    dyn Fn(&Probe) -> Result<(ITfInputProcessorProfiles, ITfInputProcessorProfileMgr), HRESULT>;
+/// Controlled public-word read that may reenter fixture lifecycle callbacks.
+#[cfg(any(test, feature = "controlled-tests"))]
+pub type ReadPublicWord = dyn Fn(&Probe) -> Result<u32, Failure>;
 impl Probe {
+    /// Create an awaiting proof bound to the fixture window, thread, and native manager.
     pub fn new(window: HWND, manager: ITfThreadMgr, thread: u32) -> Self {
         Self {
             state: RefCell::new(State::AwaitingEmpty(None)),
@@ -405,6 +491,7 @@ impl Probe {
         probe.hooks = Some(hooks);
         probe
     }
+    /// Enter the terminal closed state before dropping retained native capabilities.
     pub fn close(&self) {
         if matches!(*self.state.borrow(), State::Done(_)) {
             return;
@@ -416,7 +503,7 @@ impl Probe {
         drop(old);
     }
     fn running(&self) -> bool {
-        matches!(*self.state.borrow(), State::InFlight)
+        matches!(*self.state.borrow(), State::InFlight { .. })
     }
     fn guard(&self) -> Result<(), Failure> {
         if self.running() {
@@ -457,7 +544,7 @@ impl Probe {
                 status.0[0] = 1;
                 status
             }
-            State::InFlight => {
+            State::InFlight { .. } => {
                 let mut status = Status::default();
                 status.0[0] = 2;
                 status
@@ -465,11 +552,18 @@ impl Probe {
             _ => Status::default(),
         }
     }
+    /// Advance one bounded source-proof step and return its public status.
     pub fn tick(&self, now: u64) -> Status {
-        if matches!(*self.state.borrow(), State::Done(_) | State::InFlight) {
+        if matches!(
+            *self.state.borrow(),
+            State::Done(_) | State::InFlight { .. }
+        ) {
             return self.value();
         }
-        let old = self.state.replace(State::InFlight);
+        let old = self.state.replace(State::InFlight {
+            _native: None,
+            _caps: None,
+        });
         match self.tick_batch(old, now) {
             Ok(state) if self.running() => {
                 self.state.replace(state);
@@ -479,7 +573,7 @@ impl Probe {
         }
         self.value()
     }
-    fn prepare(&self, native: Option<Native>) -> Result<Native, Failure> {
+    fn prepare(&self, native: Option<Rc<Native>>) -> Result<Rc<Native>, Failure> {
         if let Some(native) = native {
             return Ok(native);
         }
@@ -487,10 +581,10 @@ impl Probe {
         if let Some(hooks) = &self.hooks {
             let (languages, profiles) =
                 self.call(|| (hooks.acquire)(self), Failure::SetupUnavailable)?;
-            return Ok(Native {
+            return Ok(Rc::new(Native {
                 languages,
                 profiles,
-            });
+            }));
         }
         let languages: ITfInputProcessorProfiles = self.call(
             || {
@@ -505,10 +599,10 @@ impl Probe {
             || languages.cast().map_err(|error| error.code()),
             Failure::SetupUnavailable,
         )?;
-        Ok(Native {
+        Ok(Rc::new(Native {
             languages,
             profiles,
-        })
+        }))
     }
     fn selection(&self, native: &Native) -> Result<(u16, TF_INPUTPROCESSORPROFILE), Failure> {
         let language = self.call(
@@ -556,45 +650,9 @@ impl Probe {
     }
     fn public_controls(&self) -> Result<(), Failure> {
         self.guard()?;
-        if unsafe { GetCurrentThreadId() } != self.thread {
-            return Err(Failure::WrongThread);
-        }
-        let root = crate::uia::describe(self.window);
-        if !root.complete
-            || root.tid != self.thread
-            || root.pid != unsafe { GetCurrentProcessId() }
-            || String::from_utf16_lossy(&root.class_name) != "KeyrillProofEditor"
-            || unsafe { GetAncestor(self.window, GA_ROOT) } != self.window
-        {
-            return Err(Failure::SetupUnavailable);
-        }
-        for id in [101, 102] {
-            let field = unsafe { GetDlgItem(Some(self.window), id) }
-                .map_err(|_| Failure::SetupUnavailable)?;
-            let facts = crate::uia::describe(field);
-            if !facts.complete
-                || facts.pid != root.pid
-                || facts.tid != self.thread
-                || facts.control != id
-                || !String::from_utf16_lossy(&facts.class_name).eq_ignore_ascii_case("RICHEDIT50W")
-                || unsafe { GetParent(field) }.ok() != Some(self.window)
-                || facts.style & WS_CHILD.0 as isize == 0
-                || facts.style
-                    & (ES_READONLY as isize | ES_PASSWORD as isize | WS_DISABLED.0 as isize)
-                    != 0
-                || !unsafe { IsWindowEnabled(field) }.as_bool()
-            {
-                return Err(Failure::SetupUnavailable);
-            }
-        }
-        if unsafe { GetForegroundWindow() } != self.window
-            || unsafe { GetFocus() }
-                != unsafe { GetDlgItem(Some(self.window), 101) }
-                    .map_err(|_| Failure::FocusChanged)?
-        {
-            return Err(Failure::FocusChanged);
-        }
-        Ok(())
+        let result = public_controls(self.window, self.thread);
+        self.guard()?;
+        result
     }
     fn copy(&self, caps: &Capabilities) -> Result<ServiceSnapshot, Failure> {
         self.guard()?;
@@ -608,7 +666,7 @@ impl Probe {
             }
         })?;
         active(&snapshot)?;
-        if caps.activation != 0 && caps.activation != snapshot.base[0] {
+        if caps.activation.get() != 0 && caps.activation.get() != snapshot.base[0] {
             return Err(Failure::ActivationChanged);
         }
         Ok(snapshot)
@@ -636,9 +694,13 @@ impl Probe {
         if unsafe { GetCurrentThreadId() } != self.thread {
             return Err(Failure::WrongThread);
         }
-        let (mut caps, empty, last, prefix, deadline, binding, countdown) = match state {
+        let (caps, empty, last, prefix, deadline, binding, countdown) = match state {
             State::AwaitingEmpty(native) => {
                 let native = self.prepare(native)?;
+                self.state.replace(State::InFlight {
+                    _native: Some(native.clone()),
+                    _caps: None,
+                });
                 let selection = self.selection(&native);
                 if selection.as_ref().is_err()
                     || !selection.as_ref().is_ok_and(|(language, profile)| {
@@ -659,11 +721,11 @@ impl Probe {
                     Err(_) => return Err(Failure::InvalidEvidence),
                 };
                 (
-                    Capabilities {
+                    Rc::new(Capabilities {
                         native,
                         endpoint,
-                        activation: 0,
-                    },
+                        activation: Cell::new(0),
+                    }),
                     ServiceSnapshot::default(),
                     ServiceSnapshot::default(),
                     0,
@@ -686,6 +748,10 @@ impl Probe {
             ),
             _ => return Err(Failure::InvalidEvidence),
         };
+        self.state.replace(State::InFlight {
+            _native: Some(caps.native.clone()),
+            _caps: Some(caps.clone()),
+        });
         if countdown && now > deadline && now - deadline > 250 {
             return Err(Failure::Late);
         }
@@ -709,12 +775,12 @@ impl Probe {
                 return Err(Failure::OwnershipLost);
             }
             if word == Err(Failure::FocusChanged) {
-                return Ok(State::AwaitingEmpty(Some(caps.native)));
+                return Ok(State::AwaitingEmpty(Some(caps.native.clone())));
             }
             if word? != 0 {
                 return Err(Failure::WordChanged);
             }
-            caps.activation = snapshot.base[0];
+            caps.activation.set(snapshot.base[0]);
             return Ok(State::AwaitingWord(caps, snapshot.clone(), snapshot, 0));
         }
         if countdown {
@@ -887,7 +953,53 @@ impl Probe {
         }
     }
 }
+/// Validate both named ordinary controls before reading the public source word.
+///
+/// # Errors
+/// Refuses wrong-thread, excluded, missing, or unfocused fixture controls.
+pub fn public_controls(root: HWND, thread: u32) -> Result<(), Failure> {
+    if unsafe { GetCurrentThreadId() } != thread {
+        return Err(Failure::WrongThread);
+    }
+    let root_facts = crate::uia::describe(root);
+    if !root_facts.complete
+        || root_facts.tid != thread
+        || root_facts.pid != unsafe { GetCurrentProcessId() }
+        || String::from_utf16_lossy(&root_facts.class_name) != "KeyrillProofEditor"
+        || unsafe { GetAncestor(root, GA_ROOT) } != root
+    {
+        return Err(Failure::SetupUnavailable);
+    }
+    for id in [101, 102] {
+        let field = unsafe { GetDlgItem(Some(root), id) }.map_err(|_| Failure::SetupUnavailable)?;
+        let facts = crate::uia::describe(field);
+        if !facts.complete
+            || facts.pid != root_facts.pid
+            || facts.tid != thread
+            || facts.control != id
+            || !String::from_utf16_lossy(&facts.class_name).eq_ignore_ascii_case("RICHEDIT50W")
+            || unsafe { GetParent(field) }.ok() != Some(root)
+            || facts.style & WS_CHILD.0 as isize == 0
+            || facts.style & (ES_READONLY as isize | ES_PASSWORD as isize | WS_DISABLED.0 as isize)
+                != 0
+            || !unsafe { IsWindowEnabled(field) }.as_bool()
+        {
+            return Err(Failure::SetupUnavailable);
+        }
+    }
+    if unsafe { GetForegroundWindow() } != root
+        || unsafe { GetFocus() }
+            != unsafe { GetDlgItem(Some(root), 101) }.map_err(|_| Failure::FocusChanged)?
+    {
+        return Err(Failure::FocusChanged);
+    }
+    Ok(())
+}
+
 /// Read the two named public fixture fields with eligibility checks around each message.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn read_public_word(
     alive: impl Fn() -> bool,
     mut eligibility: impl FnMut() -> Result<(), Failure>,

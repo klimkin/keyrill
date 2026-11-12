@@ -7,6 +7,7 @@ use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
 use windows::core::{PCWSTR, PWSTR, Result};
 
+/// Owned kernel handle closed on drop.
 pub struct Handle(pub HANDLE);
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -15,12 +16,18 @@ impl Drop for Handle {
         }
     }
 }
+/// Encode a native null-terminated UTF-16 string.
 pub fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
+/// Combine the native FILETIME words without changing their value.
 pub fn filetime(value: FILETIME) -> u64 {
     (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
+/// Read the creation time of a retained process or thread.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn started(handle: HANDLE, thread: bool) -> Result<u64> {
     let (mut creation, mut exit, mut kernel, mut user) = (
         FILETIME::default(),
@@ -37,6 +44,10 @@ pub fn started(handle: HANDLE, thread: bool) -> Result<u64> {
     }
     Ok(filetime(creation))
 }
+/// Capture native architecture, process creation time, executable, and package identity.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identity> {
     let mut identity = Identity {
         process: pid,
@@ -114,11 +125,18 @@ pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identi
     identity.kind = 2;
     Ok(identity)
 }
+/// Retained process handle and captured creation identity.
 pub struct Target {
+    /// Retained process handle or process identifier, as specified by the field type.
     pub process: Handle,
+    /// Canonical retained provider or process identity.
     pub identity: Identity,
 }
 impl Target {
+    /// Acquire the retained native identities required by this observer.
+    ///
+    /// # Errors
+    /// Returns the first failed native operation or evidence predicate.
     pub fn open(pid: u32) -> Result<Self> {
         let process = Handle(unsafe {
             OpenProcess(
@@ -130,6 +148,7 @@ impl Target {
         let identity = capture_identity(process.0, pid, 0)?;
         Ok(Self { process, identity })
     }
+    /// Recheck that the retained process is live and has its captured creation identity.
     pub fn current(&self) -> bool {
         (unsafe {
             GetProcessId(self.process.0) == self.identity.process
@@ -138,27 +157,47 @@ impl Target {
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Outcome of process-bound thread lifetime capture.
 pub enum ThreadState {
+    /// The retained thread and its owning process are live.
     Live,
+    /// The retained thread has exited.
     Exited,
+    /// The requested native object or publication is absent.
     Missing,
+    /// Open failed evidence or outcome.
     OpenFailed,
+    /// Owner failed evidence or outcome.
     OwnerFailed,
+    /// Wrong owner evidence or outcome.
     WrongOwner,
+    /// Wait failed evidence or outcome.
     WaitFailed,
+    /// Process stale evidence or outcome.
     ProcessStale,
+    /// Process failed evidence or outcome.
     ProcessFailed,
+    /// Wrong process evidence or outcome.
     WrongProcess,
 }
+/// Thread capture facts and its retained native handle.
 pub struct ThreadCheck {
+    /// The thread capture result.
     pub state: ThreadState,
+    /// Captured native thread identifier.
     pub tid: u32,
+    /// Process ID returned for the retained thread handle.
     pub owner: u32,
+    /// Native Win32 error associated with the capture failure.
     pub error: u32,
+    /// Native zero-timeout thread wait result.
     pub wait: u32,
+    /// Native zero-timeout process wait result.
     pub process_wait: u32,
+    /// Retained native handle or captured HWND value.
     pub handle: Option<Handle>,
 }
+/// Capture a thread only while its process and owner identities remain live.
 pub fn capture_thread(process: HANDLE, pid: u32, tid: u32) -> ThreadCheck {
     let mut result = ThreadCheck {
         state: ThreadState::OpenFailed,
@@ -238,6 +277,10 @@ fn process_live(process: HANDLE, pid: u32, result: &mut ThreadCheck) -> bool {
     }
     false
 }
+/// Enumerate at most 64 threads belonging to an explicit target PID.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn threads(pid: u32) -> Result<Vec<u32>> {
     let snapshot = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)? });
     let mut entry = THREADENTRY32 {

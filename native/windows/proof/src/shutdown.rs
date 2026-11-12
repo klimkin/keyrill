@@ -4,26 +4,44 @@ use std::cell::RefCell;
 use windows::Win32::Foundation::S_OK;
 use windows::Win32::UI::TextServices::{ITfThreadMgr, TF_E_NOPROVIDER};
 use windows::core::HRESULT;
+/// Control ID of this fixture mode row.
 pub const MODE_ID: i32 = 108;
+/// Exact native title identifying this fixture mode.
 pub const TITLE: &str = "Keyrill TSF owned shutdown fixture";
+/// Canonical mode-identification status row.
 pub const MODE_STATUS: &str = "Keyrill owned shutdown v1; mode=ProveOwnedShutdown";
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Owned-shutdown result, using the established process exit codes.
 pub enum Verdict {
+    /// All required proof predicates were observed.
     Verified = 0,
+    /// Not captured evidence or outcome.
     NotCaptured = 10,
+    /// The requested native object or publication is absent.
     Missing = 11,
+    /// The native operation or publication remains in flight.
     Busy = 12,
+    /// Invalid evidence evidence or outcome.
     InvalidEvidence = 13,
+    /// Provider changed evidence or outcome.
     ProviderChanged = 14,
+    /// Activation changed evidence or outcome.
     ActivationChanged = 15,
+    /// No owned mark evidence or outcome.
     NoOwnedMark = 16,
+    /// History lost evidence or outcome.
     HistoryLost = 17,
+    /// Unknown effect evidence or outcome.
     UnknownEffect = 18,
+    /// No terminal event evidence or outcome.
     NoTerminalEvent = 19,
+    /// Detached evidence or outcome.
     Detached = 20,
+    /// Deactivation failed evidence or outcome.
     DeactivationFailed = 21,
 }
+/// Check active service evidence and reject unknown editing effects.
 pub fn active(snapshot: &ServiceSnapshot) -> Verdict {
     if !snapshot.valid()
         || snapshot.saturated()
@@ -40,6 +58,7 @@ pub fn active(snapshot: &ServiceSnapshot) -> Verdict {
         Verdict::Verified
     }
 }
+/// Require a current active service and a nonsaturated owned composition serial.
 pub fn capturable(snapshot: &ServiceSnapshot) -> Verdict {
     let verdict = active(snapshot);
     if verdict != Verdict::Verified {
@@ -52,6 +71,7 @@ pub fn capturable(snapshot: &ServiceSnapshot) -> Verdict {
         Verdict::NoOwnedMark
     }
 }
+/// Evaluate the complete retained lifecycle history for this proof outcome.
 pub fn evaluate(before: &ServiceSnapshot, after: &ServiceSnapshot) -> Verdict {
     let captured = capturable(before);
     if captured != Verdict::Verified {
@@ -121,6 +141,10 @@ enum Operation {
     Capturing,
     Finishing,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The proof moves fixed-size wire evidence out of state before each native callback."
+)]
 enum State {
     Awaiting,
     InFlight(Operation),
@@ -129,6 +153,7 @@ enum State {
     Rejected(Verdict),
     Completed(Verdict),
 }
+/// Reentrant fixture proof state with capabilities moved out around native calls.
 pub struct Probe {
     state: RefCell<State>,
 }
@@ -153,6 +178,7 @@ impl Probe {
         let old = self.state.replace(State::Rejected(verdict));
         drop(old);
     }
+    /// Bind or revalidate the active service while awaiting fixture closure.
     pub fn observe(&self, manager: &ITfThreadMgr) {
         if !matches!(*self.state.borrow(), State::Awaiting | State::Watching(..)) {
             return;
@@ -165,18 +191,28 @@ impl Probe {
         };
         let old = self.state.replace(State::InFlight(operation));
         let result = match old {
-            State::Watching(endpoint, activation) => match endpoint.same_provider(manager) {
-                Ok(true) => endpoint
-                    .copy()
-                    .map(|snapshot| (endpoint, activation, snapshot)),
-                Ok(false) => {
-                    self.reject(Verdict::ProviderChanged);
-                    return;
+            State::Watching(endpoint, activation) => {
+                match endpoint.same_provider_with(manager, || self.running(operation)) {
+                    Ok(true) if self.running(operation) => endpoint
+                        .copy()
+                        .map(|snapshot| (endpoint, activation, snapshot)),
+                    Ok(true) => return,
+                    Ok(false) => {
+                        self.reject(Verdict::ProviderChanged);
+                        return;
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            },
-            _ => Endpoint::discover(manager)
-                .and_then(|endpoint| endpoint.copy().map(|snapshot| (endpoint, 0, snapshot))),
+            }
+            _ => {
+                Endpoint::discover_with(manager, || self.running(operation)).and_then(|endpoint| {
+                    if self.running(operation) {
+                        endpoint.copy().map(|snapshot| (endpoint, 0, snapshot))
+                    } else {
+                        Err(windows::Win32::Foundation::E_ABORT)
+                    }
+                })
+            }
         };
         if !self.running(operation) {
             return;
@@ -210,6 +246,7 @@ impl Probe {
         self.state
             .replace(State::Watching(endpoint, snapshot.base[0]));
     }
+    /// Capture the owned mark and retain its endpoint before native shutdown.
     pub fn capture_close(&self, manager: &ITfThreadMgr) {
         if matches!(
             *self.state.borrow(),
@@ -222,7 +259,7 @@ impl Probe {
             self.reject(Verdict::NotCaptured);
             return;
         };
-        match endpoint.same_provider(manager) {
+        match endpoint.same_provider_with(manager, || self.running(Operation::Capturing)) {
             Ok(true) => {}
             Ok(false) => {
                 self.reject(Verdict::ProviderChanged);
@@ -261,6 +298,7 @@ impl Probe {
         }
         self.state.replace(State::Closing(endpoint, snapshot));
     }
+    /// Evaluate retained service evidence after thread-manager deactivation.
     pub fn finish(&self, deactivation: HRESULT) -> Verdict {
         if let State::Completed(verdict) = *self.state.borrow() {
             return verdict;

@@ -23,12 +23,12 @@ pub(crate) fn exact_interface<T: Interface>(
 ) -> Result<T, Refusal> {
     let mut raw = std::ptr::null_mut();
     let result = call(&mut raw);
-    let output = unsafe { T::from_raw_borrowed(&raw) }.cloned();
-    if !raw.is_null() {
-        drop(unsafe { IUnknown::from_raw(raw) });
+    if raw.is_null() {
+        return Err(Refusal::Provider);
     }
+    let output = unsafe { T::from_raw(raw) };
     if result == S_OK {
-        output.ok_or(Refusal::Provider)
+        Ok(output)
     } else {
         Err(Refusal::Provider)
     }
@@ -46,6 +46,7 @@ macro_rules! interface {
     }};
 }
 
+/// Capture native window metadata without inspecting text.
 pub fn describe(handle: HWND) -> WindowFacts {
     let mut result = WindowFacts {
         handle: handle.0 as usize,
@@ -84,6 +85,7 @@ pub fn describe(handle: HWND) -> WindowFacts {
     result
 }
 
+/// UIA objects and native lifetime evidence for one explicit foreground target.
 pub struct NativeProvider<'a> {
     target: &'a Target,
     foreground_thread: ThreadCheck,
@@ -97,6 +99,10 @@ pub struct NativeProvider<'a> {
     document: Option<IUIAutomationTextRange>,
 }
 impl<'a> NativeProvider<'a> {
+    /// Acquire the retained native identities required by this observer.
+    ///
+    /// # Errors
+    /// Returns the first failed native operation or evidence predicate.
     pub fn open(target: &'a Target) -> Result<Self, Refusal> {
         if target.identity.kind == 0 || !target.current() {
             return Err(Refusal::Target);
@@ -198,7 +204,9 @@ impl<'a> NativeProvider<'a> {
         let Some(unknown) = (unsafe { &*raw.Anonymous.punkVal }) else {
             return ReadOnly::Unknown;
         };
-        let Ok(identity) = unknown.cast::<IUnknown>() else {
+        let identity: Result<IUnknown, Refusal> = self
+            .call(|| exact_interface(|output| unsafe { unknown.query(&IUnknown::IID, output) }));
+        let Ok(identity) = identity else {
             return ReadOnly::Unknown;
         };
         let mixed: Result<IUnknown, _> =
@@ -308,12 +316,11 @@ impl<'a> NativeProvider<'a> {
         if let Ok(text) = &text {
             result.text_pattern = true;
             document = self.call(|| interface!(text, DocumentRange)).ok();
-            if let Some(document) = &document {
-                if let Ok(attribute) =
+            if let Some(document) = &document
+                && let Ok(attribute) =
                     self.call(|| value!(document, GetAttributeValue, UIA_IsReadOnlyAttributeId))
-                {
-                    result.text_readonly = self.attribute(&attribute);
-                }
+            {
+                result.text_readonly = self.attribute(&attribute);
             }
         }
         self.guard()?;

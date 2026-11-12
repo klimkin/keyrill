@@ -309,6 +309,7 @@ impl<'a> Reader<'a> {
             && service.snapshot.base[0] == value[0]
     }
 }
+/// Require failed native requests with zero session-entry and editing counters.
 pub fn denial_matches(first: &Publication, second: &Publication) -> bool {
     if !comparable(first, second) {
         return false;

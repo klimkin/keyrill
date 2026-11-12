@@ -3,23 +3,37 @@
 //! This module deliberately owns its schema. It imports no service, engine, or
 //! production diagnostic implementation.
 
+/// Diagnostic mapping protocol version.
 pub const PROTOCOL: u32 = 3;
+/// Fixed mapping extent in bytes.
 pub const PAGE_BYTES: usize = 4096;
+/// Fixed number of DWORDs in a payload.
 pub const PAYLOAD_WORDS: usize = 512;
+/// First payload word of the command-observation window.
 pub const OBSERVATION_OFFSET: usize = 177;
+/// Number of retained lifecycle events.
 pub const LIFECYCLE_CAPACITY: usize = 16;
+/// Number of retained command observations.
 pub const OBSERVATION_CAPACITY: usize = 32;
+/// Exactly 512 little-endian DWORD values from a version-three publication.
 pub type Payload = [u32; PAYLOAD_WORDS];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Process creation time, native architecture, and admitted diagnostic candidate identity.
 pub struct Identity {
+    /// Retained process handle or process identifier, as specified by the field type.
     pub process: u32,
+    /// Captured native thread identifier.
     pub thread: u32,
+    /// Process creation FILETIME as a 64-bit value.
     pub started: u64,
+    /// Diagnostic candidate kind, with zero unknown, one proof editor, and two packaged Notepad.
     pub kind: u32,
+    /// Package major, minor, build, and revision components.
     pub version: [u32; 4],
 }
 
+/// Format the frozen process-creation/thread mapping name.
 pub fn mapping_name(identity: &Identity) -> String {
     format!(
         "Local\\KeyrillProbe-v{PROTOCOL}-{}-{:016x}-{}",
@@ -28,26 +42,44 @@ pub fn mapping_name(identity: &Identity) -> String {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated protocol-three diagnostic sections in their frozen wire order.
 pub struct ProbeSnapshot {
+    /// Nonzero publisher-instance claim.
     pub instance: u32,
+    /// Diagnostic candidate kind, with zero unknown, one proof editor, and two packaged Notepad.
     pub kind: u32,
+    /// Package major, minor, build, and revision components.
     pub version: [u32; 4],
+    /// Eight SHA-256 DWORDs in canonical displayed order.
     pub build: [u32; 8],
+    /// Ten host-admission metadata DWORDs.
     pub metadata: [u32; 10],
+    /// 55 service diagnostic DWORDs.
     pub service: [u32; 55],
+    /// Lifecycle header followed by sixteen five-DWORD event rows.
     pub lifecycle: [u32; 86],
+    /// Runtime header and two vocabulary-source status/error pairs.
     pub runtime: [u32; 12],
+    /// Observation header followed by thirty-two ten-DWORD rows.
     pub observations: [u32; 323],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The wire section that failed independent schema validation.
 pub enum DecodeError {
+    /// Identity evidence or outcome.
     Identity,
+    /// Metadata evidence or outcome.
     Metadata,
+    /// Service evidence or outcome.
     Service,
+    /// Lifecycle evidence or outcome.
     Lifecycle,
+    /// Runtime evidence or outcome.
     Runtime,
+    /// Observation evidence or outcome.
     Observation,
+    /// Reserved evidence or outcome.
     Reserved,
 }
 
@@ -98,14 +130,14 @@ pub(crate) fn valid_lifecycle(value: &[u32; 86]) -> bool {
     {
         return false;
     }
-    for (index, event) in value[6..].chunks_exact(5).enumerate() {
+    for (index, event) in value[6..].as_chunks::<5>().0.iter().enumerate() {
         if index >= count as usize {
-            if event != [0; 5] {
+            if *event != [0; 5] {
                 return false;
             }
             continue;
         }
-        let [number, kind, subject, cause, unresolved] = <[u32; 5]>::try_from(event).unwrap();
+        let [number, kind, subject, cause, unresolved] = *event;
         if number != sequence - count + 1 + index as u32
             || !(1..10).contains(&kind)
             || cause >= 9
@@ -140,7 +172,7 @@ fn valid_observations(value: &[u32; 323], lifecycle: &[u32; 86]) -> bool {
     }
     let oldest = sequence - count;
     let mut cursor = 0;
-    let rows: Vec<&[u32]> = value[3..].chunks_exact(10).collect();
+    let rows = value[3..].as_chunks::<10>().0;
     for (index, row) in rows.iter().enumerate() {
         if index >= count as usize {
             if *row != [0; 10] {
@@ -246,17 +278,21 @@ fn valid_observations(value: &[u32; 323], lifecycle: &[u32; 86]) -> bool {
     true
 }
 
+/// Decode and validate every frozen wire section and all reserved DWORDs.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn decode_payload(words: &Payload) -> Result<ProbeSnapshot, DecodeError> {
     let result = ProbeSnapshot {
         instance: words[0],
         kind: words[1],
-        version: words[2..6].try_into().unwrap(),
-        build: words[6..14].try_into().unwrap(),
-        metadata: words[14..24].try_into().unwrap(),
-        service: words[24..79].try_into().unwrap(),
-        lifecycle: words[79..165].try_into().unwrap(),
-        runtime: words[165..177].try_into().unwrap(),
-        observations: words[177..500].try_into().unwrap(),
+        version: std::array::from_fn(|index| words[2 + index]),
+        build: std::array::from_fn(|index| words[6 + index]),
+        metadata: std::array::from_fn(|index| words[14 + index]),
+        service: std::array::from_fn(|index| words[24 + index]),
+        lifecycle: std::array::from_fn(|index| words[79 + index]),
+        runtime: std::array::from_fn(|index| words[165 + index]),
+        observations: std::array::from_fn(|index| words[177 + index]),
     };
     if result.instance == 0 || result.kind > 2 {
         return Err(DecodeError::Identity);
@@ -293,6 +329,7 @@ pub fn decode_payload(words: &Payload) -> Result<ProbeSnapshot, DecodeError> {
     Ok(result)
 }
 
+/// Require source continuity and retained overlapping event histories.
 pub fn complete_interval(before: &ProbeSnapshot, after: &ProbeSnapshot) -> bool {
     if before.instance == 0
         || before.instance != after.instance

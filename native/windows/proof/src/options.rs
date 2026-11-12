@@ -2,13 +2,19 @@
 use crate::field::PublicCase;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The four established proof-editor startup modes.
 pub enum FixtureMode {
+    /// Ordinary four-field proof editor.
     Normal,
+    /// Verify SES_CTFNOLOCK on field A and publish the denial setup row.
     DenyTsfLocks,
+    /// Retain owned-mark evidence through native shutdown.
     ProveOwnedShutdown,
+    /// Run the bounded native EN-to-RU owned-mark proof.
     ProveOwnedEnToRu,
 }
 impl FixtureMode {
+    /// Parse an exact canonical command, case name, or status representation.
     pub fn parse(arguments: &[String]) -> Option<Self> {
         match arguments
             .iter()
@@ -26,21 +32,33 @@ impl FixtureMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// An explicit host-inspector operation.
 pub enum Command {
+    /// Build evidence or outcome.
     Build,
+    /// Host evidence or outcome.
     Host,
+    /// Service evidence or outcome.
     Service,
+    /// Field evidence or outcome.
     Field,
+    /// Public case evidence or outcome.
     PublicCase(PublicCase),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated host-inspector command arguments.
 pub struct Options {
+    /// Validated explicit inspector command.
     pub command: Command,
+    /// Explicit target process identifier.
     pub pid: u32,
+    /// Bounded arming duration, with zero reading existing mappings.
     pub seconds: u32,
+    /// Optional reviewed server build digest.
     pub expected_build: Option<[u32; 8]>,
 }
 
+/// Parse the original nonzero bounded decimal PID or duration syntax.
 pub fn number(value: &str) -> Option<u32> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -51,6 +69,7 @@ pub fn number(value: &str) -> Option<u32> {
         .filter(|&word| word != 0 && word != u32::MAX)
 }
 
+/// Parse exactly 64 hexadecimal digits into eight display-order DWORDs.
 pub fn digest(value: &str) -> Option<[u32; 8]> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
@@ -62,6 +81,7 @@ pub fn digest(value: &str) -> Option<[u32; 8]> {
     Some(result)
 }
 
+/// Parse an exact canonical command, case name, or status representation.
 pub fn parse(arguments: &[String]) -> Option<Options> {
     let mut result = Options {
         command: Command::Build,
@@ -91,10 +111,10 @@ pub fn parse(arguments: &[String]) -> Option<Options> {
     if result.command != Command::Service {
         return (arguments.len() == 2).then_some(result);
     }
-    if arguments.len() % 2 != 0 {
+    if !arguments.len().is_multiple_of(2) {
         return None;
     }
-    for pair in arguments[2..].chunks_exact(2) {
+    for pair in arguments[2..].as_chunks::<2>().0.iter() {
         match pair[0].as_str() {
             "--arm-seconds" if result.seconds == 0 => {
                 result.seconds = number(&pair[1])?;

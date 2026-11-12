@@ -1,26 +1,45 @@
 //! Public fixture expectations and independent metadata-first field evidence.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Compiled public document cases accepted by the inspector.
 pub enum PublicCase {
+    /// Empty evidence or outcome.
     Empty,
+    /// Probe g evidence or outcome.
     ProbeG,
+    /// Fixture en boundary evidence or outcome.
     FixtureEnBoundary,
+    /// Fixture en corrected evidence or outcome.
     FixtureEnCorrected,
+    /// Fixture en word evidence or outcome.
     FixtureEnWord,
+    /// Fixture ru word evidence or outcome.
     FixtureRuWord,
+    /// Fixture continuation evidence or outcome.
     FixtureContinuation,
+    /// Fixture two words evidence or outcome.
     FixtureTwoWords,
+    /// Manual provisional evidence or outcome.
     ManualProvisional,
+    /// Manual provisional literal evidence or outcome.
     ManualProvisionalLiteral,
+    /// Manual pc evidence or outcome.
     ManualPc,
+    /// Manual pc literal evidence or outcome.
     ManualPcLiteral,
+    /// Model en evidence or outcome.
     ModelEn,
+    /// Model en literal evidence or outcome.
     ModelEnLiteral,
+    /// Model ru evidence or outcome.
     ModelRu,
+    /// Model ru literal evidence or outcome.
     ModelRuLiteral,
+    /// Prefix suffix evidence or outcome.
     PrefixSuffix,
 }
 impl PublicCase {
+    /// Every accepted public case in stable enumeration order.
     pub const ALL: [Self; 17] = [
         Self::Empty,
         Self::ProbeG,
@@ -40,9 +59,11 @@ impl PublicCase {
         Self::ModelRuLiteral,
         Self::PrefixSuffix,
     ];
+    /// Parse an exact canonical command, case name, or status representation.
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|case| case.name() == name)
     }
+    /// Return the compiled public case name.
     pub fn name(self) -> &'static str {
         [
             "empty",
@@ -64,6 +85,7 @@ impl PublicCase {
             "prefix-suffix",
         ][self as usize]
     }
+    /// Return the compiled public UTF-16 document expectation as Unicode text.
     pub fn text(self) -> &'static str {
         [
             "",
@@ -88,76 +110,136 @@ impl PublicCase {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Provider evidence about document writability.
 pub enum ReadOnly {
     #[default]
+    /// The provider supplied no conclusive fact.
     Unknown,
+    /// The native query failed or returned no usable evidence.
     Unavailable,
+    /// The provider explicitly reports an unsupported attribute.
     Unsupported,
+    /// The provider reports writable content.
     Writable,
+    /// The provider or native style reports read-only content.
     ReadOnly,
+    /// The document exposes a mixed attribute value.
     Mixed,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The first failed field-evidence predicate.
 pub enum Refusal {
+    /// No refusal or failure has been observed.
     None,
     #[default]
+    /// Target evidence or outcome.
     Target,
+    /// Native focus evidence or outcome.
     NativeFocus,
+    /// Native facts evidence or outcome.
     NativeFacts,
+    /// Native excluded evidence or outcome.
     NativeExcluded,
+    /// Captured lifetime, native focus, or provider facts changed.
     Stale,
+    /// Provider evidence or outcome.
     Provider,
+    /// Binding evidence or outcome.
     Binding,
+    /// Control type evidence or outcome.
     ControlType,
+    /// The control is password-protected.
     Password,
+    /// The control reports disabled.
     Disabled,
+    /// The provider or native style reports read-only content.
     ReadOnly,
+    /// The document exposes a mixed attribute value.
     Mixed,
+    /// Writability evidence or outcome.
     Writability,
+    /// Text unavailable evidence or outcome.
     TextUnavailable,
+    /// Text mismatch evidence or outcome.
     TextMismatch,
+    /// Selection evidence or outcome.
     Selection,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Native window metadata captured without reading characters.
 pub struct WindowFacts {
+    /// Retained native handle or captured HWND value.
     pub handle: usize,
+    /// Explicit target process identifier.
     pub pid: u32,
+    /// Captured native thread identifier.
     pub tid: u32,
+    /// Native dialog control ID.
     pub control: i32,
+    /// Native GWL_STYLE value.
     pub style: isize,
+    /// Native GWL_EXSTYLE value.
     pub exstyle: isize,
+    /// Whether the native control or provider reports enabled.
     pub enabled: bool,
+    /// Whether all required native facts were captured exactly.
     pub complete: bool,
+    /// Whether the class-name buffer was exhausted.
     pub class_truncated: bool,
+    /// Exact UTF-16 native class name without its terminator.
     pub class_name: Vec<u16>,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Native focus queues and retained process/thread lifetime evidence.
 pub struct NativeFocus {
+    /// Explicit target process identifier.
     pub pid: u32,
+    /// Thread owning the foreground queue.
     pub foreground_tid: u32,
+    /// Captured process creation FILETIME.
     pub process_started: u64,
+    /// Creation FILETIME of the retained foreground thread.
     pub foreground_thread_started: u64,
+    /// Creation FILETIME of the retained focused thread.
     pub focused_thread_started: u64,
+    /// Captured foreground HWND.
     pub foreground: usize,
+    /// Captured focused-control metadata.
     pub focused: WindowFacts,
+    /// Captured root-window metadata.
     pub root: WindowFacts,
+    /// Bounded native ancestor chain.
     pub parents: Vec<WindowFacts>,
+    /// Whether the ancestor chain exceeded the capture bound.
     pub parents_truncated: bool,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Provider metadata bound to the complete native focus snapshot.
 pub struct Metadata {
+    /// The first failed eligibility predicate.
     pub refusal: Refusal,
+    /// Complete native focus evidence used to bind the provider.
     pub native: NativeFocus,
+    /// Process ID reported by UIA.
     pub provider_pid: i32,
+    /// HWND reported by UIA.
     pub provider_window: usize,
+    /// UIA control-type identifier.
     pub control_type: i32,
+    /// Whether both UIA lookups identify the captured focused window.
     pub exact_binding: bool,
+    /// Whether UIA reports an exact false password flag.
     pub nonpassword: bool,
+    /// Whether the native control or provider reports enabled.
     pub enabled: bool,
+    /// ValuePattern writability evidence.
     pub value_readonly: ReadOnly,
+    /// TextPattern document-attribute writability evidence.
     pub text_readonly: ReadOnly,
+    /// Whether a TextPattern was acquired.
     pub text_pattern: bool,
 }
+/// Refuse incomplete, disabled, password, and read-only native controls.
 pub fn native_safety(value: &NativeFocus) -> Refusal {
     if !value.focused.complete || !value.root.complete || value.parents_truncated {
         return Refusal::NativeFacts;
@@ -179,6 +261,7 @@ pub fn native_safety(value: &NativeFocus) -> Refusal {
         Refusal::NativeExcluded
     }
 }
+/// Combine independent ValuePattern and TextPattern writability evidence.
 pub fn writable(value: ReadOnly, text: ReadOnly) -> Refusal {
     use self::ReadOnly::*;
     if [value, text].contains(&ReadOnly) {
@@ -196,6 +279,7 @@ pub fn writable(value: ReadOnly, text: ReadOnly) -> Refusal {
         Refusal::Writability
     }
 }
+/// Check every metadata predicate before permitting a character read.
 pub fn eligible(value: &Metadata) -> Refusal {
     if value.refusal != Refusal::None {
         return value.refusal;
@@ -218,11 +302,28 @@ pub fn eligible(value: &Metadata) -> Refusal {
     }
     writable(value.value_readonly, value.text_readonly)
 }
+/// Boundary used by the independent whole-document and caret checker.
 pub trait Provider {
+    /// Capture provider metadata without reading document characters.
+    ///
+    /// # Errors
+    /// Returns the first failed native operation or evidence predicate.
     fn metadata(&mut self) -> Metadata;
+    /// Read at most the explicit public-case UTF-16 bound.
+    ///
+    /// # Errors
+    /// Refuses unavailable or changed document evidence.
     fn document(&mut self, bound: usize) -> Result<Vec<u16>, Refusal>;
+    /// Require one collapsed selection at the complete document end.
+    ///
+    /// # Errors
+    /// Refuses an unavailable, noncollapsed, or displaced caret.
     fn end_caret(&mut self) -> Result<(), Refusal>;
 }
+/// Validate stable metadata, the complete public document, and its exact caret.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn check_public_case(provider: &mut impl Provider, case: PublicCase) -> Result<(), Refusal> {
     let evidence = provider.metadata();
     let refusal = eligible(&evidence);

@@ -20,8 +20,11 @@ use windows::Win32::UI::TextServices::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, HRESULT, Interface, PCSTR, PCWSTR, Result, w};
 
+/// Native class of the proof-editor root window.
 pub const FIXTURE_CLASS: PCWSTR = w!("KeyrillProofEditor");
+/// Exact native title of the TSF lock-denial mode.
 pub const DENIAL_TITLE: &str = "Keyrill TSF native lock-denial fixture";
+/// Status row published after the native lock-denial style is verified.
 pub const DENIAL_STATUS: &str = "Keyrill native denial v1; setup=Confirmed";
 type ScopeSetter = unsafe extern "system" fn(HWND, InputScope) -> HRESULT;
 struct Module(HMODULE);
@@ -32,8 +35,13 @@ impl Drop for Module {
         }
     }
 }
+/// An initialized single-threaded COM apartment, uninitialized on drop.
 pub struct Apartment;
 impl Apartment {
+    /// Initialize a single-threaded native COM apartment.
+    ///
+    /// # Errors
+    /// Returns the first failed native operation or evidence predicate.
     pub fn initialize() -> Result<Self> {
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -110,10 +118,10 @@ fn window_message(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) ->
                 source.close();
             }
         }
-        if message == WM_CLOSE {
-            if let Some(probe) = &context.shutdown {
-                probe.capture_close(&context.manager);
-            }
+        if message == WM_CLOSE
+            && let Some(probe) = &context.shutdown
+        {
+            probe.capture_close(&context.manager);
         }
         if message == WM_DESTROY {
             let _ = reset_scopes(window, context.scope);
@@ -318,6 +326,9 @@ fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) 
     Ok(fixture)
 }
 /// Run the proof fixture on this thread until its native message loop ends.
+///
+/// # Errors
+/// Returns the first failed native operation or evidence predicate.
 pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
     let _apartment = Apartment::initialize()?;
     let manager: ITfThreadMgr =
@@ -436,13 +447,13 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
             break result;
         }
         if message.hwnd == window && message.message == WM_TIMER && message.wParam.0 == 1 {
-            if let Some(source) = &source {
-                if let Some(value) = source.tick(unsafe { GetTickCount64() }).format() {
-                    let _ = set_text(
-                        unsafe { GetDlgItem(Some(window), source::RESULT_ID)? },
-                        &value,
-                    );
-                }
+            if let Some(source) = &source
+                && let Some(value) = source.tick(unsafe { GetTickCount64() }).format()
+            {
+                let _ = set_text(
+                    unsafe { GetDlgItem(Some(window), source::RESULT_ID)? },
+                    &value,
+                );
             }
             routing.publication = routing.publication.saturating_add(1);
             let _ = set_text(status, &routing.format());

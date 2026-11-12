@@ -24,11 +24,17 @@ const _: () = assert!(std::mem::offset_of!(Page, words) == 44);
 const _: () = assert!(std::mem::align_of::<Page>() == 4);
 const _: () = assert!(std::mem::size_of::<Page>() <= PAGE_BYTES);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Availability of a coherent version-three mapping publication.
 pub enum Availability {
+    /// A complete valid publication is readable.
     Available,
+    /// The requested native object or publication is absent.
     Missing,
+    /// The native operation or publication remains in flight.
     Busy,
+    /// The wire identity or schema failed validation.
     Incompatible,
+    /// Captured lifetime, native focus, or provider facts changed.
     Stale,
 }
 
@@ -112,12 +118,17 @@ impl Drop for LocalAllocation {
     }
 }
 
+/// A newly created logon-secured mapping retained through a read-only view.
 pub struct ArmedPage {
     view: View,
     _mapping: Handle,
     identity: Identity,
 }
 impl ArmedPage {
+    /// Create a fresh logon-secured mapping and retain a read-only view.
+    ///
+    /// # Errors
+    /// Returns the first failed native operation or evidence predicate.
     pub fn create(identity: Identity) -> Result<Self> {
         let mut token = HANDLE::default();
         unsafe {
@@ -204,12 +215,14 @@ impl ArmedPage {
             identity,
         })
     }
+    /// Read a coherent publication while checking its captured mapping identity.
     pub fn read(&self) -> (Availability, Payload) {
         read(self.view.page(), &self.identity)
     }
 }
 const HRESULT_FROM_WIN32_ALREADY_EXISTS: windows::core::HRESULT =
     windows::core::HRESULT(0x800700b7u32 as i32);
+/// Read an already existing mapping without modifying its contents.
 pub fn existing(identity: &Identity) -> (Availability, Payload) {
     let name = wide(&mapping_name(identity));
     let Ok(handle) = (unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, PCWSTR(name.as_ptr())) })
