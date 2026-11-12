@@ -250,32 +250,64 @@ fn finish_matching_selection_requires_no_selection_effect() {
 }
 #[test]
 fn finish_post_end_exclusion_stops_reads_and_continuation() {
-    for readonly in [false, true] {
-        let c = corrected();
+    for (notepad, policy) in [false, true]
+        .into_iter()
+        .flat_map(|notepad| (0..3).map(move |policy| (notepad, policy)))
+    {
+        let c = if notepad {
+            Client::notepad()
+        } else {
+            Client::new()
+        };
+        c.type_text("ghbdtn ");
         let d = Rc::clone(&c.a);
+        let manager = Rc::clone(&c.manager);
+        let host = Rc::clone(&c.host);
         let reads = Rc::new(std::cell::Cell::new(0));
         let record = Rc::clone(&reads);
+        let end_trace = Rc::new(std::cell::Cell::new(None));
+        let record_end = Rc::clone(&end_trace);
         c.host.on("EndComposition.after", 0, move || {
             record.set(d.reads.get());
-            if readonly {
-                d.status.set(TF_SD_READONLY);
-            } else {
-                d.results
-                    .borrow_mut()
-                    .insert("scope.GetValue", E_ACCESSDENIED);
+            record_end.set(Some(host.trace.borrow().len()));
+            match policy {
+                0 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("scope.GetValue", E_ACCESSDENIED);
+                }
+                1 => d.status.set(TF_SD_READONLY),
+                2 => manager.disabled.set(true),
+                _ => unreachable!(),
             }
         });
         let ends = c.a.ends.get();
+        let writes = c.a.writes.get();
         assert!(!c.key(b'x' as u16, false));
+        {
+            let trace = c.host.trace.borrow();
+            let post_end = &trace[end_trace.get().expect("composition ended")..];
+            assert!(post_end.contains(&"GetStatus"), "fresh admission after end");
+            if policy == 0 {
+                let scope = post_end
+                    .iter()
+                    .position(|name| *name == "GetAppProperty")
+                    .expect("fresh application scope query");
+                assert!(!post_end[scope..].contains(&"range.ACP"));
+                assert!(!post_end[scope..].contains(&"GetText"));
+            }
+        }
         oracle::document(&c, "привет ", 14);
         assert_eq!(c.a.reads.get(), reads.get());
+        assert_eq!(c.a.writes.get(), writes + 1);
         assert_eq!(c.a.ends.get(), ends + 1);
         assert_eq!(c.a.starts.get(), 1);
         assert!(stopped(&c));
-        let writes = c.a.writes.get();
         assert!(!c.key(b'y' as u16, false));
         assert_eq!(c.a.reads.get(), reads.get());
-        assert_eq!(c.a.writes.get(), writes);
+        assert_eq!(c.a.writes.get(), writes + 1);
+        assert_eq!(c.a.starts.get(), 1);
+        assert_eq!(c.a.ends.get(), ends + 1);
         oracle::document(&c, "привет ", 14);
     }
 }

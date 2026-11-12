@@ -65,7 +65,13 @@ impl Default for Profile {
         }
     }
 }
+pub struct AdvisedKeySink {
+    pub client: u32,
+    pub foreground: windows_core::BOOL,
+    pub sink: ITfKeyEventSink,
+}
 pub struct Manager {
+    pub key_sink: RefCell<Option<Rc<AdvisedKeySink>>>,
     pub diagnostic_advises: Cell<u32>,
     pub diagnostic_unadvises: Cell<u32>,
     pub disabled: Cell<bool>,
@@ -90,6 +96,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(host: Rc<HostCapsule>, top: *mut c_void) -> Rc<Self> {
         Rc::new(Self {
+            key_sink: RefCell::new(None),
             diagnostic_advises: Cell::new(0),
             diagnostic_unadvises: Cell::new(0),
             disabled: Cell::new(false),

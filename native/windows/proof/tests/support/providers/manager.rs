@@ -374,6 +374,20 @@ unsafe extern "system" fn ITfKeystrokeMgr_AdviseKeyEventSink(
             let m = p.manager();
             assert_eq!(a1, 42);
             m.advises[2].set(m.advises[2].get() + 1);
+            let advised = if m.sink_results[2].get() == S_OK {
+                if a2.is_null() {
+                    return E_POINTER;
+                }
+                Some(Rc::new(AdvisedKeySink {
+                    client: a1,
+                    foreground: a3,
+                    sink: ITfKeyEventSink::from_raw(retain(a2)),
+                }))
+            } else {
+                None
+            };
+            let previous = m.key_sink.replace(advised);
+            drop(previous);
             p.hit("AdviseKeyEventSink");
             m.sink_results[2].get()
         })
@@ -389,6 +403,8 @@ unsafe extern "system" fn ITfKeystrokeMgr_UnadviseKeyEventSink(
             let m = p.manager();
             assert_eq!(a1, 42);
             m.unadvises[2].set(m.unadvises[2].get() + 1);
+            let advised = m.key_sink.take();
+            drop(advised);
             p.hit("UnadviseKeyEventSink");
             m.unsink_results[2].get()
         })
