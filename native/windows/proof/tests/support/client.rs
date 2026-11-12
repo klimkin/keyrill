@@ -1,0 +1,221 @@
+use super::{com_slots, dll::*, document::*, providers::*, schedule::HostCapsule};
+use std::{ffi::c_void, rc::Rc};
+use windows::Win32::{
+    Foundation::*,
+    System::Threading::{GetCurrentProcessId, GetCurrentThreadId},
+    UI::TextServices::*,
+};
+use windows_core::{HRESULT, IUnknown, Interface};
+pub struct Client {
+    pub host: Rc<HostCapsule>,
+    pub a: Rc<Document>,
+    pub b: Rc<Document>,
+    pub manager: Rc<Manager>,
+    pub context_a: ITfContext,
+    pub context_b: ITfContext,
+    pub thread: ITfThreadMgr,
+    pub profiles: IUnknown,
+    pub service: ITfTextInputProcessorEx,
+    pub handle: *mut c_void,
+    pub api: Api,
+}
+impl Client {
+    pub fn new() -> Self {
+        let api = Api::load();
+        let host = Rc::new(HostCapsule::default());
+        let a = Document::new(Rc::clone(&host), 101);
+        let b = Document::new(Rc::clone(&host), 102);
+        unsafe {
+            let context_a = ITfContext::from_raw(Provider::create(
+                Rc::clone(&host),
+                Kind::Document(Rc::clone(&a)),
+                ITfContext::IID,
+            ));
+            a.context.set(context_a.as_raw());
+            let context_b = ITfContext::from_raw(Provider::create(
+                Rc::clone(&host),
+                Kind::Document(Rc::clone(&b)),
+                ITfContext::IID,
+            ));
+            b.context.set(context_b.as_raw());
+            let manager = Manager::new(Rc::clone(&host), context_a.as_raw());
+            let thread = ITfThreadMgr::from_raw(Provider::create(
+                Rc::clone(&host),
+                Kind::Manager(Rc::clone(&manager)),
+                ITfThreadMgr::IID,
+            ));
+            let profiles = IUnknown::from_raw(Provider::create(
+                Rc::clone(&host),
+                Kind::Profiles,
+                IUnknown::IID,
+            ));
+            let dependencies = Dependencies {
+                size: size_of::<Dependencies>() as u32,
+                version: VERSION,
+                context: Rc::as_ptr(&host).cast_mut().cast(),
+                retain: Some(retain),
+                release: Some(release),
+                profiles: profiles.as_raw(),
+                layouts: Some(layouts),
+                capture: Some(capture),
+            };
+            let mut handle = std::ptr::null_mut();
+            let mut service = std::ptr::null_mut();
+            assert_eq!(
+                (api.create)(VERSION, &dependencies, &mut handle, &mut service),
+                S_OK
+            );
+            let service = ITfTextInputProcessorEx::from_raw(service);
+            let hr = (service.vtable().ActivateEx)(service.as_raw(), thread.as_raw(), 42, 0);
+            assert_eq!(hr, S_OK, "activate actual DLL");
+            host.check();
+            Self {
+                host,
+                a,
+                b,
+                manager,
+                context_a,
+                context_b,
+                thread,
+                profiles,
+                service,
+                handle,
+                api,
+            }
+        }
+    }
+    pub fn event(&self, event: Event) -> bool {
+        let mut eaten = -1;
+        unsafe {
+            assert_eq!(
+                (self.api.event)(self.handle, self.context_a.as_raw(), &event, &mut eaten),
+                S_OK
+            );
+        }
+        self.host.check();
+        assert!(matches!(eaten, 0 | 1));
+        eaten != 0
+    }
+    pub fn key(&self, unit: u16, pass: bool) -> bool {
+        let eaten = self.event(Event::text(unit));
+        if !eaten && pass {
+            self.a.native_text(&[unit]);
+        }
+        eaten
+    }
+    pub fn type_text(&self, text: &str) {
+        for unit in text.encode_utf16() {
+            assert!(self.key(unit, true), "owned letter {unit}");
+        }
+    }
+    pub fn delayed(&self) -> HRESULT {
+        let pointer = self
+            .a
+            .retained
+            .borrow()
+            .as_ref()
+            .expect("retained request")
+            .as_raw();
+        unsafe {
+            let session = ITfEditSession::from_raw(com_slots::retain(pointer));
+            (session.vtable().DoEditSession)(session.as_raw(), 123)
+        }
+    }
+    pub fn deactivate(&self) -> HRESULT {
+        unsafe { (self.service.vtable().base__.Deactivate)(self.service.as_raw()) }
+    }
+    pub fn reactivate(&self) -> HRESULT {
+        unsafe {
+            (self.service.vtable().ActivateEx)(self.service.as_raw(), self.thread.as_raw(), 42, 0)
+        }
+    }
+}
+impl Drop for Client {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.host.drained();
+        }
+        self.host.actions.borrow_mut().clear();
+        let _ = self.deactivate();
+        self.a.drain_retained();
+        self.b.drain_retained();
+        unsafe {
+            assert_eq!((self.api.release)(self.handle), S_OK);
+        }
+        self.host.check();
+    }
+}
+unsafe extern "system" fn retain(context: *mut c_void) {
+    let host = unsafe { &*context.cast::<HostCapsule>() };
+    com_slots::fence(host, (), || {
+        host.dependency_retains
+            .set(host.dependency_retains.get() + 1);
+        unsafe {
+            Rc::increment_strong_count(context.cast::<HostCapsule>());
+        }
+    });
+}
+unsafe extern "system" fn release(context: *mut c_void) {
+    let owner = unsafe { Rc::from_raw(context.cast::<HostCapsule>()) };
+    com_slots::fence(&owner, (), || {
+        owner
+            .dependency_releases
+            .set(owner.dependency_releases.get() + 1);
+    });
+}
+unsafe extern "system" fn layouts(capacity: i32, out: *mut isize) -> i32 {
+    if capacity == 0 {
+        return 2;
+    }
+    if capacity < 2 || out.is_null() {
+        return 0;
+    }
+    unsafe {
+        out.write(0x04090409);
+        out.add(1).write(0x04190419);
+    }
+    2
+}
+unsafe extern "system" fn capture(
+    context: *mut c_void,
+    view: HWND,
+    host: *const HostIdentity,
+    out: *mut FieldFacts,
+) -> HRESULT {
+    let owner = unsafe { &*context.cast::<HostCapsule>() };
+    com_slots::fence(owner, E_UNEXPECTED, || unsafe {
+        owner.hit("capture");
+        let process = GetCurrentProcessId();
+        let thread = GetCurrentThreadId();
+        let window = |handle: HWND, class: &str, control: i32| {
+            let mut value = FieldWindow {
+                handle,
+                process,
+                thread,
+                control,
+                enabled: 1,
+                complete: 1,
+                ..Default::default()
+            };
+            for (to, from) in value.class_name.iter_mut().zip(class.encode_utf16()) {
+                *to = from;
+            }
+            value
+        };
+        let root = HWND(std::ptr::dangling_mut());
+        out.write(FieldFacts {
+            host: *host,
+            process,
+            thread,
+            view,
+            focus: view,
+            foreground: root,
+            root,
+            field: window(view, "RICHEDIT50W", view.0 as i32),
+            proof_root: window(root, "KeyrillProofEditor", 0),
+            proof_process: 1,
+            ..Default::default()
+        });
+        S_OK
+    })
+}
