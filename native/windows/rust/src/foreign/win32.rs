@@ -1,0 +1,135 @@
+//! Mutable Win32 buffers retain mutable pointer provenance across the native call.
+
+use windows::Win32::Foundation::{HANDLE, HMODULE, HWND};
+use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
+use windows_core::{BOOL, Error, PCWSTR, Result};
+
+// The pinned slice projections derive output pointers through as_ptr(). These bounded wrappers
+// keep the SDK ABI and pass as_mut_ptr() for every writable buffer.
+pub(crate) fn module_path(module: Option<HMODULE>, output: &mut [u16]) -> u32 {
+    windows_core::link!("kernel32.dll" "system" fn GetModuleFileNameW(module: HMODULE, output: *mut u16, capacity: u32) -> u32);
+    // SAFETY: the complete bounded output remains writable through this synchronous Win32 call.
+    unsafe {
+        GetModuleFileNameW(
+            module.unwrap_or_default(),
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+    }
+}
+
+pub(crate) fn class_name(window: HWND, output: &mut [u16]) -> i32 {
+    windows_core::link!("user32.dll" "system" fn GetClassNameW(window: HWND, output: *mut u16, capacity: i32) -> i32);
+    // SAFETY: the complete bounded output remains writable through this synchronous Win32 call.
+    unsafe { GetClassNameW(window, output.as_mut_ptr(), output.len() as i32) }
+}
+
+pub(crate) unsafe fn environment(name: PCWSTR, output: &mut [u16]) -> u32 {
+    windows_core::link!("kernel32.dll" "system" fn GetEnvironmentVariableW(name: PCWSTR, output: *mut u16, capacity: u32) -> u32);
+    // SAFETY: the caller supplies a terminated name, and output is complete writable storage.
+    unsafe { GetEnvironmentVariableW(name, output.as_mut_ptr(), output.len() as u32) }
+}
+
+pub(crate) fn first_volume(output: &mut [u16]) -> Result<HANDLE> {
+    windows_core::link!("kernel32.dll" "system" fn FindFirstVolumeW(output: *mut u16, capacity: u32) -> HANDLE);
+    // SAFETY: the complete bounded output remains writable through this synchronous Win32 call.
+    let handle = unsafe { FindFirstVolumeW(output.as_mut_ptr(), output.len() as u32) };
+    if handle.is_invalid() {
+        Err(Error::from_thread())
+    } else {
+        Ok(handle)
+    }
+}
+
+pub(crate) fn next_volume(enumeration: HANDLE, output: &mut [u16]) -> Result<()> {
+    windows_core::link!("kernel32.dll" "system" fn FindNextVolumeW(enumeration: HANDLE, output: *mut u16, capacity: u32) -> BOOL);
+    // SAFETY: the caller owns the enumeration handle, and output is complete writable storage.
+    unsafe { FindNextVolumeW(enumeration, output.as_mut_ptr(), output.len() as u32).ok() }
+}
+
+pub(crate) unsafe fn volume_paths(
+    volume: PCWSTR,
+    output: &mut [u16],
+    length: &mut u32,
+) -> Result<()> {
+    windows_core::link!("kernel32.dll" "system" fn GetVolumePathNamesForVolumeNameW(volume: PCWSTR, output: *mut u16, capacity: u32, length: *mut u32) -> BOOL);
+    // SAFETY: the caller supplies a terminated volume name and distinct complete output storage.
+    unsafe {
+        GetVolumePathNamesForVolumeNameW(volume, output.as_mut_ptr(), output.len() as u32, length)
+            .ok()
+    }
+}
+
+pub(crate) fn volume_filesystem(file: HANDLE, output: &mut [u16]) -> Result<()> {
+    windows_core::link!("kernel32.dll" "system" fn GetVolumeInformationByHandleW(file: HANDLE, volume: *mut u16, volume_capacity: u32, serial: *mut u32, component_length: *mut u32, flags: *mut u32, filesystem: *mut u16, filesystem_capacity: u32) -> BOOL);
+    // SAFETY: file is borrowed, optional unused outputs are null, and output is complete writable storage.
+    unsafe {
+        GetVolumeInformationByHandleW(
+            file,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+        .ok()
+    }
+}
+
+pub(crate) unsafe fn full_path(input: PCWSTR, output: &mut [u16]) -> u32 {
+    windows_core::link!("kernel32.dll" "system" fn GetFullPathNameW(input: PCWSTR, capacity: u32, output: *mut u16, file_part: *mut *mut u16) -> u32);
+    // SAFETY: the caller supplies a terminated path, and output is complete writable storage.
+    unsafe {
+        GetFullPathNameW(
+            input,
+            output.len() as u32,
+            output.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+pub(crate) fn translate(
+    key: u32,
+    scan: u32,
+    keyboard: &[u8; 256],
+    output: &mut [u16],
+    flags: u32,
+    layout: HKL,
+) -> i32 {
+    windows_core::link!("user32.dll" "system" fn ToUnicodeEx(key: u32, scan: u32, keyboard: *const u8, output: *mut u16, capacity: i32, flags: u32, layout: HKL) -> i32);
+    // SAFETY: the complete keyboard snapshot and bounded output remain live through this native call.
+    unsafe {
+        ToUnicodeEx(
+            key,
+            scan,
+            keyboard.as_ptr(),
+            output.as_mut_ptr(),
+            output.len() as i32,
+            flags,
+            layout,
+        )
+    }
+}
+
+pub(crate) unsafe fn read_file(
+    file: HANDLE,
+    output: &mut [u8],
+    operation: &mut OVERLAPPED,
+) -> Result<()> {
+    windows_core::link!("kernel32.dll" "system" fn ReadFile(file: HANDLE, output: *mut u8, length: u32, transferred: *mut u32, operation: *mut OVERLAPPED) -> BOOL);
+    // SAFETY: the caller pins output/operation and drains a pending read before either can retire.
+    unsafe {
+        ReadFile(
+            file,
+            output.as_mut_ptr(),
+            output.len() as u32,
+            std::ptr::null_mut(),
+            operation,
+        )
+        .ok()
+    }
+}

@@ -3,6 +3,7 @@
 pub(crate) mod document;
 pub(crate) mod registrar;
 pub(crate) mod tsf;
+pub(crate) mod win32;
 
 use crate::field_contract::{Facts, HostIdentity};
 use std::cell::Cell;

@@ -1,12 +1,12 @@
 use crate::field_contract::{Facts, HostIdentity, Window};
+use crate::foreign::win32::module_path;
 use windows::Win32::Foundation::{ERROR_SUCCESS, GetLastError, HWND, SetLastError};
-use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
-    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE, GetAncestor, GetClassNameW,
-    GetDlgCtrlID, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsWindow, WS_CHILD, WS_DISABLED,
+    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE, GetAncestor, GetDlgCtrlID,
+    GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow,
+    WS_CHILD, WS_DISABLED,
 };
 
 #[repr(C)]
@@ -56,7 +56,7 @@ fn describe(handle: HWND) -> Window {
             return result;
         }
         result.thread = GetWindowThreadProcessId(handle, Some(&mut result.process));
-        let count = GetClassNameW(handle, &mut result.class_name);
+        let count = crate::foreign::win32::class_name(handle, &mut result.class_name);
         SetLastError(ERROR_SUCCESS);
         result.style = GetWindowLongPtrW(handle, GWL_STYLE);
         let style_error = GetLastError();
@@ -78,7 +78,7 @@ pub(crate) fn capture(view: HWND, host: HostIdentity) -> Facts {
     // SAFETY: only native window/process metadata and a bounded module filename are acquired.
     unsafe {
         let parent = GetParent(view).unwrap_or_default();
-        let count = GetModuleFileNameW(None, &mut path) as usize;
+        let count = module_path(None, &mut path) as usize;
         let proof_process = count != 0
             && count < path.len()
             && path[..count]

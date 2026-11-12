@@ -13,9 +13,7 @@ use windows::Win32::Foundation::{
     E_FAIL, E_UNEXPECTED, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND,
     ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, GetLastError, S_FALSE, S_OK,
 };
-use windows::Win32::Storage::FileSystem::{
-    GetFileAttributesW, GetFullPathNameW, INVALID_FILE_ATTRIBUTES,
-};
+use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
@@ -483,7 +481,7 @@ fn resolve_dll(path: &OsStr) -> Result<Vec<u16>, HRESULT> {
     let input = wide(path);
     let mut output = vec![0u16; 32768];
     // SAFETY: input is NUL-terminated and output is a writable 32768-unit buffer.
-    let count = unsafe { GetFullPathNameW(PCWSTR(input.as_ptr()), Some(&mut output), None) };
+    let count = unsafe { crate::foreign::win32::full_path(PCWSTR(input.as_ptr()), &mut output) };
     let result = if count == 0 {
         // SAFETY: GetLastError immediately follows the failed Win32 call.
         win32_failure(unsafe { GetLastError() }.to_hresult())

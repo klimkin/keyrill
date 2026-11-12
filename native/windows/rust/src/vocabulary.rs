@@ -17,7 +17,6 @@ use windows::Wdk::Storage::FileSystem::{
 };
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
-use windows::Win32::System::Environment::GetEnvironmentVariableW;
 use windows::Win32::System::IO::*;
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExW,
@@ -259,7 +258,8 @@ fn environment(name: &str) -> Result<Option<Vec<u16>>, Error> {
     // SAFETY: name is terminated and buffer supplies the advertised capacity.
     unsafe {
         SetLastError(ERROR_SUCCESS);
-        let length = GetEnvironmentVariableW(PCWSTR(name.as_ptr()), Some(&mut buffer)) as usize;
+        let length =
+            crate::foreign::win32::environment(PCWSTR(name.as_ptr()), &mut buffer) as usize;
         if length == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND {
             return Ok(None);
         }
@@ -375,8 +375,9 @@ fn volume(drive: &[u16], hooks: Hooks) -> Result<Vec<u16>, Error> {
     }
     let mut guid = [0; 64];
     // SAFETY: guid is writable for the generated binding's advertised capacity.
-    let enumeration =
-        Enumeration(unsafe { FindFirstVolumeW(&mut guid) }.map_err(|_| Error::Unavailable)?);
+    let enumeration = Enumeration(
+        crate::foreign::win32::first_volume(&mut guid).map_err(|_| Error::Unavailable)?,
+    );
     let mut selected = None;
     for _ in 0..1024 {
         let mut paths = vec![0; 32768];
@@ -384,9 +385,9 @@ fn volume(drive: &[u16], hooks: Hooks) -> Result<Vec<u16>, Error> {
         // SAFETY: guid is terminated by volume enumeration. All output storage is live for the call.
         let result = unsafe {
             if hooks.native.volume_paths.is_null() {
-                Call::boolean(GetVolumePathNamesForVolumeNameW(
+                Call::boolean(crate::foreign::win32::volume_paths(
                     PCWSTR(guid.as_ptr()),
-                    Some(&mut paths),
+                    &mut paths,
                     &mut length,
                 ))
             } else {
@@ -424,7 +425,7 @@ fn volume(drive: &[u16], hooks: Hooks) -> Result<Vec<u16>, Error> {
             }
         }
         // SAFETY: enumeration and guid remain owned by this function.
-        if unsafe { FindNextVolumeW(enumeration.0, &mut guid) }.is_err() {
+        if crate::foreign::win32::next_volume(enumeration.0, &mut guid).is_err() {
             // SAFETY: last error is read immediately after the failed enumeration call.
             return if unsafe { GetLastError() } == ERROR_NO_MORE_FILES {
                 selected.ok_or(Error::Unavailable)
@@ -703,11 +704,10 @@ fn read(file: &mut Handle, stop: HANDLE, length: usize, hooks: Hooks) -> Result<
         // SAFETY: Box fixes the operation address and the vector will not reallocate until drained.
         let result = unsafe {
             if hooks.native.read.is_null() {
-                Call::boolean(ReadFile(
+                Call::boolean(crate::foreign::win32::read_file(
                     file.0,
-                    Some(&mut owned.bytes[offset..offset + count]),
-                    None,
-                    Some(&mut owned.operation),
+                    &mut owned.bytes[offset..offset + count],
+                    &mut owned.operation,
                 ))
             } else {
                 kr_worker_read(
@@ -828,7 +828,7 @@ fn observe(path: &Path, stop: HANDLE, hooks: Hooks) -> Result<Observation, Error
     let serial = root_meta.id.VolumeSerialNumber;
     let mut filesystem = [0; 32];
     // SAFETY: root is an owned directory handle and output storage has its advertised capacity.
-    unsafe { GetVolumeInformationByHandleW(root.0, None, None, None, None, Some(&mut filesystem)) }
+    crate::foreign::win32::volume_filesystem(root.0, &mut filesystem)
         .map_err(|_| Error::Unavailable)?;
     if filesystem[..5]
         .iter()

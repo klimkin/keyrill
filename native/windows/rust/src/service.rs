@@ -1007,10 +1007,9 @@ impl Service {
     }
 
     fn register_diagnostics(&self, epoch: u64, provider: *mut c_void) {
-        use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
         let mut path = [0; 32768];
         // SAFETY: the bounded output receives only the current process executable path.
-        let count = unsafe { GetModuleFileNameW(None, &mut path) } as usize;
+        let count = foreign::win32::module_path(None, &mut path) as usize;
         let proof = count != 0
             && count < path.len()
             && path[..count]

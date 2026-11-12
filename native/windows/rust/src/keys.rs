@@ -156,16 +156,14 @@ pub(crate) fn translate(
     }
     let mut text = [0; 8];
     // SAFETY: the fixed keyboard state and output buffer are live for this non-mutating translation.
-    let count = unsafe {
-        ToUnicodeEx(
-            key.0 as u32,
-            (flags.0 as u32 >> 16) & 0xff,
-            state,
-            &mut text,
-            4,
-            Some(layout),
-        )
-    };
+    let count = crate::foreign::win32::translate(
+        key.0 as u32,
+        (flags.0 as u32 >> 16) & 0xff,
+        state,
+        &mut text,
+        4,
+        layout,
+    );
     if count <= 0 || count as usize > text.len() || !printable(&text[..count as usize]) {
         return event(6, mode, &[]);
     }
