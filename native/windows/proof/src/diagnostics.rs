@@ -1,6 +1,8 @@
 //! Independent diagnostic COM schema and canonical fixture publications.
 use crate::protocol::{valid_lifecycle, valid_service};
+use std::cell::RefCell;
 use std::ffi::c_void;
+use std::rc::Rc;
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::TextServices::*;
 use windows::core::{GUID, HRESULT, IUnknown, IUnknown_Vtbl, Interface};
@@ -186,7 +188,7 @@ impl Endpoint {
         if !alive() {
             return Err(E_ABORT);
         }
-        if identity != reader_identity {
+        if identity.as_raw() != reader_identity.as_raw() {
             return Err(E_UNEXPECTED);
         }
         Ok(Self { identity, reader })
@@ -219,7 +221,7 @@ impl Endpoint {
         if !alive() {
             return Err(E_ABORT);
         }
-        Ok(identity == self.identity)
+        Ok(identity.as_raw() == self.identity.as_raw())
     }
     /// Read and independently validate the exact service snapshot ABI.
     ///
@@ -252,11 +254,7 @@ fn query_exact<T: Interface>(object: &impl Interface) -> Result<T, HRESULT> {
 }
 fn take_interface<T: Interface>(result: HRESULT, raw: *mut c_void) -> Result<T, HRESULT> {
     if raw.is_null() {
-        return Err(if result == S_OK {
-            E_NOINTERFACE
-        } else {
-            result
-        });
+        return Err(result);
     }
     let value = unsafe { T::from_raw(raw) };
     if result == S_OK {
@@ -525,51 +523,86 @@ pub fn history(before: &ServiceSnapshot, after: &ServiceSnapshot) -> bool {
 #[derive(Default)]
 /// Fixture status publisher retaining source identity across native polls.
 pub struct Poller {
-    /// Most recently published canonical service status.
-    pub value: Publication,
-    identity: Option<IUnknown>,
+    value: RefCell<Publication>,
+    baseline: RefCell<Option<Baseline>>,
+    epoch: RefCell<Rc<()>>,
+}
+struct Baseline {
+    identity: IUnknown,
     activation: u32,
 }
 impl Poller {
+    /// Copy the most recently completed publication without entering native code.
+    pub fn value(&self) -> Publication {
+        self.value.borrow().clone()
+    }
+    fn current(&self, epoch: &Rc<()>) -> bool {
+        Rc::ptr_eq(&self.epoch.borrow(), epoch)
+    }
+    /// Seed the host counter for controlled saturation schedules.
+    #[cfg(feature = "controlled-tests")]
+    pub fn set_publication_number_for_test(&self, publication: u32) {
+        self.value.borrow_mut().publication = publication;
+    }
     /// Read the native service and advance the fixture publication.
-    pub fn poll(&mut self, manager: &ITfThreadMgr) {
-        self.value.publication = self.value.publication.saturating_add(1);
-        self.value.saturated |= u32::from(self.value.publication == u32::MAX);
-        self.value.snapshot = ServiceSnapshot::default();
-        self.value.continuity = 0;
-        match Endpoint::discover(manager)
-            .and_then(|endpoint| endpoint.copy().map(|snapshot| (endpoint, snapshot)))
-        {
+    pub fn poll(&self, manager: &ITfThreadMgr) {
+        let epoch = Rc::new(());
+        self.epoch.replace(Rc::clone(&epoch));
+        let baseline = self.baseline.borrow_mut().take();
+        let mut value = self.value();
+        value.publication = value.publication.saturating_add(1);
+        value.saturated |= u32::from(value.publication == u32::MAX);
+        value.snapshot = ServiceSnapshot::default();
+        value.continuity = 0;
+        let result = Endpoint::discover_with(manager, || self.current(&epoch))
+            .and_then(|endpoint| endpoint.copy().map(|snapshot| (endpoint, snapshot)));
+        if !self.current(&epoch) {
+            return;
+        }
+        let mut next = None;
+        let mut reader = None;
+        match result {
             Ok((endpoint, snapshot)) => {
-                self.value.result = 0;
-                self.value.snapshot = snapshot;
-                if self.value.snapshot.base[1] == 0 {
-                    self.value.availability = 2;
-                    self.identity = None;
-                    self.activation = 0;
-                    return;
-                }
-                let same = self.identity.as_ref() == Some(&endpoint.identity)
-                    && self.activation == self.value.snapshot.base[0];
-                if !same {
-                    self.value.source = self.value.source.saturating_add(1);
-                    self.value.saturated |= u32::from(self.value.source == u32::MAX);
-                }
-                self.value.availability = 4;
-                self.value.continuity =
-                    if self.value.saturated != 0 || self.value.snapshot.saturated() {
+                value.result = 0;
+                value.snapshot = snapshot;
+                let Endpoint {
+                    identity,
+                    reader: retained,
+                } = endpoint;
+                reader = Some(retained);
+                if value.snapshot.base[1] == 0 {
+                    value.availability = 2;
+                    // Keep the native identity alive until the completed state is published.
+                    next = Some(Baseline {
+                        identity,
+                        activation: 0,
+                    });
+                } else {
+                    let same = baseline.as_ref().is_some_and(|old| {
+                        old.identity.as_raw() == identity.as_raw()
+                            && old.activation == value.snapshot.base[0]
+                    });
+                    if !same {
+                        value.source = value.source.saturating_add(1);
+                        value.saturated |= u32::from(value.source == u32::MAX);
+                    }
+                    value.availability = 4;
+                    value.continuity = if value.saturated != 0 || value.snapshot.saturated() {
                         3
                     } else if same {
                         2
                     } else {
                         1
                     };
-                self.activation = self.value.snapshot.base[0];
-                self.identity = Some(endpoint.identity);
+                    next = Some(Baseline {
+                        identity,
+                        activation: value.snapshot.base[0],
+                    });
+                }
             }
             Err(error) => {
-                self.value.result = error.0 as u32;
-                self.value.availability = if error == TF_E_NOPROVIDER {
+                value.result = error.0 as u32;
+                value.availability = if error == TF_E_NOPROVIDER {
                     0
                 } else if error == E_PENDING {
                     3
@@ -578,10 +611,19 @@ impl Poller {
                 } else {
                     1
                 };
-                self.identity = None;
-                self.activation = 0;
             }
         }
+        let inactive = if value.availability == 2 {
+            next.take()
+        } else {
+            None
+        };
+        let retired = self.baseline.replace(next);
+        self.value.replace(value);
+        drop(retired);
+        drop(reader);
+        drop(inactive);
+        drop(baseline);
     }
 }
 

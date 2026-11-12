@@ -397,7 +397,7 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
         row(window, shutdown::MODE_ID, shutdown::MODE_STATUS, 552, 24)?;
     }
     let mut routing = routing::Snapshot::default();
-    let mut service = Poller::default();
+    let service = Poller::default();
     let mode_row = mode != FixtureMode::Normal;
     let status = row(
         window,
@@ -416,7 +416,7 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
         window,
         106,
         &service
-            .value
+            .value()
             .format()
             .ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))?,
         if source.is_some() { 780 } else { 680 },
@@ -464,7 +464,7 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
             let _ = set_text(
                 service_status,
                 &service
-                    .value
+                    .value()
                     .format()
                     .unwrap_or_else(|| "Keyrill service unavailable".into()),
             );
