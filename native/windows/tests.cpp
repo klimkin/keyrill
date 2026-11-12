@@ -921,8 +921,7 @@ struct Manager final : ITfThreadMgr,
   HRESULT unsink_result[3]{S_OK, S_OK, S_OK};
   int throw_sink = -1;
   int thread_advises = 0, profile_advises = 0;
-  // Harness retains the service until Deactivate clears this borrowed sink.
-  ITfKeyEventSink *key_sink = nullptr;
+  ITfKeyEventSink *borrowed_key_sink = nullptr;
   TfClientId key_client = TF_CLIENTID_NULL;
   BOOL key_foreground = FALSE;
   int key_advises = 0;
@@ -995,7 +994,7 @@ struct Manager final : ITfThreadMgr,
                                                BOOL foreground) override {
     ++key_advises;
     key_client = client;
-    key_sink = sink_result[2] == S_OK ? sink : nullptr;
+    borrowed_key_sink = sink_result[2] == S_OK ? sink : nullptr;
     key_foreground = foreground;
     if (advise_hook)
       advise_hook(2);
@@ -1006,7 +1005,7 @@ struct Manager final : ITfThreadMgr,
   HRESULT STDMETHODCALLTYPE UnadviseKeyEventSink(TfClientId client) override {
     Require(client == 42, "captured teardown client");
     ++key_unadvises;
-    key_sink = nullptr;
+    borrowed_key_sink = nullptr;
     top->Call("UnadviseKeySink");
     return unsink_result[2];
   }
@@ -1318,8 +1317,8 @@ bool PreservedCommandSequences() {
     Harness h(&profile, ProofLayouts);
     KeyboardState keyboard;
     auto &manager = h.manager;
-    const bool advised = manager.key_advises == 1 && manager.key_sink && manager.key_client == 42 &&
-                         manager.key_foreground;
+    const bool advised = manager.key_advises == 1 && manager.borrowed_key_sink &&
+                         manager.key_client == 42 && manager.key_foreground;
     check(advised, "preserved commands use the actual advised foreground sink and client");
     if (manager.preserved_keys.size() != 3) {
       fprintf(stderr, "FAIL: preserved command registrations activation=%d expected=3 actual=%zu\n",
@@ -1361,7 +1360,7 @@ bool PreservedCommandSequences() {
           "Alt observer registers a distinct exact binding on the same activation client");
     if (advised) {
       BOOL eaten = TRUE;
-      check(manager.key_sink->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
+      check(manager.borrowed_key_sink->OnPreservedKey(&h.a, GUID_NULL, &eaten) == S_OK && !eaten &&
                 h.a.reads == 0 && h.a.writes == 0 && h.a.starts == 0 &&
                 h.a.calls["RequestEditSession"] == 0,
             "unknown preserved GUID passes without text inspection or an edit request");
@@ -1377,7 +1376,8 @@ bool PreservedCommandSequences() {
         const int writes = h.a.writes, requests = h.a.calls["RequestEditSession"];
         const auto before = DiagnosticSnapshot(*h.service.Get());
         BOOL eaten = FALSE;
-        check(manager.key_sink->OnPreservedKey(&h.a, binding.command, &eaten) == S_OK && eaten,
+        check(manager.borrowed_key_sink->OnPreservedKey(&h.a, binding.command, &eaten) == S_OK &&
+                  eaten,
               "registered preserved command completes through the advised sink and consumes");
         const auto after = DiagnosticSnapshot(*h.service.Get());
         check(h.a.writes == writes + 1 && h.a.calls["RequestEditSession"] == requests + 1 &&
@@ -1399,7 +1399,7 @@ bool PreservedCommandSequences() {
             "preserved commands retain the same owned composition without commit or reacquisition");
       }
     }
-    check(h.service->Deactivate() == S_OK && manager.key_sink == nullptr,
+    check(h.service->Deactivate() == S_OK && manager.borrowed_key_sink == nullptr,
           "deactivation clears the captured preserved-command sink");
     check(manager.unpreserved_keys.size() == 3 &&
               std::all_of(manager.preserved_keys.begin(), manager.preserved_keys.end(),
@@ -1428,7 +1428,7 @@ void PreservedActivationSchedules() {
       ++callbacks;
       const GUID id = h.manager.preserve_calls.back().binding.command;
       BOOL eaten = TRUE;
-      Require(h.manager.key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK && !eaten &&
+      Require(h.manager.borrowed_key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK && !eaten &&
                   !h.a.reads && !h.a.writes && !h.a.starts && !h.a.calls["RequestEditSession"],
               "native callbacks during provisional registration have no editing authority");
     };
@@ -1683,11 +1683,11 @@ bool Preserved(Harness &h, UINT key) {
   const auto found =
       std::find_if(h.manager.preserved_keys.begin(), h.manager.preserved_keys.end(),
                    [&](const auto &entry) { return entry.binding.key.uVKey == key; });
-  Require(found != h.manager.preserved_keys.end() && h.manager.key_sink,
+  Require(found != h.manager.preserved_keys.end() && h.manager.borrowed_key_sink,
           "dispatch uses the command actually registered with the advised sink");
   const GUID id = found->binding.command;
   BOOL eaten = FALSE;
-  Require(h.manager.key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK,
+  Require(h.manager.borrowed_key_sink->OnPreservedKey(&h.a, id, &eaten) == S_OK,
           "preserved command callback contains native failures");
   return eaten != FALSE;
 }
@@ -1718,7 +1718,7 @@ void CommandRetentionRegression() {
   const auto reads = h.a.reads;
   const auto requests = h.a.calls["RequestEditSession"];
   BOOL eaten = FALSE;
-  Require(h.manager.key_sink->OnKeyUp(&h.a, VK_MENU, 0xc0000001, &eaten) == S_OK,
+  Require(h.manager.borrowed_key_sink->OnKeyUp(&h.a, VK_MENU, 0xc0000001, &eaten) == S_OK,
           "direct actual release returns normally");
   if (!registered || !eaten)
     fprintf(
@@ -2297,7 +2297,7 @@ void PreservedDispatchSchedules() {
             "delivery after exact termination cannot recover committed text or acquire a "
             "replacement mark");
     h.Oracle(L"ghbdtn", 13);
-    ComPtr<ITfKeyEventSink> retained = h.manager.key_sink;
+    ComPtr<ITfKeyEventSink> retained = h.manager.borrowed_key_sink;
     const GUID id = h.manager.preserved_keys.front().binding.command;
     h.service->Deactivate();
     const int reads = h.a.reads;
@@ -2583,7 +2583,7 @@ void LayoutRefusalOracle(Harness &h, const diagnostics::Snapshot &before) {
   h.Oracle(L"", 7);
 }
 HRESULT AdmissionProbe(Harness &h, bool preserved, BOOL *eaten) {
-  return preserved ? h.manager.key_sink->OnPreservedKey(
+  return preserved ? h.manager.borrowed_key_sink->OnPreservedKey(
                          &h.a, h.manager.preserved_keys.front().binding.command, eaten)
                    : h.service->OnKeyDown(&h.a, VK_F12, 1, eaten);
 }
