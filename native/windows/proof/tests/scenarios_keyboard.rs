@@ -8,7 +8,7 @@ use windows::Win32::{
     Foundation::*,
     UI::{Input::KeyboardAndMouse::*, TextServices::*},
 };
-use windows_core::HRESULT;
+use windows_core::{HRESULT, Interface};
 
 type Translate =
     unsafe extern "system" fn(WPARAM, LPARAM, HKL, *const u8, *mut Event, *mut i32) -> HRESULT;
@@ -180,4 +180,189 @@ fn keyboard_synthetic_tip_requires_exact_profile_and_substitute() {
         }
         assert_eq!(output, expected);
     }
+}
+
+struct Keyboard {
+    saved: [u8; 256],
+    state: [u8; 256],
+}
+impl Keyboard {
+    fn new() -> Self {
+        let mut saved = [0; 256];
+        unsafe {
+            GetKeyboardState(&mut saved).unwrap();
+            SetKeyboardState(&[0; 256]).unwrap();
+        }
+        Self {
+            saved,
+            state: [0; 256],
+        }
+    }
+    fn set(&mut self, key: VIRTUAL_KEY, value: u8) {
+        self.state[key.0 as usize] = value;
+        for (both, left, right) in [
+            (VK_CONTROL, VK_LCONTROL, VK_RCONTROL),
+            (VK_MENU, VK_LMENU, VK_RMENU),
+            (VK_SHIFT, VK_LSHIFT, VK_RSHIFT),
+        ] {
+            self.state[both.0 as usize] =
+                self.state[left.0 as usize] | self.state[right.0 as usize];
+        }
+        unsafe {
+            SetKeyboardState(&self.state).unwrap();
+        }
+    }
+    fn down(&self, c: &Client, key: VIRTUAL_KEY) -> bool {
+        let sink = c.service.cast::<ITfKeyEventSink>().unwrap();
+        let scan = unsafe { MapVirtualKeyW(key.0 as u32, MAPVK_VK_TO_VSC) } as isize;
+        let mut eaten = false.into();
+        unsafe {
+            assert_eq!(
+                (sink.vtable().OnKeyDown)(
+                    sink.as_raw(),
+                    c.context_a.as_raw(),
+                    WPARAM(key.0 as usize),
+                    LPARAM((scan << 16) | 1),
+                    &mut eaten
+                ),
+                S_OK
+            );
+        }
+        c.host.check();
+        eaten.as_bool()
+    }
+    fn up(&self, c: &Client, key: VIRTUAL_KEY) {
+        let sink = c.service.cast::<ITfKeyEventSink>().unwrap();
+        let mut eaten = true.into();
+        unsafe {
+            assert_eq!(
+                (sink.vtable().OnKeyUp)(
+                    sink.as_raw(),
+                    c.context_a.as_raw(),
+                    WPARAM(key.0 as usize),
+                    LPARAM(0xc0000001),
+                    &mut eaten
+                ),
+                S_OK
+            );
+        }
+        assert!(!eaten.as_bool());
+        c.host.check();
+    }
+    fn text(&self, c: &Client, keys: &str) {
+        for key in keys.encode_utf16() {
+            assert!(self.down(c, VIRTUAL_KEY(key)));
+            self.up(c, VIRTUAL_KEY(key));
+        }
+    }
+    fn chord(&mut self, c: &Client, key: u16) -> bool {
+        self.set(VK_LCONTROL, 0x80);
+        assert!(!self.down(c, VK_CONTROL));
+        self.set(VK_LMENU, 0x80);
+        assert!(!self.down(c, VK_MENU));
+        let eaten = self.down(c, VIRTUAL_KEY(key));
+        self.up(c, VIRTUAL_KEY(key));
+        self.set(VK_LMENU, 0);
+        self.up(c, VK_MENU);
+        self.set(VK_LCONTROL, 0);
+        self.up(c, VK_CONTROL);
+        eaten
+    }
+}
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        unsafe {
+            SetKeyboardState(&self.saved).unwrap();
+        }
+    }
+}
+
+#[test]
+fn keyboard_oem_owned_words_convert_and_reverse_exact_case_and_punctuation() {
+    for shifted in [false, true] {
+        let c = Client::new();
+        let mut keyboard = Keyboard::new();
+        keyboard.set(VK_LSHIFT, if shifted { 0x80 } else { 0 });
+        assert!(keyboard.down(&c, VK_OEM_4));
+        keyboard.set(VK_LSHIFT, 0);
+        keyboard.text(&c, "JHJIJ");
+        assert!(keyboard.chord(&c, b'K' as u16));
+        oracle::document(
+            &c,
+            if shifted {
+                "Хорошо"
+            } else {
+                "хорошо"
+            },
+            13,
+        );
+        assert!(keyboard.chord(&c, b'Z' as u16));
+        oracle::document(&c, if shifted { "{jhjij" } else { "[jhjij" }, 13);
+    }
+    let c = Client::new();
+    let mut keyboard = Keyboard::new();
+    assert!(keyboard.down(&c, VK_OEM_3));
+    keyboard.text(&c, "KRF");
+    assert!(keyboard.chord(&c, b'K' as u16));
+    oracle::document(&c, "ёлка", 11);
+    assert!(keyboard.chord(&c, b'Z' as u16));
+    oracle::document(&c, "`krf", 11);
+}
+
+#[test]
+fn keyboard_oem_ordinary_punctuation_finishes_before_native_passthrough() {
+    let c = Client::new();
+    let keyboard = Keyboard::new();
+    keyboard.text(&c, "GHBDTN");
+    assert!(!keyboard.down(&c, VK_OEM_MINUS));
+    assert!(c.a.active.borrow().is_none());
+    c.a.native_text(&[b'-' as u16]);
+    oracle::document(&c, "ghbdtn-", 14);
+}
+
+#[test]
+fn keyboard_loaded_russian_oem_manual_noop_preserves_first_receipt() {
+    let ru = HKL(0x04190419usize as *mut _);
+    let mut layouts = [HKL::default(); 64];
+    let count = unsafe { GetKeyboardLayoutList(Some(&mut layouts)) };
+    assert!((0..=64).contains(&count));
+    if !layouts[..count as usize].contains(&ru) {
+        eprintln!("SKIP: Russian OEM command; layout is not already loaded");
+        return;
+    }
+    let c = Client::new();
+    let mut profile = c.profile_state.profile.get();
+    profile.guidProfile = windows_core::GUID::from_u128(0x4c1e583c_f8e5_4b7d_b66c_b7e7319aed51);
+    profile.langid = 0x419;
+    c.profile_state.profile.set(profile);
+    c.profile_state.substitute.set(ru);
+    let sink = c
+        .service
+        .cast::<ITfInputProcessorProfileActivationSink>()
+        .unwrap();
+    unsafe {
+        assert_eq!(
+            (sink.vtable().OnActivated)(
+                sink.as_raw(),
+                TF_PROFILETYPE_INPUTPROCESSOR,
+                0x419,
+                &SERVICE_ID,
+                &GUID_TFCAT_TIP_KEYBOARD,
+                &profile.guidProfile,
+                HKL::default(),
+                TF_IPSINK_FLAG_ACTIVE
+            ),
+            S_OK
+        );
+    }
+    let mut keyboard = Keyboard::new();
+    assert!(keyboard.down(&c, VK_OEM_4));
+    assert!(keyboard.chord(&c, b'K' as u16));
+    oracle::document(&c, "[", 8);
+    let writes = c.a.writes.get();
+    assert!(keyboard.chord(&c, b'K' as u16));
+    assert_eq!(c.a.writes.get(), writes);
+    assert!(c.a.active.borrow().is_some());
+    assert!(keyboard.chord(&c, b'Z' as u16));
+    oracle::document(&c, "х", 8);
 }
