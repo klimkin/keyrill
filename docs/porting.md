@@ -50,9 +50,10 @@ document: plan a key, check the composition against `expected`, write `mark`, co
 outcome, and honor the key disposition, including `KR_FINISH` with `KR_KEY_REPLAN`. Its
 scenarios type `ghbdtn` and `руддщ` with Space under the fixture policy, restore with Escape,
 leave an unlisted word alone, and convert `ёлка` and `[jhjij` manually, including under the PC
-keyboard. `./tools/verify` links and runs it on every platform, with the system libraries
-`--print native-static-libs` reports. Windows builds it through MSVC and CMake with the DLL C
-runtime, as Rust's MSVC staticlib expects.
+keyboard. `./tools/verify` links and runs the C caller on macOS and Linux, with the system
+libraries `--print native-static-libs` reports. Windows has an independent Rust caller in
+`crates/keyrill-ffi/tests/windows_abi.rs`. It declares the published C structs and signatures,
+checks their literal layouts, and runs all nine original smoke scenarios against the ABI.
 
 Wire the adapter into `tools/verify` the way macOS is: a `uname -s` branch in the default mode
 runs its format check, build and controlled tests, and a separate mode covers anything that needs
