@@ -7402,6 +7402,47 @@ void FocusAndTermination() {
   ::SetFocus(h.a.window);
   Require(!h.Key(L'z', false) && h.a.writes == before, "A B A never revives old authority");
 }
+void StaleEditAcrossActivation() {
+  for (bool throw_after_callback : {false, true}) {
+    Harness h;
+    h.a.retain_callback = true;
+    h.a.request_result = E_FAIL;
+    h.a.throw_after_callback = throw_after_callback;
+    bool reactivated = false;
+    h.a.hook = [&](const char *name) {
+      if (reactivated || strcmp(name, "RequestEditSession") != 0)
+        return;
+      reactivated = true;
+      Require(h.service->Deactivate() == S_OK && h.service->Activate(&h.manager, 42) == S_OK,
+              "old edit request permits a fresh activation after registration drain");
+    };
+    Require(!h.Key(L'g', false) && reactivated && h.a.retained_request && h.a.writes == 0 &&
+                !h.service->stopped(),
+            "failed old request cannot stop a newer activation or write through its authority");
+    ComPtr<ITfEditSession> old_request = h.a.retained_request;
+    h.a.retained_request.Reset();
+    h.a.hook = nullptr;
+    h.a.retain_callback = false;
+    h.a.request_result = S_OK;
+    h.a.throw_after_callback = false;
+    h.Type(L"ghbdtn ");
+    h.Oracle(L"\u043f\u0440\u0438\u0432\u0435\u0442 ", 14);
+    auto *composition = h.a.composition.Get();
+    const int writes = h.a.writes;
+    const auto trace = h.a.trace;
+    Require(old_request->DoEditSession(123) == E_FAIL && h.a.writes == writes &&
+                h.a.trace == trace && h.a.composition.Get() == composition &&
+                h.a.active_composition && !h.service->stopped(),
+            "expired old callback has no native access or effect on the new owned word");
+    old_request.Reset();
+    kr_event reverse{KR_REVERSE, KR_EN, KR_CTX_INELIGIBLE, 0, {}};
+    Require(
+        h.service->HandleEvent(&h.a, reverse) && h.a.writes == writes + 1 &&
+            h.a.composition.Get() == composition && h.a.max_request_writes == 1,
+        "new activation retains its exact receipt and owned range after old callback retirement");
+    h.Oracle(L"ghbdtn ", 14);
+  }
+}
 void ReentrantBoundaries() {
   std::vector<std::string> boundaries;
   {
@@ -7661,6 +7702,7 @@ int wmain(int argc, wchar_t **argv) {
     Denials();
     Exclusions();
     FocusAndTermination();
+    StaleEditAcrossActivation();
     DestroyWindow(controlled_root);
     CoUninitialize();
     puts("Controlled owned composition schedules passed.");
@@ -7748,6 +7790,7 @@ int wmain(int argc, wchar_t **argv) {
   FinishOutcomes();
   puts("RUN focus and termination");
   FocusAndTermination();
+  StaleEditAcrossActivation();
   puts("RUN reentry boundaries");
   ReentrantBoundaries();
   puts("RUN keyboard translation");
