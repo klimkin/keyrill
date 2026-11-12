@@ -333,7 +333,15 @@ fn command_observation_routes_release_sides_and_thread_arguments() {
     assert_eq!(c.a.writes.get(), writes + 2);
     assert_eq!(c.a.active.borrow().as_ref().unwrap().pointer, composition);
     let before = snapshot(&c.service);
-    let calls = c.profile_state.activation_calls.get();
+    let profile_calls = || {
+        c.host
+            .trace
+            .borrow()
+            .iter()
+            .filter(|name| **name == "GetActiveProfile")
+            .count()
+    };
+    let calls = profile_calls();
     let sink = c.service.cast::<ITfKeyEventSink>().unwrap();
     assert!(!preserved(&c, GUID::zeroed()));
     unsafe {
@@ -349,7 +357,7 @@ fn command_observation_routes_release_sides_and_thread_arguments() {
     }
     assert_eq!(snapshot(&c.service), before);
     assert_eq!(observed(&page).observations, value.observations);
-    assert_eq!(c.profile_state.activation_calls.get(), calls);
+    assert_eq!(profile_calls(), calls);
     assert!(down(&c, VIRTUAL_KEY(b'K' as u16)));
     assert!(down(&c, VIRTUAL_KEY(b'Z' as u16)));
     let recorded = rows(&observed(&page));
@@ -437,7 +445,15 @@ fn command_observation_routes_release_sides_and_thread_arguments() {
     assert_eq!(observed(&page).observations, release_history);
     assert_eq!(snapshot(&c.service), before);
     assert_eq!(access(&c), accesses);
+    assert_eq!(profile_calls(), calls + 2);
     assert_eq!(c.a.active.borrow().as_ref().unwrap().pointer, composition);
+    let mut writes_per_request = std::collections::BTreeMap::new();
+    for operation in c.a.operations.borrow().iter() {
+        if operation.effect == crate::support::document::Effect::Text {
+            *writes_per_request.entry(operation.request).or_insert(0) += 1;
+        }
+    }
+    assert!(writes_per_request.values().all(|count| *count == 1));
     oracle::document(&c, "ghbdtn", 13);
     c.host.drained();
 }
