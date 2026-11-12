@@ -130,8 +130,30 @@ foreach(schedule basic query-before query-after request-before request-after add
   add_test(NAME rust_com_boundary_${schedule}
     COMMAND keyrill_rust_boundary_tests $<TARGET_FILE:KeyrillTsfTest> ${schedule})
 endforeach()
+foreach(variant production test-api)
+  set(decoder keyrill_diagnostic_decoder_${variant})
+  add_executable(${decoder} rust/tests/diagnostics_layout.cpp host_probe.cpp guids.cpp)
+  target_link_libraries(${decoder} PRIVATE ole32 oleaut32 user32 uuid advapi32)
+  if(variant STREQUAL "test-api")
+    target_compile_definitions(${decoder} PRIVATE KEYRILL_TEST_ARTIFACT)
+    set(decoder_features --features test-api)
+    set(decoder_cargo_dir "${CARGO_TEST}")
+  else()
+    set(decoder_features)
+    set(decoder_cargo_dir "${CARGO_PRODUCTION}")
+  endif()
+  add_test(NAME rust_diagnostic_roundtrip_${variant}
+    COMMAND ${CMAKE_COMMAND} -E env "PYTHON=${Python3_EXECUTABLE}" "KEYRILL_ASAN=${KEYRILL_ASAN}"
+      "KEYRILL_DIAGNOSTIC_DECODER=$<TARGET_FILE:${decoder}>"
+      cargo test --locked --offline -p keyrill-windows --lib ${decoder_features}
+      --target-dir "${decoder_cargo_dir}"
+      observation::tests::sdk_decoder_roundtrips_rust_payloads_through_logon_secured_mapping
+      -- --exact --ignored)
+  set_tests_properties(rust_diagnostic_roundtrip_${variant} PROPERTIES
+    WORKING_DIRECTORY "${ROOT}" TIMEOUT 180 FAIL_REGULAR_EXPRESSION "running 0 tests")
+endforeach()
 if(KEYRILL_ASAN)
-  foreach(target keyrill_windows_tests keyrill_dll_smoke keyrill_activation_smoke keyrill_registration_tests keyrill_routing_tests keyrill_host_probe_tests keyrill_host_threads_tests keyrill_host_inspect_options_tests keyrill_host_field_tests keyrill_rust_boundary_tests)
+  foreach(target keyrill_windows_tests keyrill_dll_smoke keyrill_activation_smoke keyrill_registration_tests keyrill_routing_tests keyrill_host_probe_tests keyrill_host_threads_tests keyrill_host_inspect_options_tests keyrill_host_field_tests keyrill_rust_boundary_tests keyrill_diagnostic_decoder_production keyrill_diagnostic_decoder_test-api)
     target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
     target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
   endforeach()
