@@ -11,7 +11,7 @@ try {
     $formatPath = Join-Path $installation 'VC/Tools/Llvm/bin/clang-format.exe'
   }
   if (!(Test-Path -LiteralPath $formatPath)) { throw 'clang-format is unavailable; no tool is installed automatically' }
-  $nativeFiles = Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -in '.cpp', '.h' } | ForEach-Object FullName
+  $nativeFiles = Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File | Where-Object { $_.Extension -in '.cpp', '.h' } | ForEach-Object FullName
   & $formatPath --dry-run --Werror @nativeFiles
   if ($LASTEXITCODE -ne 0) { throw 'Native formatting check failed' }
   & cargo build --locked --offline --release -p keyrill-ffi

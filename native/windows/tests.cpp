@@ -3,7 +3,8 @@
 #include "fixture.h"
 #include "fixture_mode.h"
 #include "keys.h"
-#include "service.h"
+#include "test_service.h"
+#include "test_vocabulary.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -1192,7 +1193,7 @@ struct Harness {
   HWND root = nullptr;
   Document a, b;
   Manager manager;
-  ComPtr<Service> service;
+  ComPtr<TestService> service;
   Harness(ITfInputProcessorProfileMgr *profile_api = nullptr,
           decltype(&GetKeyboardLayoutList) layouts = GetKeyboardLayoutList,
           const native_field::Source *field_source = nullptr) {
@@ -1204,8 +1205,7 @@ struct Harness {
     ::SetActiveWindow(root);
     ::SetFocus(a.window);
     Require(::GetFocus() == a.window, "fixture native focus established");
-    service.Attach(
-        new Service(profile_api, layouts, vocabulary::ModuleOwner::Process, field_source));
+    service.Attach(new TestService(profile_api, layouts, field_source));
     Require(SUCCEEDED(service->Activate(&manager, 42)), "controlled COM service activation");
   }
   ~Harness() {
@@ -1235,7 +1235,7 @@ struct Harness {
     Require(b.text == L"prefix suffix" && b.caret == 7, "other document unchanged");
   }
 };
-diagnostics::Snapshot DiagnosticSnapshot(Service &service) {
+diagnostics::Snapshot DiagnosticSnapshot(TestService &service) {
   diagnostics::Snapshot snapshot;
   Require(service.Copy(sizeof(snapshot), diagnostics::version, &snapshot) == S_OK &&
               diagnostics::Valid(snapshot),
@@ -3928,7 +3928,7 @@ void SourceReentrySchedules() {
 void SourceServiceSchedules() {
   using namespace source_proof;
   for (bool input : {false, true}) {
-    const auto objects = object_count;
+    const auto objects = TestObjectCount();
     {
       ProfileManager service_profiles;
       Harness h(&service_profiles, ProofLayouts);
@@ -3974,7 +3974,7 @@ void SourceServiceSchedules() {
       Require(native.references == 1,
               "source COM references drain while the actual service apartment lives");
     }
-    Require(object_count == objects,
+    Require(TestObjectCount() == objects,
             "actual service object accounting drains after source experiment");
   }
 }
@@ -4403,7 +4403,7 @@ void ShutdownReaderLifetimeSchedules() {
   constexpr GUID frozen_iid = {
       0xf75f909b, 0x293a, 0x4a7b, {0xa1, 0x72, 0xf5, 0xa0, 0x61, 0x88, 0x03, 0x52}};
   for (bool old_first : {false, true}) {
-    const auto objects = object_count;
+    const auto objects = TestObjectCount();
     ComPtr<FrozenReaderV1> old;
     ComPtr<SnapshotReaderV2> current;
     {
@@ -4423,7 +4423,7 @@ void ShutdownReaderLifetimeSchedules() {
       h.a.active_composition = false;
       h.service->OnCompositionTerminated(123, h.a.composition.Get());
     }
-    Require(object_count == objects + 1,
+    Require(TestObjectCount() == objects + 1,
             "retained readers extend Service and engine lifetime beyond ordinary owner release");
     struct {
       uint32_t before = 17;
@@ -4439,17 +4439,18 @@ void ShutdownReaderLifetimeSchedules() {
             "both retained readers safely copy the inactive actual Service with frozen bounds");
     if (old_first) {
       old.Reset();
-      Require(object_count == objects + 1 &&
+      Require(TestObjectCount() == objects + 1 &&
                   current->Copy(sizeof(inactive), version_v2, &inactive) == S_OK,
               "v2 remains usable after v1 release");
       current.Reset();
     } else {
       current.Reset();
-      Require(object_count == objects + 1 && old->Copy(220, 1, &legacy.value) == S_OK,
+      Require(TestObjectCount() == objects + 1 && old->Copy(220, 1, &legacy.value) == S_OK,
               "v1 remains usable after v2 release");
       old.Reset();
     }
-    Require(object_count == objects, "actual Service accounting drains only after the last reader");
+    Require(TestObjectCount() == objects,
+            "actual Service accounting drains only after the last reader");
   }
 }
 void ShutdownWindowSchedules() {
@@ -4657,8 +4658,8 @@ void DiagnosticLifetimeSchedules() {
     thread.join();
     Require(wrong_thread == RPC_E_WRONG_THREAD && output == diagnostics::SnapshotV2{},
             "wrong thread cannot read mutable service state");
-    ComPtr<Service> other;
-    other.Attach(new Service);
+    ComPtr<TestService> other;
+    other.Attach(new TestService);
     BOOL interest = TRUE;
     other->OnTestKeyDown(nullptr, 0, 0, &interest);
     Require(!interest && DiagnosticSnapshot(*other.Get()).first.cause == Cause::Inactive &&
@@ -5409,7 +5410,7 @@ void DiagnosticCodecSchedules() {
   Require(!Format(publication, text), "codec rejects hidden saturation");
 }
 
-diagnostics::SnapshotV2 LifecycleSnapshotOf(Service &service) {
+diagnostics::SnapshotV2 LifecycleSnapshotOf(TestService &service) {
   diagnostics::SnapshotV2 snapshot;
   Require(service.Copy(sizeof(snapshot), diagnostics::version_v2, &snapshot) == S_OK &&
               diagnostics::Valid(snapshot),
@@ -7236,8 +7237,8 @@ void Exclusions() {
   h.a.foreign = true;
   Require(!h.Key(L'g', false) && h.a.writes == 0 && h.a.reads == 0,
           "foreign composition excluded before text read");
-  ComPtr<Service> secure;
-  secure.Attach(new Service);
+  ComPtr<TestService> secure;
+  secure.Attach(new TestService);
   Require(secure->ActivateEx(&h.manager, 42, TF_TMAE_SECUREMODE) == E_ACCESSDENIED &&
               !secure->HandleEvent(&h.a, Text(L'g')) && h.a.reads == 0 && h.a.writes == 0,
           "secure activation cannot inspect or compose");
@@ -7564,7 +7565,7 @@ void OemCommandSequences() {
   }
 }
 void TeardownAndConstructorExceptions() {
-  long before_objects = object_count;
+  long before_objects = TestObjectCount();
   {
     Harness h;
     int references = h.a.references;
@@ -7575,7 +7576,7 @@ void TeardownAndConstructorExceptions() {
     Require(!h.Key(L'g', false) && h.a.references == references,
             "constructor QI exception releases context capture");
   }
-  Require(object_count == before_objects,
+  Require(TestObjectCount() == before_objects,
           "constructor exception cannot leak owner or module reference");
   for (const char *boundary : {"UnadviseKeySink", "UnadviseThreadSink", "UnadviseProfileSink"}) {
     for (bool throwing : {false, true}) {

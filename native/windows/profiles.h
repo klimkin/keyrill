@@ -25,6 +25,5 @@ inline constexpr Profile profiles[] = {
      L"Keyrill proof RU",
      KR_RU}};
 inline constexpr wchar_t fixture_class[] = L"KeyrillProofEditor";
-bool ProofWindow(HWND window);
 HKL ProfileLayout(const TF_INPUTPROCESSORPROFILE &profile, uint32_t mode, HKL substitute);
 } // namespace keyrill

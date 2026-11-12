@@ -68,13 +68,13 @@ template <class Predicate> void RuntimeWait(Predicate predicate, const char *why
   } while (GetTickCount64() < deadline);
   Require(false, why);
 }
-runtime::Snapshot RuntimeSnapshot(Service &service) {
+runtime::Snapshot RuntimeSnapshot(TestService &service) {
   runtime::Snapshot value;
   Require(service.Copy(sizeof(value), runtime::version, &value) == S_OK,
           "content-free runtime snapshot");
   return value;
 }
-runtime::Snapshot ReadyRuntime(Service &service) {
+runtime::Snapshot ReadyRuntime(TestService &service) {
   runtime::Snapshot value;
   RuntimeWait(
       [&] {
@@ -109,7 +109,7 @@ void RuntimeCodecSchedules() {
             "malformed readiness never publishes a partial snapshot");
   }
 }
-thread_local Service *runtime_creating = nullptr;
+thread_local TestService *runtime_creating = nullptr;
 thread_local HRESULT runtime_reentry_result = E_PENDING;
 thread_local Manager *runtime_reentry_manager = nullptr;
 thread_local bool runtime_destroying = false;
@@ -130,8 +130,7 @@ LRESULT CALLBACK RuntimeCreationHook(int code, WPARAM w, LPARAM l) {
 void RuntimeWindowReentrySchedules() {
   Harness h;
   Require(h.service->Deactivate() == S_OK, "stop initial runtime before creation regression");
-  RuntimeWait([] { return InterlockedCompareExchange(&vocabulary::worker_count, 0, 0) == 0; },
-              "initial worker drains independently");
+  RuntimeWait([] { return TestWorkerCount() == 0; }, "initial worker drains independently");
   runtime_creating = h.service.Get();
   runtime_reentry_result = E_PENDING;
   HHOOK hook = SetWindowsHookExW(WH_CBT, RuntimeCreationHook, nullptr, GetCurrentThreadId());
@@ -142,8 +141,7 @@ void RuntimeWindowReentrySchedules() {
   runtime_creating = nullptr;
   WNDCLASSW remaining{};
   Require(FAILED(activated) && called && runtime_reentry_result == S_OK &&
-              !DiagnosticSnapshot(*h.service.Get()).active &&
-              InterlockedCompareExchange(&vocabulary::worker_count, 0, 0) == 0 &&
+              !DiagnosticSnapshot(*h.service.Get()).active && TestWorkerCount() == 0 &&
               !GetClassInfoW(GetModuleHandleW(nullptr), L"KeyrillSnapshotMaintenance", &remaining),
           "reentrant deactivation starts no late worker and retires its window class");
   runtime_creating = h.service.Get();
@@ -183,8 +181,7 @@ void RuntimeWindowReentrySchedules() {
   Require(h.service->Activate(&h.manager, 42) == S_OK, "fresh activation after teardown succeeds");
   ready_from_timer();
   Require(h.service->Deactivate() == S_OK, "retire fresh activation");
-  RuntimeWait([] { return InterlockedCompareExchange(&vocabulary::worker_count, 0, 0) == 0; },
-              "all lifecycle workers drain");
+  RuntimeWait([] { return TestWorkerCount() == 0; }, "all lifecycle workers drain");
   Require(!GetClassInfoW(GetModuleHandleW(nullptr), L"KeyrillSnapshotMaintenance", &remaining),
           "creation and destruction schedules leave no window class");
 }
@@ -953,8 +950,7 @@ void RuntimeDllNativeSchedules(const wchar_t *path) {
                        NativeSchedule::Failure::None}) {
     HMODULE dll = LoadLibraryW(path);
     Require(dll != nullptr, "load actual DLL for deterministic native boundary schedules");
-    auto set_hooks = reinterpret_cast<void(WINAPI *)(vocabulary::Hooks)>(
-        GetProcAddress(dll, "KeyrillTestWorkerHooks"));
+    auto set_hooks = GetProcAddress(dll, "KeyrillTestWorkerHooks");
     if (!set_hooks) {
       FreeLibrary(dll);
       return;
@@ -966,7 +962,7 @@ void RuntimeDllNativeSchedules(const wchar_t *path) {
     schedule.failure = failure;
     if (failure == NativeSchedule::Failure::None)
       schedule.io = NativeSchedule::Io::Drain;
-    set_hooks(schedule.Hooks());
+    Require(vocabulary::SetTestHooks(dll, schedule.Hooks()), "Rust worker native hooks accepted");
     Document document;
     Manager manager;
     manager.top = &document;
@@ -1041,11 +1037,11 @@ void RuntimeDllSchedules(const wchar_t *path) {
     auto get = reinterpret_cast<HRESULT(WINAPI *)(REFCLSID, REFIID, void **)>(
         GetProcAddress(dll, "DllGetClassObject"));
     auto unload = reinterpret_cast<HRESULT(WINAPI *)()>(GetProcAddress(dll, "DllCanUnloadNow"));
-    auto set_hooks = reinterpret_cast<void(WINAPI *)(vocabulary::Hooks)>(
-        GetProcAddress(dll, "KeyrillTestWorkerHooks"));
+    auto set_hooks = GetProcAddress(dll, "KeyrillTestWorkerHooks");
     DllBarrier barrier{boundary};
     if (set_hooks)
-      set_hooks({DllBarrier::Hook, &barrier});
+      Require(vocabulary::SetTestHooks(dll, {DllBarrier::Hook, &barrier}),
+              "Rust worker barrier hook accepted");
     Document document;
     Manager manager;
     manager.top = &document;

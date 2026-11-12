@@ -1,4 +1,0 @@
-LIBRARY KeyrillTsf
-EXPORTS
-  DllGetClassObject PRIVATE
-  DllCanUnloadNow PRIVATE

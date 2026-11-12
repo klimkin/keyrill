@@ -36,14 +36,9 @@ struct ExplicitSource {
   Path path;
 };
 using Source = std::variant<DefaultSource, ExplicitSource>;
-struct Off {};
-struct Fixture {};
 struct Model {
   std::array<Source, 2> sources;
 };
-using Config = std::variant<Off, Fixture, Model>;
-std::optional<Config> CaptureConfig();
-uint32_t Policy(const Config &) noexcept;
 
 using Dictionary = std::shared_ptr<kr_dictionary>;
 struct SourceReady {
@@ -92,10 +87,6 @@ struct Hooks {
       call(context, at, handle, index);
   }
 };
-extern long worker_count;
-#ifdef KEYRILL_RUNTIME_TEST
-extern Hooks test_hooks;
-#endif
 struct State;
 class Worker {
 public:

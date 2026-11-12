@@ -10,26 +10,25 @@ add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WIN
 add_compile_options(/W4 /WX /EHsc /utf-8)
 get_filename_component(ROOT "../.." ABSOLUTE)
 include_directories("${ROOT}/include")
-file(GLOB NATIVE_IDENTITY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
-list(APPEND NATIVE_IDENTITY_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
-list(SORT NATIVE_IDENTITY_SOURCES)
-set(BUILD_INPUT "")
-foreach(source IN LISTS NATIVE_IDENTITY_SOURCES)
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
-  file(READ "${source}" content)
-  string(REPLACE "\r\n" "\n" content "${content}")
-  string(SHA256 digest "${content}")
-  get_filename_component(name "${source}" NAME)
-  string(APPEND BUILD_INPUT "${name}:${digest}\n")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(FINGERPRINT "${CMAKE_CURRENT_SOURCE_DIR}/build_fingerprint.py")
+file(GLOB_RECURSE FINGERPRINT_MEMBERS CONFIGURE_DEPENDS
+  "${ROOT}/include/*.h" "${ROOT}/crates/*.rs" "${ROOT}/crates/*.toml"
+  "${ROOT}/crates/*.c" "${ROOT}/crates/*.h" "${ROOT}/crates/*.json" "${ROOT}/crates/*.jsonl"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.rs" "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.toml" "${CMAKE_CURRENT_SOURCE_DIR}/*.def"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.ps1" "${CMAKE_CURRENT_SOURCE_DIR}/*.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/*.manifest" "${CMAKE_CURRENT_SOURCE_DIR}/*.rc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${FINGERPRINT}" --list
+  OUTPUT_VARIABLE IDENTITY_PATHS OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+string(REPLACE "\n" ";" IDENTITY_PATHS "${IDENTITY_PATHS}")
+foreach(source IN LISTS IDENTITY_PATHS)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ROOT}/${source}")
 endforeach()
-string(SHA256 BUILD_DIGEST "${BUILD_INPUT}")
-set(BUILD_WORDS "")
-foreach(index RANGE 0 7)
-  math(EXPR offset "${index} * 8")
-  string(SUBSTRING "${BUILD_DIGEST}" ${offset} 8 word)
-  string(APPEND BUILD_WORDS "0x${word}u,")
-endforeach()
-file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/host_build.h" CONTENT "#pragma once\n#include <array>\n#include <cstdint>\nnamespace keyrill::probe { inline constexpr std::array<uint32_t, 8> build_digest = {${BUILD_WORDS}}; }\n" @ONLY)
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${FINGERPRINT}"
+  --header "${CMAKE_CURRENT_BINARY_DIR}/host_build.h" COMMAND_ERROR_IS_FATAL ANY)
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 add_compile_options(/volatile:ms)
 execute_process(COMMAND cargo rustc --locked --offline --release -p keyrill-ffi -- --print native-static-libs
@@ -44,19 +43,29 @@ if(NOT RUST_LIBRARIES MATCHES "/defaultlib:msvcrt")
 endif()
 separate_arguments(RUST_LIBRARIES WINDOWS_COMMAND "${RUST_LIBRARIES}")
 list(FILTER RUST_LIBRARIES EXCLUDE REGEX "^/")
-add_library(keyrill_tsf_core STATIC service.cpp native_field.cpp vocabulary.cpp keys.cpp guids.cpp host_observation.cpp host_probe.cpp)
-target_link_libraries(keyrill_tsf_core PUBLIC "${ROOT}/target/release/keyrill_ffi.lib"
-  ${RUST_LIBRARIES} ole32 oleaut32 uuid user32 advapi32)
-add_library(KeyrillTsf SHARED dll.cpp exports.def)
-target_link_libraries(KeyrillTsf PRIVATE keyrill_tsf_core)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/exports.def" TEST_EXPORTS)
-string(REGEX REPLACE "LIBRARY[^\n]*\n" "" TEST_EXPORTS "${TEST_EXPORTS}")
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/test-exports.def" "${TEST_EXPORTS}")
-add_library(KeyrillTsfTest SHARED dll.cpp service.cpp native_field.cpp vocabulary.cpp keys.cpp guids.cpp host_observation.cpp host_probe.cpp runtime_test_exports.cpp "${CMAKE_CURRENT_BINARY_DIR}/test-exports.def")
-target_compile_definitions(KeyrillTsfTest PRIVATE KEYRILL_RUNTIME_TEST)
-target_link_libraries(KeyrillTsfTest PRIVATE "${ROOT}/target/release/keyrill_ffi.lib" ${RUST_LIBRARIES} ole32 oleaut32 uuid user32 advapi32)
-add_executable(KeyrillRegister register.cpp)
-target_link_libraries(KeyrillRegister PRIVATE ole32 oleaut32 advapi32 uuid)
+set(CARGO_PRODUCTION "${CMAKE_BINARY_DIR}/cargo-production")
+set(CARGO_TEST "${CMAKE_BINARY_DIR}/cargo-test-api")
+set(PACKAGED_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
+add_custom_target(keyrill_windows_artifacts ALL
+  COMMAND ${CMAKE_COMMAND} -E env "PYTHON=${Python3_EXECUTABLE}" "KEYRILL_ASAN=${KEYRILL_ASAN}"
+    cargo build --locked --offline --release -p keyrill-windows --target-dir "${CARGO_PRODUCTION}"
+  COMMAND ${CMAKE_COMMAND} -E env "PYTHON=${Python3_EXECUTABLE}" "KEYRILL_ASAN=${KEYRILL_ASAN}"
+    cargo build --locked --offline --release -p keyrill-windows --features test-api --target-dir "${CARGO_TEST}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PACKAGED_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CARGO_PRODUCTION}/release/keyrill_windows.dll" "${PACKAGED_DIR}/KeyrillTsf.dll"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CARGO_TEST}/release/keyrill_windows.dll" "${PACKAGED_DIR}/KeyrillTsfTest.dll"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CARGO_PRODUCTION}/release/KeyrillRegister.exe" "${PACKAGED_DIR}/KeyrillRegister.exe"
+  WORKING_DIRECTORY "${ROOT}" VERBATIM)
+foreach(artifact KeyrillTsf KeyrillTsfTest)
+  add_library(${artifact} SHARED IMPORTED GLOBAL)
+  set_target_properties(${artifact} PROPERTIES IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/Release/${artifact}.dll")
+  foreach(configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+    string(TOUPPER "${configuration}" configuration_upper)
+    set_target_properties(${artifact} PROPERTIES
+      IMPORTED_LOCATION_${configuration_upper} "${CMAKE_BINARY_DIR}/${configuration}/${artifact}.dll")
+  endforeach()
+  add_dependencies(${artifact} keyrill_windows_artifacts)
+endforeach()
 add_executable(keyrill_registration_tests register_tests.cpp)
 target_link_libraries(keyrill_registration_tests PRIVATE ole32 oleaut32 advapi32 uuid)
 add_executable(KeyrillProofEditor WIN32 editor.cpp proof_activation.manifest)
@@ -75,10 +84,15 @@ target_link_libraries(keyrill_host_inspect_options_tests PRIVATE ole32 oleaut32 
 add_executable(keyrill_host_field_tests host_field_tests.cpp host_field.cpp)
 target_link_libraries(keyrill_host_field_tests PRIVATE ole32 oleaut32 user32 uuid)
 add_executable(keyrill_routing_tests routing_tests.cpp)
-add_executable(keyrill_windows_tests tests.cpp)
+add_executable(keyrill_windows_tests tests.cpp test_service.cpp test_keys.cpp test_native_field.cpp
+  test_vocabulary.cpp guids.cpp host_observation.cpp host_probe.cpp)
 set_target_properties(keyrill_windows_tests PROPERTIES OUTPUT_NAME KeyrillProofEditor
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-target_link_libraries(keyrill_windows_tests PRIVATE keyrill_tsf_core)
+target_link_libraries(keyrill_windows_tests PRIVATE "${ROOT}/target/release/keyrill_ffi.lib"
+  ${RUST_LIBRARIES} ole32 oleaut32 uuid user32 advapi32)
+target_compile_definitions(keyrill_windows_tests PRIVATE KEYRILL_TEST_ARTIFACT
+  "KEYRILL_TEST_DLL_LOCATION=L\"$<TARGET_FILE:KeyrillTsfTest>\"")
+add_dependencies(keyrill_windows_tests keyrill_windows_artifacts)
 add_executable(keyrill_dll_smoke dll_smoke.cpp)
 target_link_libraries(keyrill_dll_smoke PRIVATE ole32 uuid)
 add_executable(keyrill_activation_smoke activation_smoke.cpp proof_activation.manifest)
@@ -94,9 +108,11 @@ add_test(NAME host_diagnostic_mapping_schedules COMMAND keyrill_host_probe_tests
 add_test(NAME host_thread_startup_schedules COMMAND keyrill_host_threads_tests)
 add_test(NAME host_inspector_argument_schedules COMMAND keyrill_host_inspect_options_tests)
 add_test(NAME host_field_evidence_schedules COMMAND keyrill_host_field_tests)
-add_test(NAME registration_preflight COMMAND keyrill_registration_tests)
+add_test(NAME registration_preflight COMMAND keyrill_registration_tests $<TARGET_FILE:KeyrillTsfTest>)
 add_test(NAME controlled_com_schedules COMMAND keyrill_windows_tests)
 set_tests_properties(controlled_com_schedules PROPERTIES TIMEOUT 90)
+add_test(NAME worker_filesystem_schedules COMMAND keyrill_windows_tests --runtime-files)
+set_tests_properties(worker_filesystem_schedules PROPERTIES TIMEOUT 120)
 add_test(NAME worker_actual_dll COMMAND keyrill_windows_tests --runtime-dll $<TARGET_FILE:KeyrillTsfTest>)
 add_test(NAME worker_production_dll COMMAND keyrill_windows_tests --runtime-dll $<TARGET_FILE:KeyrillTsf>)
 set_tests_properties(worker_actual_dll worker_production_dll PROPERTIES TIMEOUT 45)
@@ -108,8 +124,14 @@ add_executable(keyrill_abi_smoke "${ROOT}/crates/keyrill-ffi/tests/abi_smoke.c")
 set_target_properties(keyrill_abi_smoke PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_link_libraries(keyrill_abi_smoke PRIVATE "${ROOT}/target/release/keyrill_ffi.lib" ${RUST_LIBRARIES})
 add_test(NAME c11_abi_smoke COMMAND keyrill_abi_smoke)
+add_subdirectory(rust/tests)
+add_dependencies(keyrill_rust_boundary_tests keyrill_windows_artifacts)
+foreach(schedule basic query-before query-after request-before request-after add-before add-after release-before release-after)
+  add_test(NAME rust_com_boundary_${schedule}
+    COMMAND keyrill_rust_boundary_tests $<TARGET_FILE:KeyrillTsfTest> ${schedule})
+endforeach()
 if(KEYRILL_ASAN)
-  foreach(target keyrill_tsf_core KeyrillTsf KeyrillTsfTest keyrill_windows_tests keyrill_dll_smoke keyrill_activation_smoke keyrill_registration_tests keyrill_routing_tests keyrill_host_probe_tests keyrill_host_threads_tests keyrill_host_inspect_options_tests keyrill_host_field_tests)
+  foreach(target keyrill_windows_tests keyrill_dll_smoke keyrill_activation_smoke keyrill_registration_tests keyrill_routing_tests keyrill_host_probe_tests keyrill_host_threads_tests keyrill_host_inspect_options_tests keyrill_host_field_tests keyrill_rust_boundary_tests)
     target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
     target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
   endforeach()
