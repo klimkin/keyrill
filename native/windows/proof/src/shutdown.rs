@@ -310,9 +310,11 @@ impl Probe {
                 let verdict = if deactivation != S_OK {
                     Verdict::DeactivationFailed
                 } else {
-                    endpoint
-                        .copy()
-                        .map_or(Verdict::InvalidEvidence, |after| evaluate(&before, &after))
+                    match endpoint.copy() {
+                        Ok(after) => evaluate(&before, &after),
+                        Err(error) if error == E_PENDING => Verdict::Busy,
+                        Err(_) => Verdict::InvalidEvidence,
+                    }
                 };
                 drop(endpoint);
                 verdict
