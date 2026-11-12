@@ -117,6 +117,23 @@ TestService::~TestService() {
     TransportFailure("release service");
 }
 ULONG TestService::AddRef() { return ++references_; }
+host::Metadata TestService::ObserveMetadata(ITfContext *context, ITfThreadMgr *manager,
+                                            TfClientId client, const uint32_t *current) {
+  auto observe = reinterpret_cast<KrTestMetadata>(TestExport("KeyrillTestMetadata"));
+  KrWindowsMetadata output{};
+  if (observe(handle_, context, manager, client, current, &output) != S_OK)
+    TransportFailure("observe metadata");
+  return {static_cast<host::Reason>(output.reason),
+          output.result,
+          static_cast<host::Focus>(output.focus),
+          static_cast<host::Scope>(output.scope),
+          output.request,
+          output.session,
+          output.entered,
+          output.completed,
+          output.selection,
+          output.acp};
+}
 ULONG TestService::Release() {
   ULONG remaining = --references_;
   if (!remaining)

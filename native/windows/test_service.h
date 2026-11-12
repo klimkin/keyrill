@@ -46,6 +46,7 @@ public:
   bool HandleEvent(ITfContext *, const kr_event &);
   bool stopped() const;
   void Maintain() noexcept;
+  host::Metadata ObserveMetadata(ITfContext *, ITfThreadMgr *, TfClientId, const uint32_t *);
 
 private:
   ~TestService();

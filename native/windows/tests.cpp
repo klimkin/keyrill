@@ -4745,12 +4745,11 @@ void DiagnosticLifetimeSchedules() {
 }
 void HostMetadataSchedules() {
   using host::Reason;
-  auto run = [](Document &document, Manager &manager, bool &alive) {
+  auto run = [](Document &document, Manager &manager, uint32_t &alive) {
     document.expected_request_flags = TF_ES_SYNC | TF_ES_READ;
-    return host::Observe(
-        &document, &manager, 42,
-        {static_cast<ITfContext *>(&document), &alive, 1,
-         [](void *state, uint64_t) noexcept { return *static_cast<bool *>(state); }});
+    ComPtr<TestService> service;
+    service.Attach(new TestService);
+    return service->ObserveMetadata(&document, &manager, 42, &alive);
   };
   auto unchanged = [](Document &document) {
     Require(document.reads == 0 && document.writes == 0 && document.starts == 0 &&
@@ -4763,7 +4762,7 @@ void HostMetadataSchedules() {
     Document document;
     Manager manager;
     manager.top = &document;
-    bool alive = true;
+    uint32_t alive = 1;
     document.window = GetDlgItem(controlled_root, 101);
     SetFocus(document.window);
     Reason expected = Reason::ProofOnly;
@@ -4852,7 +4851,7 @@ void HostMetadataSchedules() {
       Document document;
       Manager manager;
       manager.top = &document;
-      bool alive = true;
+      uint32_t alive = 1;
       document.window = GetDlgItem(controlled_root, 101);
       SetFocus(document.window);
       if (compartment == 2) {
@@ -4904,7 +4903,7 @@ void HostMetadataSchedules() {
     Document document;
     Manager manager;
     manager.top = &document;
-    bool alive = true;
+    uint32_t alive = 1;
     document.window = GetDlgItem(controlled_root, 101);
     document.hook = [&](const char *name) {
       if (strcmp(name, query) == 0)
@@ -4919,7 +4918,7 @@ void HostMetadataSchedules() {
     Document document;
     Manager manager;
     manager.top = &document;
-    bool alive = true;
+    uint32_t alive = 1;
     document.retain_callback = true;
     document.window = GetDlgItem(controlled_root, 101);
     document.hook = [&](const char *name) {
@@ -4933,6 +4932,29 @@ void HostMetadataSchedules() {
     Require(observed.reason == Reason::ProofOnly,
             "reentrant duplicate cannot overwrite observation");
     document.retained_request.Reset();
+    unchanged(document);
+  }
+  {
+    Document document;
+    Manager manager;
+    manager.top = &document;
+    document.window = GetDlgItem(controlled_root, 101);
+    SetFocus(document.window);
+    document.callback = false;
+    auto *alive = static_cast<uint32_t *>(
+        VirtualAlloc(nullptr, sizeof(uint32_t), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    Require(alive != nullptr, "metadata lifetime flag has private writable storage");
+    *alive = 1;
+    Require(run(document, manager, *alive).reason == Reason::Absent && document.retained_request,
+            "absent metadata callback expires before returning to its caller");
+    DWORD previous = 0;
+    Require(VirtualProtect(alive, sizeof(uint32_t), PAGE_NOACCESS, &previous),
+            "returned metadata lifetime flag becomes inaccessible");
+    const auto trace = document.trace;
+    Require(document.retained_request->DoEditSession(123) == E_FAIL && document.trace == trace,
+            "late metadata callback never reads the expired caller flag or queries native state");
+    document.retained_request.Reset();
+    Require(VirtualFree(alive, 0, MEM_RELEASE), "metadata lifetime flag storage retires once");
     unchanged(document);
   }
 }
@@ -7738,7 +7760,8 @@ int wmain(int argc, wchar_t **argv) {
   }
   const bool activation_only = argc == 2 && wcscmp(argv[1], L"--activation") == 0;
   const bool composition_only = argc == 2 && wcscmp(argv[1], L"--composition") == 0;
-  Require(argc == 1 || activation_only || composition_only, "known test mode");
+  const bool metadata_only = argc == 2 && wcscmp(argv[1], L"--metadata") == 0;
+  Require(argc == 1 || activation_only || composition_only || metadata_only, "known test mode");
   RuntimeEnvironment fixture_policy(L"KEYRILL_WINDOWS_POLICY", nullptr);
   RuntimeEnvironment fixture_en(L"KEYRILL_WINDOWS_EN_DICTIONARY", nullptr);
   RuntimeEnvironment fixture_ru(L"KEYRILL_WINDOWS_RU_DICTIONARY", nullptr);
@@ -7766,6 +7789,13 @@ int wmain(int argc, wchar_t **argv) {
     DestroyWindow(controlled_root);
     CoUninitialize();
     puts("Controlled owned composition schedules passed.");
+    return 0;
+  }
+  if (metadata_only) {
+    HostMetadataSchedules();
+    DestroyWindow(controlled_root);
+    CoUninitialize();
+    puts("Actual Rust metadata schedules passed.");
     return 0;
   }
   puts("RUN dedicated substitute layout regression");
