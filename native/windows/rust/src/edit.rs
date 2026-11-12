@@ -101,6 +101,26 @@ impl Frame {
         diagnose: bool,
         decision: Option<Rc<Cell<bool>>>,
     ) -> Rc<Self> {
+        let witnesses = match &work {
+            Work::Editing(editing) => {
+                let mut witnesses = vec![
+                    editing.context.release_witness(),
+                    editing.authority.manager.release_witness(),
+                ];
+                witnesses.extend(editing.identity.as_ref().map(Lease::release_witness));
+                if let Some(owned) = &editing.authority.owned {
+                    witnesses.extend([
+                        owned._context.release_witness(),
+                        owned.context_id.release_witness(),
+                        owned.composition.release_witness(),
+                        owned.composition_id.release_witness(),
+                    ]);
+                }
+                witnesses
+            }
+            #[cfg(feature = "test-api")]
+            Work::Probe => Vec::new(),
+        };
         Rc::new(Self {
             service,
             work,
@@ -111,7 +131,7 @@ impl Frame {
             stage: Cell::new(Stage::Session),
             field: Cell::new(None),
             ownership: RefCell::new(ownership),
-            witnesses: RefCell::new(Vec::new()),
+            witnesses: RefCell::new(witnesses),
             release_fault: Cell::new(false),
             eaten: Cell::new(false),
             completion: Cell::new(Completion::Refused),
@@ -227,8 +247,9 @@ impl Frame {
             return None;
         }
         let result = frame.alive().then_some(field);
+        let retirement = frame.witnesses.borrow().clone();
         drop(frame);
-        result
+        result.filter(|_| !retirement.iter().any(ReleaseWitness::failed))
     }
 
     fn editing_work(&self) -> Option<&Editing> {

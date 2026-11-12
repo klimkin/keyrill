@@ -178,6 +178,7 @@ struct Owner {
     release_failed: Rc<Cell<bool>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ReleaseWitness(Rc<Cell<bool>>);
 
 impl ReleaseWitness {
