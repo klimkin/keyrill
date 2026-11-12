@@ -183,6 +183,29 @@ impl OwnServiceLease {
 }
 
 impl ServiceCom_Impl {
+    fn release_key(
+        &self,
+        context: *mut c_void,
+        key: WPARAM,
+        flags: LPARAM,
+        eaten: *mut BOOL,
+        delivery: diagnostics::ReleaseDelivery,
+    ) -> HRESULT {
+        if eaten.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: each SDK key-release method supplies one writable BOOL output.
+        unsafe { eaten.write(BOOL(0)) };
+        if !self.service.owner_thread() {
+            return S_OK;
+        }
+        // SAFETY: the SDK retains context/output throughout this synchronous callback.
+        unsafe {
+            self.service
+                .release_alt(self.owner_lease(), context, key.0, flags.0, eaten, delivery)
+        }
+    }
+
     fn owner_lease(&self) -> OwnServiceLease {
         OwnServiceLease(Rc::new(OwnInterfaces {
             processor: self.as_interface::<ITfTextInputProcessorEx>().to_owned(),
@@ -308,18 +331,10 @@ impl ITfCompositionSink_Impl for ServiceCom_Impl {
     }
 }
 
-fn key(service: &Service, eaten: *mut BOOL, release: bool) -> HRESULT {
-    if eaten.is_null() {
-        return E_POINTER;
-    }
-    // SAFETY: each raw COM method requires one writable BOOL when this pointer is nonnull.
-    unsafe { eaten.write(BOOL(0)) };
-    service.key(release)
-}
-
 impl RawKeyEventSink_Impl for ServiceCom_Impl {
     unsafe fn OnSetFocus(&self, foreground: BOOL) -> HRESULT {
         self.service.checked(|| {
+            self.service.revoke_release();
             if !foreground.as_bool() {
                 self.service
                     .invalidate_for_lifecycle(diagnostics::LifecycleCause::ForegroundLost);
@@ -349,12 +364,18 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
 
     unsafe fn OnTestKeyUp(
         &self,
-        _: *mut c_void,
-        _: WPARAM,
-        _: LPARAM,
+        context: *mut c_void,
+        key: WPARAM,
+        flags: LPARAM,
         eaten: *mut BOOL,
     ) -> HRESULT {
-        key(&self.service, eaten, true)
+        self.release_key(
+            context,
+            key,
+            flags,
+            eaten,
+            diagnostics::ReleaseDelivery::Test,
+        )
     }
 
     unsafe fn OnKeyDown(
@@ -379,8 +400,20 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
         }
     }
 
-    unsafe fn OnKeyUp(&self, _: *mut c_void, _: WPARAM, _: LPARAM, eaten: *mut BOOL) -> HRESULT {
-        key(&self.service, eaten, true)
+    unsafe fn OnKeyUp(
+        &self,
+        context: *mut c_void,
+        key: WPARAM,
+        flags: LPARAM,
+        eaten: *mut BOOL,
+    ) -> HRESULT {
+        self.release_key(
+            context,
+            key,
+            flags,
+            eaten,
+            diagnostics::ReleaseDelivery::Actual,
+        )
     }
 
     unsafe fn OnPreservedKey(

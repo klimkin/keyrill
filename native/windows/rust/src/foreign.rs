@@ -31,6 +31,45 @@ impl Call {
     }
 }
 
+pub(crate) fn keyboard_state(output: &mut [u8; 256]) -> bool {
+    windows_core::link!("user32.dll" "system" fn GetKeyboardState(output: *mut u8) -> windows_core::BOOL);
+    // The pinned projection derives its writable pointer from as_ptr(), which loses mutable
+    // provenance. Keep this output mutable through the actual Win32 call.
+    // SAFETY: output is a complete writable keyboard snapshot retained through the call.
+    unsafe { GetKeyboardState(output.as_mut_ptr()).as_bool() }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::keyboard_state;
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetKeyboardState;
+
+    struct Restore([u8; 256]);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: this restores only the test thread's complete original keyboard snapshot.
+            let _ = unsafe { SetKeyboardState(&self.0) };
+        }
+    }
+
+    #[test]
+    fn keyboard_output_retains_mutable_provenance() {
+        let mut original = [0; 256];
+        assert!(keyboard_state(&mut original));
+        let restore = Restore(original);
+        let mut pressed = restore.0;
+        pressed[0xa4] = 0x80;
+        pressed[0xa5] = 0;
+        // SAFETY: the complete input snapshot changes only this test thread's key-state table.
+        unsafe { SetKeyboardState(&pressed).unwrap() };
+        let mut observed = [0; 256];
+        assert!(keyboard_state(&mut observed));
+        assert_eq!(observed[0xa4], 0x80);
+        assert!(observed[0xa4] & 0x80 != 0);
+        assert_eq!(observed[0xa5] & 0x80, 0);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum InterfaceError {
     Native(Call),

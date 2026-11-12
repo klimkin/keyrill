@@ -77,6 +77,9 @@ struct State {
     observations: diagnostics::ObservationJournal,
     publisher: Option<Rc<crate::observation::Publisher>>,
     metadata: crate::observation::Metadata,
+    alt_cycle: Option<Rc<AltCycle>>,
+    release_permission: Option<Rc<AltCycle>>,
+    release_decision: Option<Rc<Cell<bool>>>,
     worker: Option<vocabulary::Worker>,
     maintenance_window: Option<crate::runtime_window::Window>,
     pending_ready: Option<Ready>,
@@ -270,6 +273,47 @@ struct AdmittedKey {
     mode: u32,
     keyboard: [u8; 256],
     layout: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
+}
+
+struct AltCycle {
+    ownership: Rc<OwnedIdentity>,
+    guard: Guard,
+    mode: u32,
+    context: usize,
+    composition: usize,
+    field: crate::field::Identity,
+}
+
+struct ReleaseDecision<'a> {
+    service: &'a Service,
+    parent: Option<Rc<Cell<bool>>>,
+    cancelled: Rc<Cell<bool>>,
+}
+
+impl<'a> ReleaseDecision<'a> {
+    fn new(service: &'a Service) -> Self {
+        let parent = service.state.borrow().release_decision.clone();
+        if parent.is_some() {
+            service.revoke_release();
+        }
+        let cancelled = Rc::new(Cell::new(false));
+        service.state.borrow_mut().release_decision = Some(Rc::clone(&cancelled));
+        Self {
+            service,
+            parent,
+            cancelled,
+        }
+    }
+
+    fn current(&self) -> bool {
+        self.parent.is_none() && !self.cancelled.get()
+    }
+}
+
+impl Drop for ReleaseDecision<'_> {
+    fn drop(&mut self) {
+        self.service.state.borrow_mut().release_decision = self.parent.take();
+    }
 }
 
 pub(crate) struct Service {
@@ -510,6 +554,7 @@ impl Service {
     }
 
     pub(crate) fn invalidate(&self) {
+        self.revoke_release();
         let mut state = self.state.borrow_mut();
         state.metadata = crate::observation::Metadata::default();
         if let Some(generation) = state.generation.checked_add(1) {
@@ -562,7 +607,14 @@ impl Service {
             let Some(owned) = owned else {
                 return S_OK;
             };
-            let generation = self.state.borrow().generation;
+            let guard = {
+                let state = self.state.borrow();
+                Guard {
+                    epoch: state.epoch,
+                    generation: state.generation,
+                }
+            };
+            let generation = guard.generation;
             // SAFETY: TSF retains its incoming composition throughout this callback.
             let identity = unsafe { foreign::query::<IUnknown>(composition) };
             let identity = match identity {
@@ -580,7 +632,9 @@ impl Service {
                         },
                     );
                     if exception {
-                        self.invalidate_word(true);
+                        if self.current_owned(guard, Some(&owned.identity)) {
+                            self.invalidate_if(guard, true);
+                        }
                         return E_FAIL;
                     }
                     return S_OK;
@@ -1012,13 +1066,282 @@ impl Service {
         })
     }
 
-    pub(crate) fn key(&self, release: bool) -> HRESULT {
-        if release && !self.owner_thread() {
+    pub(crate) fn revoke_release(&self) {
+        let mut state = self.state.borrow_mut();
+        if let Some(decision) = &state.release_decision {
+            decision.set(true);
+        }
+        state.alt_cycle = None;
+        state.release_permission = None;
+    }
+
+    pub(crate) fn revoke_release_if(&self, guard: Guard) {
+        if self.state.borrow().epoch == guard.epoch {
+            self.revoke_release();
+        }
+    }
+
+    fn same_cycle(&self, cycle: &Rc<AltCycle>) -> bool {
+        let state = self.state.borrow();
+        state
+            .alt_cycle
+            .as_ref()
+            .is_some_and(|current| Rc::ptr_eq(current, cycle))
+            && self.state_current(&state, cycle.guard)
+            && state.mode == cycle.mode
+            && state.owned.as_ref().is_some_and(|owned| {
+                Rc::ptr_eq(&owned.identity, &cycle.ownership)
+                    && owned.context_id.address() == cycle.context
+                    && owned.composition_id.address() == cycle.composition
+            })
+    }
+
+    unsafe fn release_authority(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        ownership: &Rc<OwnedIdentity>,
+        guard: Guard,
+        mode: u32,
+        decision: &ReleaseDecision<'_>,
+    ) -> Option<crate::field::Identity> {
+        if context.is_null() || !decision.current() || !self.current_owned(guard, Some(ownership)) {
+            return None;
+        }
+        let authority = self.capture_authority()?;
+        let profiles = self.state.borrow().resources.as_ref()?.profiles.clone()?;
+        let (call, profile) = tsf::active_profile(&profiles);
+        let exact = call.exact()
+            && decision.current()
+            && self.current_owned(guard, Some(ownership))
+            && crate::keys::active_profile(&profile, mode);
+        let witness = profiles.release_witness();
+        drop(profiles);
+        if !exact
+            || witness.failed()
+            || !decision.current()
+            || !self.current_owned(guard, Some(ownership))
+        {
+            return None;
+        }
+        // SAFETY: the native key callback retains context through this synchronous, read-only proof.
+        let field = unsafe {
+            crate::edit::Frame::release_field(
+                Rc::clone(self),
+                owner,
+                context,
+                authority,
+                Rc::clone(&decision.cancelled),
+            )
+        };
+        if decision.current() && self.current_owned(guard, Some(ownership)) {
+            field
+        } else {
+            None
+        }
+    }
+
+    unsafe fn witness_alt(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        decision: &ReleaseDecision<'_>,
+    ) {
+        let mut state = self.state.borrow_mut();
+        let stamp = Self::observation_stamp(&state);
+        state.observations.observer(
+            diagnostics::ObserverObservation {
+                stage: diagnostics::ObserverStage::Arrival,
+            },
+            stamp,
+        );
+        drop(state);
+        let admitted = (|| {
+            let authority = self.capture_authority()?;
+            let owned = authority.owned.as_ref()?;
+            let (ownership, guard, mode, expected_context, composition) = (
+                Rc::clone(&owned.identity),
+                authority.guard,
+                self.state.borrow().mode,
+                owned.context_id.address(),
+                owned.composition_id.address(),
+            );
+            drop(authority);
+            if !decision.current() {
+                return None;
+            }
+            let mut keyboard = [0; 256];
+            // SAFETY: the complete 256-byte state is writable through the native snapshot call.
+            let keyboard_result = foreign::keyboard_state(&mut keyboard);
+            let left_alt = keyboard[0xa4] & 0x80 != 0;
+            let right_alt = keyboard[0xa5] & 0x80 != 0;
+            if !keyboard_result || !left_alt || right_alt {
+                return None;
+            }
+            // SAFETY: the SDK caller retains context through this observer callback.
+            let field = unsafe {
+                self.release_authority(owner, context, &ownership, guard, mode, decision)
+            }?;
+            Some(Rc::new(AltCycle {
+                ownership,
+                guard,
+                mode,
+                context: expected_context,
+                composition,
+                field,
+            }))
+        })();
+        let mut state = self.state.borrow_mut();
+        if decision.current() {
+            state.alt_cycle = admitted;
+        }
+        let stamp = Self::observation_stamp(&state);
+        let stage = if state.alt_cycle.is_some() {
+            diagnostics::ObserverStage::Admitted
+        } else {
+            diagnostics::ObserverStage::Refused
+        };
+        state
+            .observations
+            .observer(diagnostics::ObserverObservation { stage }, stamp);
+    }
+
+    unsafe fn dispatch_command(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        event: NativeEvent,
+        ticket: diagnostics::CommandTicket,
+        decision: &ReleaseDecision<'_>,
+    ) -> bool {
+        let cycle = self.state.borrow().alt_cycle.clone();
+        let witnessed = cycle.as_ref().is_some_and(|cycle| self.same_cycle(cycle));
+        let permission = self.state.borrow().release_permission.clone();
+        // SAFETY: the command's native callback retains context through this synchronous request.
+        let execution = unsafe { self.execute(owner, context, event) };
+        let reserved_permission = cycle.as_ref().is_some_and(|cycle| {
+            permission
+                .as_ref()
+                .is_some_and(|permission| Rc::ptr_eq(permission, cycle))
+        }) && permission.as_ref().is_some_and(|permission| {
+            self.state
+                .borrow()
+                .release_permission
+                .as_ref()
+                .is_some_and(|current| Rc::ptr_eq(current, permission))
+        });
+        if decision.current()
+            && cycle.as_ref().is_some_and(|cycle| self.same_cycle(cycle))
+            && (execution.completion == crate::edit::Completion::ManualMark
+                || (execution.completion == crate::edit::Completion::Reserved
+                    && reserved_permission))
+        {
+            self.state.borrow_mut().release_permission = cycle;
+        } else {
+            self.revoke_release();
+        }
+        self.command_complete(ticket, execution.completion, witnessed);
+        execution.eaten
+    }
+
+    fn observe_release(
+        &self,
+        delivery: diagnostics::ReleaseDelivery,
+        modifier: diagnostics::ReleaseModifier,
+        context: diagnostics::ReleaseContext,
+        consumed: bool,
+    ) {
+        let mut state = self.state.borrow_mut();
+        let stamp = Self::observation_stamp(&state);
+        state.observations.release(
+            diagnostics::ReleaseObservation {
+                delivery,
+                modifier,
+                context,
+                consumed,
+            },
+            stamp,
+        );
+    }
+
+    pub(crate) unsafe fn release_alt(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        key: usize,
+        flags: isize,
+        eaten: *mut windows_core::BOOL,
+        delivery: diagnostics::ReleaseDelivery,
+    ) -> HRESULT {
+        if !self.owner_thread() {
             return S_OK;
         }
         self.checked(|| {
-            #[cfg(feature = "test-api")]
-            self.inject_panic(1);
+            let Some(modifier) = diagnostics::classify_relevant_release(key, flags) else {
+                return S_OK;
+            };
+            let decision = ReleaseDecision::new(self);
+            if !matches!(
+                modifier,
+                diagnostics::ReleaseModifier::LeftAlt
+                    | diagnostics::ReleaseModifier::RightAlt
+                    | diagnostics::ReleaseModifier::AltUnresolved
+            ) {
+                self.observe_release(
+                    delivery,
+                    modifier,
+                    diagnostics::ReleaseContext::Unchecked,
+                    false,
+                );
+                return S_OK;
+            }
+            let cycle = self.state.borrow().alt_cycle.clone();
+            let mut accepted = false;
+            let mut context_match = diagnostics::ReleaseContext::Unchecked;
+            if modifier == diagnostics::ReleaseModifier::LeftAlt
+                && decision.current()
+                && let Some(cycle) = &cycle
+                && self.same_cycle(cycle)
+                && self
+                    .state
+                    .borrow()
+                    .release_permission
+                    .as_ref()
+                    .is_some_and(|permission| Rc::ptr_eq(permission, cycle))
+            {
+                context_match = diagnostics::ReleaseContext::Refused;
+                // SAFETY: the receiving SDK callback keeps context live through this proof.
+                let field = unsafe {
+                    self.release_authority(
+                        owner,
+                        context,
+                        &cycle.ownership,
+                        cycle.guard,
+                        cycle.mode,
+                        &decision,
+                    )
+                };
+                accepted = field == Some(cycle.field)
+                    && decision.current()
+                    && self.same_cycle(cycle)
+                    && self
+                        .state
+                        .borrow()
+                        .release_permission
+                        .as_ref()
+                        .is_some_and(|permission| Rc::ptr_eq(permission, cycle));
+                if accepted {
+                    context_match = diagnostics::ReleaseContext::Matched;
+                }
+            }
+            if delivery == diagnostics::ReleaseDelivery::Actual
+                || context_match == diagnostics::ReleaseContext::Refused
+            {
+                self.revoke_release();
+            }
+            self.observe_release(delivery, modifier, context_match, accepted);
+            // SAFETY: the raw boundary checked/defaulted this output and the callback owns it.
+            unsafe { eaten.write(windows_core::BOOL(accepted as i32)) };
             S_OK
         })
     }
@@ -1061,7 +1384,7 @@ impl Service {
         context: *mut c_void,
         acquired: Option<&mut diagnostics::ModifierKnowledge>,
     ) -> Result<AdmittedKey, HRESULT> {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, HKL};
+        use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
         let state = self.state.borrow();
         if state.busy || state.admitting_key {
             drop(state);
@@ -1085,7 +1408,7 @@ impl Service {
         let _admission = AdmissionCall(self);
         let mut keyboard = [0; 256];
         // SAFETY: keyboard is a complete writable 256-key snapshot.
-        if unsafe { GetKeyboardState(&mut keyboard) }.is_err() {
+        if !foreign::keyboard_state(&mut keyboard) {
             self.refuse(Stage::Keyboard, Cause::Predicate, S_OK);
             self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
             return Err(S_OK);
@@ -1220,11 +1543,7 @@ impl Service {
         if witnesses.iter().any(foreign::ReleaseWitness::failed) {
             self.refuse(Stage::Layout, Cause::Exception, S_OK);
             self.invalidate_if(guard, true);
-            return Err(S_OK);
-        }
-        if !self.current(guard) {
-            self.refuse(Stage::Layout, Cause::Stale, S_OK);
-            return Err(S_OK);
+            return Err(E_FAIL);
         }
         Ok(AdmittedKey {
             guard,
@@ -1245,16 +1564,22 @@ impl Service {
         self.checked(|| {
             #[cfg(feature = "test-api")]
             self.inject_panic(1);
+            let decision = ReleaseDecision::new(self);
             self.count(Counter::KeyEntered);
             let admitted = match self.admit_key(context, None) {
                 Ok(admitted) => admitted,
                 Err(result) => return result,
             };
-            let Ok(crate::keys::Key::Event(event)) =
-                crate::keys::translate(key, flags, admitted.layout, &admitted.keyboard)
-            else {
-                return S_OK;
-            };
+            let event =
+                match crate::keys::translate(key, flags, admitted.layout, &admitted.keyboard) {
+                    Ok(crate::keys::Key::Event(event)) => event,
+                    _ => {
+                        if matches!(key.0, 0x12 | 0xa4 | 0xa5) {
+                            self.revoke_release();
+                        }
+                        return S_OK;
+                    }
+                };
             if !self.current(admitted.guard)
                 || self.state.borrow().mode != admitted.mode
                 || event
@@ -1283,9 +1608,14 @@ impl Service {
             } else {
                 diagnostics::CommandTicket::default()
             };
-            let execution = unsafe { self.execute(owner, context, event) };
-            self.command_complete(ticket, execution.completion, false);
-            let accepted = execution.eaten;
+            let accepted = if matches!(role, 4 | 5) {
+                // SAFETY: native callback retains context and the selected command for this request.
+                unsafe { self.dispatch_command(owner, context, event, ticket, &decision) }
+            } else {
+                self.revoke_release();
+                // SAFETY: native callback retains context through this synchronous execution.
+                unsafe { self.execute(owner, context, event) }.eaten
+            };
             if accepted {
                 self.count(Counter::Consumed);
             }
@@ -1307,6 +1637,12 @@ impl Service {
                 return S_OK;
             };
             if binding.role == 0 {
+                self.revoke_release();
+            }
+            let decision = ReleaseDecision::new(self);
+            if binding.role == 0 {
+                // SAFETY: the SDK caller retains the context throughout the observer callback.
+                unsafe { self.witness_alt(owner, context, &decision) };
                 return S_OK;
             }
             let intent = if binding.role == 4 {
@@ -1319,6 +1655,7 @@ impl Service {
             let admitted = match self.admit_key(context, Some(&mut modifiers)) {
                 Ok(admitted) => admitted,
                 Err(result) => {
+                    self.revoke_release();
                     self.command_progress(
                         ticket,
                         if result.is_err() {
@@ -1332,6 +1669,7 @@ impl Service {
             };
             let facts = diagnostics::ModifierFacts::project(&admitted.keyboard);
             if !facts.exact() {
+                self.revoke_release();
                 self.command_progress(
                     ticket,
                     diagnostics::CommandStage::ExactModifiersRefused(facts),
@@ -1349,10 +1687,10 @@ impl Service {
             }
             self.command_progress(ticket, diagnostics::CommandStage::ExecutorDispatch(facts));
             // SAFETY: the inbound preserved-key callback retains context/output for this request.
-            let execution = unsafe { self.execute(owner, context, event) };
-            self.command_complete(ticket, execution.completion, false);
+            let accepted =
+                unsafe { self.dispatch_command(owner, context, event, ticket, &decision) };
             // SAFETY: raw COM checked and defaulted this writable slot before calling here.
-            unsafe { eaten.write(windows_core::BOOL(execution.eaten as i32)) };
+            unsafe { eaten.write(windows_core::BOOL(accepted as i32)) };
             S_OK
         })
     }

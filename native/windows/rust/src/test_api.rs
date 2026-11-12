@@ -326,6 +326,7 @@ unsafe extern "system" fn KeyrillTestEvent(
         // SAFETY: the test caller retains its live handle for this synchronous entry.
         let handle = unsafe { &*handle.cast::<Handle>() };
         handle.service.checked(|| {
+            handle.service.revoke_release();
             // SAFETY: transport retains the context and complete bounded wire object through this entry.
             let accepted = unsafe {
                 handle

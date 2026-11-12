@@ -59,6 +59,8 @@ pub(crate) struct Frame {
     last_action: Cell<u32>,
     last_disposition: Cell<u32>,
     outcome_recorded: Cell<bool>,
+    diagnose: bool,
+    decision: Option<Rc<Cell<bool>>>,
     // Keep the generated COM allocation alive through all host reference retirement above.
     owner: OwnServiceLease,
 }
@@ -96,6 +98,8 @@ impl Frame {
         owner: OwnServiceLease,
         work: Work,
         ownership: Option<Rc<OwnedIdentity>>,
+        diagnose: bool,
+        decision: Option<Rc<Cell<bool>>>,
     ) -> Rc<Self> {
         Rc::new(Self {
             service,
@@ -114,13 +118,15 @@ impl Frame {
             last_action: Cell::new(0),
             last_disposition: Cell::new(0),
             outcome_recorded: Cell::new(false),
+            diagnose,
+            decision,
             owner,
         })
     }
 
     #[cfg(feature = "test-api")]
     pub(crate) fn new(service: Rc<Service>, owner: OwnServiceLease) -> Rc<Self> {
-        Self::with_work(service, owner, Work::Probe, None)
+        Self::with_work(service, owner, Work::Probe, None, true, None)
     }
 
     pub(crate) unsafe fn editing(
@@ -129,6 +135,19 @@ impl Frame {
         context: *mut std::ffi::c_void,
         event: NativeEvent,
         authority: Authority,
+    ) -> std::result::Result<Rc<Self>, Call> {
+        // SAFETY: forwards the inbound context lifetime required by this constructor.
+        unsafe { Self::capture(service, owner, context, event, authority, true, None) }
+    }
+
+    unsafe fn capture(
+        service: Rc<Service>,
+        owner: OwnServiceLease,
+        context: *mut std::ffi::c_void,
+        event: NativeEvent,
+        authority: Authority,
+        diagnose: bool,
+        decision: Option<Rc<Cell<bool>>>,
     ) -> std::result::Result<Rc<Self>, Call> {
         // SAFETY: Execute's inbound caller retains this context throughout capture and request.
         let context = unsafe { foreign::retain::<ITfContext>(context) }?;
@@ -143,23 +162,25 @@ impl Frame {
                 if call.exception != 0 {
                     return Err(call);
                 }
-                service.refuse(
-                    Stage::Session,
-                    if matches!(error, InterfaceError::Missing) {
-                        Cause::Missing
-                    } else {
-                        Cause::Native
-                    },
-                    if matches!(error, InterfaceError::Missing) {
-                        S_OK
-                    } else {
-                        call.result
-                    },
-                );
+                if diagnose {
+                    service.refuse(
+                        Stage::Session,
+                        if matches!(error, InterfaceError::Missing) {
+                            Cause::Missing
+                        } else {
+                            Cause::Native
+                        },
+                        if matches!(error, InterfaceError::Missing) {
+                            S_OK
+                        } else {
+                            call.result
+                        },
+                    );
+                }
                 None
             }
         };
-        Ok(Self::with_work(
+        let frame = Self::with_work(
             service,
             owner,
             Work::Editing(Editing {
@@ -169,7 +190,45 @@ impl Frame {
                 authority,
             }),
             ownership,
-        ))
+            diagnose,
+            decision,
+        );
+        Ok(frame)
+    }
+
+    pub(crate) unsafe fn release_field(
+        service: Rc<Service>,
+        owner: OwnServiceLease,
+        context: *mut std::ffi::c_void,
+        authority: Authority,
+        decision: Rc<Cell<bool>>,
+    ) -> Option<Identity> {
+        let expected = authority.owned.as_ref()?.context_id.address();
+        let event = NativeEvent::new(6, 1, 1, &[]).ok()?;
+        // SAFETY: the synchronous callback retains context through this read-only proof.
+        let frame = unsafe {
+            Self::capture(
+                service,
+                owner,
+                context,
+                event,
+                authority,
+                false,
+                Some(decision),
+            )
+        }
+        .ok()?;
+        let editing = frame.editing_work()?;
+        if editing.identity.as_ref()?.address() != expected || !frame.alive() {
+            return None;
+        }
+        let field = frame.fresh_field(editing)?;
+        if !frame.writable(editing) {
+            return None;
+        }
+        let result = frame.alive().then_some(field);
+        drop(frame);
+        result
     }
 
     fn editing_work(&self) -> Option<&Editing> {
@@ -188,22 +247,36 @@ impl Frame {
     }
 
     fn invalidate(&self, stop: bool) {
+        if !self.diagnose {
+            return;
+        }
         if let Some(editing) = self.editing_work() {
             self.service.invalidate_if(editing.authority.guard, stop);
+        }
+    }
+
+    fn refuse(&self, stage: Stage, cause: Cause, result: HRESULT) {
+        if self.diagnose {
+            self.service.refuse(stage, cause, result);
         }
     }
 
     fn note_release_failure(&self) {
         let failed = self.witnesses.borrow().iter().any(ReleaseWitness::failed);
         if failed && !self.release_fault.replace(true) {
-            self.service
-                .refuse(self.stage.get(), Cause::Exception, S_OK);
+            self.refuse(self.stage.get(), Cause::Exception, S_OK);
             self.invalidate(true);
         }
     }
 
     pub(crate) fn alive(&self) -> bool {
-        if !self.service.owner_thread() || self.expired.get() {
+        if !self.service.owner_thread()
+            || self.expired.get()
+            || self
+                .decision
+                .as_ref()
+                .is_some_and(|decision| decision.get())
+        {
             return false;
         }
         self.note_release_failure();
@@ -222,21 +295,27 @@ impl Frame {
 
     fn check(&self, valid: bool, cause: Cause) -> bool {
         if !valid {
-            self.service.refuse(self.stage.get(), cause, S_OK);
+            self.refuse(self.stage.get(), cause, S_OK);
         }
         valid
     }
 
     fn status(&self, call: Call, expected: HRESULT) -> bool {
         if call.exception != 0 {
-            self.service
-                .refuse(self.stage.get(), Cause::Exception, S_OK);
+            self.refuse(self.stage.get(), Cause::Exception, S_OK);
             self.invalidate(true);
             return false;
         }
         if call.result != expected {
-            self.service
-                .refuse(self.stage.get(), Cause::Native, call.result);
+            self.refuse(
+                self.stage.get(),
+                if call.result == S_OK {
+                    Cause::Predicate
+                } else {
+                    Cause::Native
+                },
+                call.result,
+            );
             return false;
         }
         self.check(self.alive(), Cause::Stale)
@@ -770,6 +849,9 @@ impl Frame {
 
     fn apply(&self, editing: &Editing, cookie: u32, plan: &Plan) -> bool {
         let _observe = self.observe(Stage::Apply);
+        if plan.action == 2 {
+            self.service.revoke_release_if(editing.authority.guard);
+        }
         let range = if let Some(owned) = self.service.owned() {
             if plan.expected != owned.verified {
                 return false;
@@ -988,7 +1070,7 @@ impl Frame {
         if self.service.owned().is_some_and(|owned| {
             Some(owned.context_id.address()) != editing.identity.as_ref().map(Lease::address)
         }) {
-            self.service.refuse(Stage::Context, Cause::Predicate, S_OK);
+            self.refuse(Stage::Context, Cause::Predicate, S_OK);
             self.invalidate(true);
             return;
         }
@@ -1012,7 +1094,7 @@ impl Frame {
                 return;
             };
             let Ok(plan) = self.service.propose(editing.authority.guard, &event) else {
-                self.service.refuse(Stage::Plan, Cause::Predicate, S_OK);
+                self.refuse(Stage::Plan, Cause::Predicate, S_OK);
                 self.invalidate(true);
                 return;
             };
@@ -1025,8 +1107,7 @@ impl Frame {
                         .acknowledge(editing.authority.guard, plan.id, 0)
                         .is_err()
                 {
-                    self.service
-                        .refuse(Stage::Acknowledge, Cause::Predicate, S_OK);
+                    self.refuse(Stage::Acknowledge, Cause::Predicate, S_OK);
                     self.invalidate(true);
                     return;
                 }
@@ -1052,7 +1133,7 @@ impl Frame {
             });
             self.outcome_recorded.set(true);
             if !applied && previous == self.service.refusal_counts() {
-                self.service.refuse(Stage::Apply, Cause::Predicate, S_OK);
+                self.refuse(Stage::Apply, Cause::Predicate, S_OK);
             }
             let current = self.alive();
             let outcome = if applied {
@@ -1068,8 +1149,7 @@ impl Frame {
                     .acknowledge(editing.authority.guard, plan.id, outcome)
                     .is_err()
             {
-                self.service
-                    .refuse(Stage::Acknowledge, Cause::Predicate, S_OK);
+                self.refuse(Stage::Acknowledge, Cause::Predicate, S_OK);
                 applied = false;
             }
             if !applied || !current {
@@ -1119,7 +1199,7 @@ impl Frame {
             return RPC_E_WRONG_THREAD;
         }
         if self.entered.get() || !self.alive() {
-            self.service.refuse(
+            self.refuse(
                 Stage::Session,
                 if self.entered.get() {
                     Cause::Reentry
