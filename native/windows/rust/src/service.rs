@@ -9,6 +9,7 @@ use crate::keys::BINDINGS;
 use crate::profiles::{PROFILES, SERVICE_ID};
 use crate::vocabulary;
 use crate::vocabulary_contract::Config;
+use crate::vocabulary_contract::{Error as RuntimeError, ModuleOwner, Ready};
 use keyrill_ffi::NativeEvent;
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -71,7 +72,11 @@ struct State {
     runtime: RuntimeSnapshot,
     owned: Option<Rc<Owned>>,
     busy: bool,
+    admitting_key: bool,
     host_identity: HostIdentity,
+    worker: Option<vocabulary::Worker>,
+    maintenance_window: Option<crate::runtime_window::Window>,
+    pending_ready: Option<Ready>,
 }
 
 pub(crate) struct OwnedIdentity;
@@ -100,8 +105,6 @@ pub(crate) struct Authority {
     pub(crate) guard: Guard,
     pub(crate) owned: Option<Rc<Owned>>,
     pub(crate) host_identity: HostIdentity,
-    // Keep activation's release barrier through the last context/composition reference in a frame.
-    _resources: Rc<Resources>,
 }
 
 pub(crate) struct Sinks {
@@ -240,6 +243,20 @@ impl Drop for ExecutionCall<'_> {
     }
 }
 
+struct AdmissionCall<'a>(&'a Service);
+impl Drop for AdmissionCall<'_> {
+    fn drop(&mut self) {
+        self.0.state.borrow_mut().admitting_key = false;
+    }
+}
+
+struct AdmittedKey {
+    guard: Guard,
+    mode: u32,
+    keyboard: [u8; 256],
+    layout: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
+}
+
 pub(crate) struct Service {
     owner_thread: u32,
     poisoned: Cell<bool>,
@@ -268,9 +285,170 @@ impl Service {
         })
     }
 
-    #[cfg(feature = "test-api")]
     pub(crate) fn maintain(&self) -> HRESULT {
-        self.checked(|| S_OK)
+        if !self.owner_thread() {
+            return RPC_E_WRONG_THREAD;
+        }
+        let mut state = self.state.borrow_mut();
+        if state.activation != Activation::Active
+            || state.stopped
+            || state.diagnostic_depth != 0
+            || state.busy
+            || state.admitting_key
+        {
+            return S_OK;
+        }
+        let guard = Guard {
+            epoch: state.epoch,
+            generation: state.generation,
+        };
+        let worker = state.worker.take();
+        drop(state);
+        let Some(mut worker) = worker else {
+            return S_OK;
+        };
+        let latest = worker.poll();
+        let mut state = self.state.borrow_mut();
+        if !self.state_current(&state, guard) {
+            drop(state);
+            drop(worker);
+            return S_OK;
+        }
+        state.worker = Some(worker);
+        if let Some(latest) = latest
+            && latest.activation == state.runtime.activation
+            && latest.revision > state.runtime.revision
+        {
+            state.pending_ready = Some(latest);
+        }
+        let Some(ready) = state.pending_ready.clone() else {
+            return S_OK;
+        };
+        let Some(engine) = state.engine.as_mut() else {
+            return S_OK;
+        };
+        if engine.adopt(&ready).is_err() {
+            state.runtime.error = RuntimeError::Startup;
+            return S_OK;
+        }
+        state.runtime.model_ready = ready.model as u32;
+        state.runtime.error = ready.error;
+        for (index, source) in ready.sources.iter().enumerate() {
+            state.runtime.sources[index] = source.status;
+            state.runtime.source_errors[index] = source.error;
+        }
+        if ready.model && state.runtime.effective != 2 {
+            if state.owned.is_some() {
+                return S_OK;
+            }
+            if state
+                .engine
+                .as_mut()
+                .is_none_or(|engine| engine.policy(2).is_err())
+            {
+                state.runtime.error = RuntimeError::Startup;
+                return S_OK;
+            }
+            state.runtime.effective = 2;
+        }
+        state.runtime.revision = ready.revision;
+        state.pending_ready = None;
+        S_OK
+    }
+
+    fn start_runtime(self: &Rc<Self>, epoch: u64) {
+        let (guard, model, activation) = {
+            let state = self.state.borrow();
+            let Some(Config::Model(model)) = &state.accepted_config else {
+                return;
+            };
+            (
+                Guard {
+                    epoch,
+                    generation: state.generation,
+                },
+                model.clone(),
+                state.runtime.activation,
+            )
+        };
+        if !self.current(guard) {
+            return;
+        }
+        let published = Rc::new(Cell::new(false));
+        let current_published = Rc::clone(&published);
+        let current_service = Rc::downgrade(self);
+        let current = Rc::new(move || {
+            current_service.upgrade().is_some_and(|service| {
+                if current_published.get() {
+                    service.runtime_current(epoch)
+                } else {
+                    service.current(guard)
+                }
+            })
+        });
+        let tick_service = Rc::downgrade(self);
+        let tick = Rc::new(move || {
+            if let Some(service) = tick_service.upgrade()
+                && service.runtime_current(epoch)
+            {
+                let _ = service.maintain();
+            }
+        });
+        let window = crate::runtime_window::Window::start(current, tick);
+        if !self.current(guard) {
+            drop(window);
+            return;
+        }
+        let Some(window) = window else {
+            self.state.borrow_mut().runtime.error = RuntimeError::Startup;
+            return;
+        };
+        let mut worker = vocabulary::Worker::default();
+        let owner = if self._dependencies.is_some() {
+            ModuleOwner::Process
+        } else {
+            ModuleOwner::Dll
+        };
+        let started = worker.start(&model, activation, owner, vocabulary::Hooks::default());
+        if !self.current(guard) {
+            drop(worker);
+            drop(window);
+            return;
+        }
+        if !started {
+            drop(worker);
+            drop(window);
+            if self.current(guard) {
+                self.state.borrow_mut().runtime.error = RuntimeError::Startup;
+            }
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        published.set(true);
+        state.worker = Some(worker);
+        state.maintenance_window = Some(window);
+    }
+
+    fn runtime_current(&self, epoch: u64) -> bool {
+        let state = self.state.borrow();
+        !self.poisoned.get()
+            && !state.stopped
+            && state.activation == Activation::Active
+            && state.epoch == epoch
+    }
+
+    fn stop_runtime(&self) {
+        let (worker, window, ready) = {
+            let mut state = self.state.borrow_mut();
+            (
+                state.worker.take(),
+                state.maintenance_window.take(),
+                state.pending_ready.take(),
+            )
+        };
+        drop(worker);
+        drop(ready);
+        drop(window);
     }
 
     pub(crate) fn owner_thread(&self) -> bool {
@@ -601,6 +779,7 @@ impl Service {
             };
             let _call = ActivationCall(self);
             let configuration = vocabulary::capture_config();
+            let invalid_configuration = configuration.is_none();
             {
                 let mut state = self.state.borrow_mut();
                 if let Some(config) = configuration {
@@ -610,6 +789,15 @@ impl Service {
                     state.accepted_config = Some(Config::Off);
                 }
                 let policy = state.accepted_config.as_ref().map_or(0, Config::policy);
+                state.runtime = RuntimeSnapshot {
+                    requested: policy,
+                    configuration_error: if invalid_configuration {
+                        RuntimeError::Configuration
+                    } else {
+                        RuntimeError::None
+                    },
+                    ..RuntimeSnapshot::default()
+                };
                 if state.engine.is_none() {
                     state.engine = Engine::new().ok();
                 }
@@ -637,8 +825,28 @@ impl Service {
                     let diagnostics = &mut state.diagnostics;
                     diagnostics::increment(&mut diagnostics.activation, &mut diagnostics.saturated);
                     state.runtime.activation = state.diagnostics.activation;
+                    state.runtime.effective = if state.runtime.requested == 2 {
+                        0
+                    } else {
+                        state.runtime.requested
+                    };
+                }
+                // SAFETY: these pseudo handles and process/thread IDs refer to the current host.
+                let identity = unsafe {
+                    crate::observation::capture_identity(
+                        windows::Win32::System::Threading::GetCurrentProcess(),
+                        windows::Win32::System::Threading::GetCurrentProcessId(),
+                        self.owner_thread,
+                    )
+                }
+                .unwrap_or_default();
+                if self.same_activation(epoch) {
+                    self.state.borrow_mut().host_identity = identity;
                 }
                 self.register_diagnostics(epoch, sinks.provider);
+                if self.same_activation(epoch) {
+                    self.start_runtime(epoch);
+                }
                 return if self.same_activation(epoch) {
                     S_OK
                 } else {
@@ -698,6 +906,7 @@ impl Service {
                     Unresolved::None,
                 );
             }
+            self.stop_runtime();
             let result = resources
                 .as_ref()
                 .map_or(S_OK, |resources| resources.drain());
@@ -787,6 +996,250 @@ impl Service {
         })
     }
 
+    fn current(&self, guard: Guard) -> bool {
+        self.state_current(&self.state.borrow(), guard)
+    }
+
+    fn admission_call(&self, guard: Guard, call: Call, stage: Stage) -> Result<(), HRESULT> {
+        if !call.exact() {
+            self.refuse(
+                stage,
+                if call.exception != 0 {
+                    Cause::Exception
+                } else {
+                    Cause::Native
+                },
+                if call.exception != 0 {
+                    S_OK
+                } else {
+                    call.result
+                },
+            );
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            if call.exception != 0 {
+                self.invalidate_if(guard, true);
+            }
+            return Err(if call.exception != 0 { E_FAIL } else { S_OK });
+        }
+        if !self.current(guard) {
+            self.refuse(stage, Cause::Stale, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        Ok(())
+    }
+
+    fn admit_key(&self, context: *mut c_void) -> Result<AdmittedKey, HRESULT> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, HKL};
+        let state = self.state.borrow();
+        if state.busy || state.admitting_key {
+            drop(state);
+            self.refuse(Stage::Key, Cause::Reentry, S_OK);
+            self.invalidate_word(self.owned().is_some());
+            return Err(S_OK);
+        }
+        if context.is_null() {
+            drop(state);
+            self.refuse(Stage::Key, Cause::Missing, S_OK);
+            return Err(S_OK);
+        }
+        let guard = Guard {
+            epoch: state.epoch,
+            generation: state.generation,
+        };
+        let mode = state.mode;
+        let resources = state.resources.clone();
+        drop(state);
+        self.state.borrow_mut().admitting_key = true;
+        let _admission = AdmissionCall(self);
+        let mut keyboard = [0; 256];
+        // SAFETY: keyboard is a complete writable 256-key snapshot.
+        if unsafe { GetKeyboardState(&mut keyboard) }.is_err() {
+            self.refuse(Stage::Keyboard, Cause::Predicate, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let manager = resources
+            .as_ref()
+            .and_then(|resources| resources.profiles.clone());
+        drop(resources);
+        let Some(manager) = manager else {
+            let state = self.state.borrow();
+            let cause = if state.activation != Activation::Active {
+                Cause::Inactive
+            } else if state.stopped {
+                Cause::Stopped
+            } else {
+                Cause::Missing
+            };
+            drop(state);
+            self.refuse(Stage::Profile, cause, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        };
+        if !self.current(guard) {
+            self.refuse(Stage::Profile, Cause::Stale, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let (call, profile) = tsf::active_profile(&manager);
+        self.admission_call(guard, call, Stage::Profile)?;
+        if !crate::keys::active_profile(&profile, mode) {
+            let cause = if profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
+                Cause::WrongType
+            } else if profile.clsid != SERVICE_ID {
+                Cause::WrongService
+            } else if profile.dwFlags & TF_IPP_FLAG_ACTIVE == 0 {
+                Cause::NotActive
+            } else {
+                Cause::WrongProfile
+            };
+            self.refuse(Stage::Layout, cause, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let substitute = match manager.query::<ITfInputProcessorProfileSubstituteLayout>() {
+            Ok(substitute) => substitute,
+            Err(error) => {
+                self.refuse(
+                    Stage::Layout,
+                    if matches!(error, foreign::InterfaceError::Missing) {
+                        Cause::Missing
+                    } else if error.call().exception != 0 {
+                        Cause::Exception
+                    } else {
+                        Cause::Native
+                    },
+                    if error.call().exception != 0 {
+                        S_OK
+                    } else {
+                        error.call().result
+                    },
+                );
+                self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+                if error.call().exception != 0 {
+                    self.invalidate_if(guard, true);
+                }
+                return Err(if error.call().exception != 0 {
+                    E_FAIL
+                } else {
+                    S_OK
+                });
+            }
+        };
+        if !self.current(guard) {
+            self.refuse(Stage::Layout, Cause::Stale, S_OK);
+            return Err(S_OK);
+        }
+        let (call, actual) = tsf::substitute(&substitute, &profile);
+        self.admission_call(guard, call, Stage::Layout)?;
+        let layout = crate::keys::profile_layout(&profile, mode, actual);
+        if layout.0.is_null() {
+            self.refuse(
+                Stage::Layout,
+                if actual.0.is_null() {
+                    Cause::Missing
+                } else {
+                    Cause::Substitute
+                },
+                S_OK,
+            );
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let callback = self
+            ._dependencies
+            .as_ref()
+            .and_then(|dependencies| dependencies.table.layouts);
+        if self._dependencies.is_some() && callback.is_none() {
+            self.refuse(Stage::Layout, Cause::Missing, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let (call, count) = tsf::layouts(callback, &mut []);
+        self.admission_call(guard, call, Stage::Layout)?;
+        if !(1..=64).contains(&count) {
+            self.refuse(Stage::Layout, Cause::Substitute, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let mut loaded = [HKL::default(); 64];
+        let (call, filled) = tsf::layouts(callback, &mut loaded);
+        self.admission_call(guard, call, Stage::Layout)?;
+        if filled != count {
+            self.refuse(Stage::Layout, Cause::Substitute, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let (call, after) = tsf::layouts(callback, &mut []);
+        self.admission_call(guard, call, Stage::Layout)?;
+        if after != count || !loaded[..count as usize].contains(&layout) {
+            self.refuse(Stage::Layout, Cause::Substitute, S_OK);
+            self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
+            return Err(S_OK);
+        }
+        let witnesses = [substitute.release_witness(), manager.release_witness()];
+        drop(substitute);
+        drop(manager);
+        if witnesses.iter().any(foreign::ReleaseWitness::failed) {
+            self.refuse(Stage::Layout, Cause::Exception, S_OK);
+            self.invalidate_if(guard, true);
+            return Err(S_OK);
+        }
+        if !self.current(guard) {
+            self.refuse(Stage::Layout, Cause::Stale, S_OK);
+            return Err(S_OK);
+        }
+        Ok(AdmittedKey {
+            guard,
+            mode,
+            keyboard,
+            layout,
+        })
+    }
+
+    pub(crate) unsafe fn key_down(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+        key: windows::Win32::Foundation::WPARAM,
+        flags: windows::Win32::Foundation::LPARAM,
+        eaten: *mut windows_core::BOOL,
+    ) -> HRESULT {
+        self.checked(|| {
+            #[cfg(feature = "test-api")]
+            self.inject_panic(1);
+            self.count(Counter::KeyEntered);
+            let admitted = match self.admit_key(context) {
+                Ok(admitted) => admitted,
+                Err(result) => return result,
+            };
+            let Ok(crate::keys::Key::Event(event)) =
+                crate::keys::translate(key, flags, admitted.layout, &admitted.keyboard)
+            else {
+                return S_OK;
+            };
+            if !self.current(admitted.guard)
+                || self.state.borrow().mode != admitted.mode
+                || event
+                    .view()
+                    .map_or(true, |event| event.mode != admitted.mode)
+            {
+                self.refuse(Stage::Mode, Cause::Stale, S_OK);
+                self.invalidate_lifecycle_if(admitted.guard, LifecycleCause::KeyAdmission);
+                return S_OK;
+            }
+            // SAFETY: inbound COM holds context and writable eaten through this synchronous call.
+            let accepted = unsafe { self.execute(owner, context, event) };
+            if accepted {
+                self.count(Counter::Consumed);
+            }
+            // SAFETY: the raw COM boundary checked and defaulted this output before admission.
+            unsafe { eaten.write(windows_core::BOOL(accepted as i32)) };
+            S_OK
+        })
+    }
+
     pub(crate) unsafe fn execute(
         self: &Rc<Self>,
         owner: crate::com::OwnServiceLease,
@@ -821,6 +1274,7 @@ impl Service {
         let Some(authority) = authority else {
             return false;
         };
+        let guard = authority.guard;
         self.state.borrow_mut().busy = true;
         let _busy = ExecutionCall(self);
         // SAFETY: the inbound transport retains context throughout capture and the synchronous request.
@@ -835,10 +1289,14 @@ impl Service {
                         } else {
                             Cause::Native
                         },
-                        call.result,
+                        if call.exception != 0 {
+                            S_OK
+                        } else {
+                            call.result
+                        },
                     );
                     if call.exception != 0 {
-                        self.invalidate_word(true);
+                        self.invalidate_if(guard, true);
                     }
                     return false;
                 }
@@ -866,6 +1324,7 @@ impl Service {
         if result.outer.exception == 0
             && result.outer.result.is_ok()
             && result.callback.is_ok()
+            && result.entered
             && result.completed
         {
             frame.eaten()
@@ -880,9 +1339,10 @@ impl Service {
                 self.refuse(Stage::Session, Cause::Predicate, S_OK);
             }
             let eaten = frame.unknown_disposition();
-            self.invalidate_word(
+            self.invalidate_if(
+                guard,
                 result.outer.exception != 0
-                    || frame.effect() != Effect::Unattempted
+                    || result.effect != Effect::Unattempted
                     || self.owned().is_some(),
             );
             eaten
@@ -916,7 +1376,6 @@ impl Service {
             guard,
             owned: state.owned.clone(),
             host_identity: state.host_identity,
-            _resources: Rc::clone(resources),
         })
     }
 
@@ -949,6 +1408,35 @@ impl Service {
     }
     pub(crate) fn refusal_counts(&self) -> [u32; 26] {
         self.state.borrow().diagnostics.refusals
+    }
+
+    pub(crate) fn invalidate_if(&self, guard: Guard, stop: bool) {
+        if self.state.borrow().epoch == guard.epoch {
+            self.invalidate_word(stop);
+        }
+    }
+
+    fn invalidate_lifecycle_if(&self, guard: Guard, cause: LifecycleCause) {
+        if self.state.borrow().epoch == guard.epoch {
+            self.invalidate_for_lifecycle(cause);
+        }
+    }
+
+    pub(crate) fn edit_callback(&self, guard: Guard, call: impl FnOnce() -> HRESULT) -> HRESULT {
+        if !self.owner_thread() {
+            return RPC_E_WRONG_THREAD;
+        }
+        match catch_unwind(AssertUnwindSafe(|| self.callback_scope(call))) {
+            Ok(result) => result,
+            Err(payload) => {
+                std::mem::forget(payload);
+                if self.state.borrow().epoch == guard.epoch {
+                    self.poisoned.set(true);
+                    self.invalidate_if(guard, true);
+                }
+                E_FAIL
+            }
+        }
     }
 
     pub(crate) fn invalidate_word(&self, stop: bool) {
@@ -1092,8 +1580,24 @@ impl Service {
     }
 
     pub(crate) fn interested(&self) -> bool {
+        self.count(Counter::TestEntered);
         let state = self.state.borrow();
-        state.activation == Activation::Active && !state.stopped && state.mode != 0
+        let interested =
+            state.activation == Activation::Active && !state.stopped && state.mode != 0;
+        let cause = if state.activation != Activation::Active {
+            Cause::Inactive
+        } else if state.stopped {
+            Cause::Stopped
+        } else {
+            Cause::ModeUnset
+        };
+        drop(state);
+        if interested {
+            self.count(Counter::Interested);
+        } else {
+            self.refuse(Stage::Test, cause, S_OK);
+        }
+        interested
     }
 
     #[cfg(feature = "test-api")]

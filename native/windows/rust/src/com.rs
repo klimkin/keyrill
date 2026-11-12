@@ -182,6 +182,15 @@ impl OwnServiceLease {
     }
 }
 
+impl ServiceCom_Impl {
+    fn owner_lease(&self) -> OwnServiceLease {
+        OwnServiceLease(Rc::new(OwnInterfaces {
+            processor: self.as_interface::<ITfTextInputProcessorEx>().to_owned(),
+            composition: self.as_interface::<ITfCompositionSink>().as_raw(),
+        }))
+    }
+}
+
 impl ITfTextInputProcessor_Impl for ServiceCom_Impl {
     fn Activate(&self, manager: Ref<'_, ITfThreadMgr>, client: u32) -> Result<()> {
         self.activate(manager, client, 0).ok()
@@ -348,8 +357,26 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
         key(&self.service, eaten, true)
     }
 
-    unsafe fn OnKeyDown(&self, _: *mut c_void, _: WPARAM, _: LPARAM, eaten: *mut BOOL) -> HRESULT {
-        key(&self.service, eaten, false)
+    unsafe fn OnKeyDown(
+        &self,
+        context: *mut c_void,
+        key: WPARAM,
+        flags: LPARAM,
+        eaten: *mut BOOL,
+    ) -> HRESULT {
+        if eaten.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK supplies one writable output, defaulted before fallible work.
+        unsafe { eaten.write(BOOL(0)) };
+        if !self.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
+        // SAFETY: the SDK keeps context/output live through this synchronous entry.
+        unsafe {
+            self.service
+                .key_down(self.owner_lease(), context, key, flags, eaten)
+        }
     }
 
     unsafe fn OnKeyUp(&self, _: *mut c_void, _: WPARAM, _: LPARAM, eaten: *mut BOOL) -> HRESULT {

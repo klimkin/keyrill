@@ -33,7 +33,6 @@ struct Editing {
     context: Lease<ITfContext>,
     identity: Option<Lease<IUnknown>>,
     event: NativeEvent,
-    // Activation resources retire after every captured context/composition lease.
     authority: Authority,
 }
 
@@ -188,12 +187,18 @@ impl Frame {
         }
     }
 
+    fn invalidate(&self, stop: bool) {
+        if let Some(editing) = self.editing_work() {
+            self.service.invalidate_if(editing.authority.guard, stop);
+        }
+    }
+
     fn note_release_failure(&self) {
         let failed = self.witnesses.borrow().iter().any(ReleaseWitness::failed);
         if failed && !self.release_fault.replace(true) {
             self.service
                 .refuse(self.stage.get(), Cause::Exception, S_OK);
-            self.service.invalidate_word(true);
+            self.invalidate(true);
         }
     }
 
@@ -226,7 +231,7 @@ impl Frame {
         if call.exception != 0 {
             self.service
                 .refuse(self.stage.get(), Cause::Exception, S_OK);
-            self.service.invalidate_word(true);
+            self.invalidate(true);
             return false;
         }
         if call.result != expected {
@@ -984,7 +989,7 @@ impl Frame {
             Some(owned.context_id.address()) != editing.identity.as_ref().map(Lease::address)
         }) {
             self.service.refuse(Stage::Context, Cause::Predicate, S_OK);
-            self.service.invalidate_word(true);
+            self.invalidate(true);
             return;
         }
         let mut context = 1;
@@ -1000,7 +1005,7 @@ impl Frame {
             }
             self.stage.set(Stage::Plan);
             let Ok(view) = editing.event.view() else {
-                self.service.invalidate_word(true);
+                self.invalidate(true);
                 return;
             };
             let Ok(event) = NativeEvent::new(view.role, view.mode, context, view.units) else {
@@ -1008,7 +1013,7 @@ impl Frame {
             };
             let Ok(plan) = self.service.propose(editing.authority.guard, &event) else {
                 self.service.refuse(Stage::Plan, Cause::Predicate, S_OK);
-                self.service.invalidate_word(true);
+                self.invalidate(true);
                 return;
             };
             self.last_action.set(plan.action);
@@ -1022,7 +1027,7 @@ impl Frame {
                 {
                     self.service
                         .refuse(Stage::Acknowledge, Cause::Predicate, S_OK);
-                    self.service.invalidate_word(true);
+                    self.invalidate(true);
                     return;
                 }
                 self.eaten.set(plan.disposition == 1);
@@ -1074,8 +1079,7 @@ impl Frame {
                 } else {
                     Completion::Refused
                 });
-                self.service
-                    .invalidate_word(attempted || self.service.owned().is_some());
+                self.invalidate(attempted || self.service.owned().is_some());
                 return;
             }
             self.effect.set(Effect::Verified);
@@ -1102,9 +1106,6 @@ impl Frame {
             && (self.last_action.get() == 1 || self.last_disposition.get() == 1)
     }
 
-    pub(crate) fn effect(&self) -> Effect {
-        self.effect.get()
-    }
     pub(crate) fn eaten(&self) -> bool {
         self.eaten.get()
     }
@@ -1127,7 +1128,7 @@ impl Frame {
         }
         self.entered.set(true);
         self.service.count(Counter::SessionEntered);
-        let result = self.service.checked(|| {
+        let body = || {
             match &self.work {
                 Work::Editing(editing) => self.run_editing(editing, cookie),
                 #[cfg(feature = "test-api")]
@@ -1139,7 +1140,12 @@ impl Frame {
                 }
             }
             S_OK
-        });
+        };
+        let result = if let Some(editing) = self.editing_work() {
+            self.service.edit_callback(editing.authority.guard, body)
+        } else {
+            self.service.checked(body)
+        };
         if result.is_err() && self.editing_work().is_some() {
             if self.effect.get() != Effect::Unattempted && !self.outcome_recorded.replace(true) {
                 self.service.count(Counter::Unknown);

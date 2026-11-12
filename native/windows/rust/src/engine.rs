@@ -17,6 +17,21 @@ pub(crate) struct Plan {
 }
 
 impl Engine {
+    pub(crate) fn adopt(&mut self, ready: &crate::vocabulary_contract::Ready) -> Result<(), u32> {
+        let dictionary = |index: usize| {
+            ready.sources[index]
+                .dictionary
+                .as_ref()
+                .map_or(std::ptr::null(), |dictionary| dictionary.pointer())
+        };
+        // SAFETY: immutable snapshots remain retained through this synchronous ABI acquisition.
+        accepted(unsafe { kr_adopt_dictionaries(self.0.as_ptr(), dictionary(0), dictionary(1)) })
+    }
+
+    pub(crate) fn policy(&mut self, policy: u32) -> Result<(), u32> {
+        // SAFETY: the serialized core validates the requested policy against its current state.
+        accepted(unsafe { kr_set_automatic_policy(self.0.as_ptr(), policy) })
+    }
     pub(crate) fn new() -> Result<Self, u32> {
         let mut pointer = std::ptr::null_mut();
         // SAFETY: pointer is distinct writable storage and transfers one newly allocated handle.

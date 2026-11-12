@@ -61,6 +61,8 @@ mod profiles;
 #[cfg(windows)]
 pub mod registrar;
 #[cfg(windows)]
+mod runtime_window;
+#[cfg(windows)]
 mod service;
 #[cfg(all(windows, feature = "test-api"))]
 mod test_api;
