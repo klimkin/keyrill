@@ -22,8 +22,11 @@ def inputs():
     }
     for directory, suffixes in (
         ("include", {".h"}),
-        ("crates", {".rs", ".toml"}),
-        ("native/windows", {".rs", ".cpp", ".h", ".toml", ".def", ".ps1", ".py"}),
+        ("crates", {".rs", ".toml", ".c", ".h", ".json", ".jsonl"}),
+        (
+            "native/windows",
+            {".rs", ".cpp", ".c", ".h", ".toml", ".def", ".ps1", ".py", ".manifest", ".rc"},
+        ),
     ):
         paths.update(
             path
