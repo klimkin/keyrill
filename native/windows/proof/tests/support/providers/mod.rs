@@ -447,6 +447,8 @@ impl Provider {
             ("Release.before", Kind::Diagnostic(_)) => Some("release"),
             ("Next", _) => Some("enumerator.Next"),
             ("GetFocus", _) => Some("manager.GetFocus"),
+            ("GetCompartment", Kind::Manager(_)) => Some("thread.GetCompartment"),
+            ("compartment.GetValue", Kind::Manager(_)) => Some("thread.GetValue"),
             _ => None,
         };
         if let Some(name) = qualified {
@@ -497,6 +499,8 @@ impl Drop for Provider {
     }
 }
 pub const BOUNDARIES: &[&str] = &[
+    "thread.GetCompartment",
+    "thread.GetValue",
     "identity",
     "interface",
     "function",

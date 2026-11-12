@@ -30,7 +30,7 @@ unsafe extern "system" fn ITfContext_RequestEditSession(
         boundary(this, |p| {
             p.hit("RequestEditSession");
             assert_eq!(a1, 42);
-            assert_eq!(a3, TF_ES_SYNC | TF_ES_READWRITE);
+            assert_eq!(a3, p.document().request_flags.get());
             let d = p.document();
             d.request.set(d.request.get() + 1);
             let session = IUnknown::from_raw(retain(a2));
@@ -445,7 +445,7 @@ unsafe extern "system" fn ITfContextView_GetWnd(
     unsafe {
         boundary(this, |p| {
             p.hit("GetWnd");
-            a1.write(p.document().window);
+            a1.write(p.document().view_window.get());
             p.result("GetWnd")
         })
     }

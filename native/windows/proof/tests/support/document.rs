@@ -38,6 +38,8 @@ pub struct Active {
 pub struct Document {
     pub host: Rc<HostCapsule>,
     pub window: HWND,
+    pub view_window: Cell<HWND>,
+    pub request_flags: Cell<TF_CONTEXT_EDIT_CONTEXT_FLAGS>,
     pub context: Cell<*mut c_void>,
     pub text: RefCell<Vec<u16>>,
     pub selection: Cell<Span>,
@@ -85,6 +87,8 @@ impl Document {
         Rc::new(Self {
             host,
             window: HWND(window as *mut _),
+            view_window: Cell::new(HWND(window as *mut _)),
+            request_flags: Cell::new(TF_ES_SYNC | TF_ES_READWRITE),
             context: Cell::new(std::ptr::null_mut()),
             text: RefCell::new("prefix suffix".encode_utf16().collect()),
             selection: Cell::new(Span {
