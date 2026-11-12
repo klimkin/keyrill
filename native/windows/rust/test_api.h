@@ -60,7 +60,8 @@ struct KrWindowsDependencies {
 };
 // The table is copied. Paired retain/release callbacks own context and callback targets through
 // every service and retained frame. Without these callbacks the caller supplies that lifetime.
-// profiles, layouts and capture are optional. Null selects the production platform dependency.
+// Null profiles or capture selects the production dependency. An injected table requires its
+// layout callback; a null callback reports the existing missing-dependency refusal.
 static_assert(sizeof(KrWindowsHostIdentity) == 40);
 static_assert(sizeof(KrWindowsFieldWindow) == 168);
 static_assert(sizeof(KrWindowsFieldFacts) == 760);
@@ -77,6 +78,19 @@ struct KrWindowsProbe {
   uint32_t effect;
   uintptr_t identity;
 };
+struct KrWindowsMetadata {
+  uint32_t reason;
+  uint32_t result;
+  uint32_t focus;
+  uint32_t scope;
+  uint32_t request;
+  uint32_t session;
+  uint32_t entered;
+  uint32_t completed;
+  uint32_t selection;
+  uint32_t acp;
+};
+static_assert(sizeof(KrWindowsMetadata) == 40);
 
 using KrTestCreate = HRESULT(WINAPI *)(uint32_t, const KrWindowsDependencies *, void **, void **);
 using KrTestRelease = HRESULT(WINAPI *)(void *);
@@ -85,6 +99,10 @@ using KrTestStopped = HRESULT(WINAPI *)(void *, BOOL *);
 using KrTestProbe = HRESULT(WINAPI *)(void *, IUnknown *, uint32_t, uint32_t, KrWindowsProbe *);
 using KrTestEvent = HRESULT(WINAPI *)(void *, ITfContext *, const kr_event *, BOOL *);
 using KrTestMaintain = HRESULT(WINAPI *)(void *);
+// current_flag is a same-thread 0/1 flag borrowed through the synchronous call. Retained native
+// sessions expire before return and never read that flag from a later callback.
+using KrTestMetadata = HRESULT(WINAPI *)(void *, ITfContext *, ITfThreadMgr *, uint32_t,
+                                         const uint32_t *, KrWindowsMetadata *);
 using KrTestCounts = HRESULT(WINAPI *)(LONG *, LONG *);
 using KrTestBuildDigest = HRESULT(WINAPI *)(uint32_t, uint32_t *);
 using KrTestTranslate = HRESULT(WINAPI *)(WPARAM, LPARAM, HKL, const BYTE *, kr_event *, BOOL *);
