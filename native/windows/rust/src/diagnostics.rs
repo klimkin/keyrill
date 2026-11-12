@@ -626,3 +626,196 @@ const _: () = {
     assert!(size_of::<RuntimeSnapshot>() == 48);
     assert!(std::mem::offset_of!(RuntimeSnapshot, revision) == 16);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp() -> ObservationStamp {
+        ObservationStamp {
+            after: LifecycleCursor { value: 2 },
+            owned: ObservedOwnership {
+                present: true,
+                composition_serial: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn counter_saturation_and_first_refusal_are_preserved() {
+        let mut snapshot = Snapshot::default();
+        snapshot.counts[Counter::Verified as usize] = u32::MAX - 1;
+        count(&mut snapshot, Counter::Verified);
+        count(&mut snapshot, Counter::Verified);
+        assert_eq!(snapshot.counts[Counter::Verified as usize], u32::MAX);
+        assert_eq!(snapshot.saturated, 1);
+        refuse(&mut snapshot, Stage::Profile, Cause::Native, HRESULT(-1));
+        let first = snapshot.first;
+        refuse(&mut snapshot, Stage::Apply, Cause::Stale, HRESULT(0));
+        assert_eq!(snapshot.first, first);
+        assert_eq!(snapshot.latest.stage, Stage::Apply);
+        assert_eq!(snapshot.first.result, u32::MAX);
+        assert_eq!(snapshot.refusals[Stage::Profile as usize], 1);
+        assert_eq!(snapshot.refusals[Stage::Apply as usize], 1);
+    }
+
+    #[test]
+    fn lifecycle_retains_the_newest_sixteen_events() {
+        let mut journal = LifecycleJournal::default();
+        for expected in 1..=20 {
+            assert_eq!(journal.acquire(), expected);
+        }
+        let snapshot = journal.copy(true, 20);
+        assert_eq!(snapshot.sequence, 20);
+        assert_eq!(snapshot.allocated, 20);
+        assert_eq!(snapshot.count, 16);
+        assert_eq!(snapshot.owned_present, 1);
+        assert_eq!(snapshot.owned_serial, 20);
+        for (index, event) in snapshot.events.iter().enumerate() {
+            assert_eq!(event.sequence, index as u32 + 5);
+            assert_eq!(event.subject, index as u32 + 5);
+            assert_eq!(event.kind, LifecycleKind::Acquired);
+        }
+    }
+
+    #[test]
+    fn lifecycle_allocation_and_sequence_saturate_independently() {
+        let mut journal = LifecycleJournal::new(0, u32::MAX - 1);
+        assert_eq!(journal.acquire(), u32::MAX);
+        assert_eq!(journal.acquire(), 0);
+        let snapshot = journal.copy(true, 0);
+        assert_eq!(snapshot.sequence, 2);
+        assert_eq!(snapshot.saturated, 1);
+        assert_eq!(snapshot.events[0].subject, u32::MAX);
+        assert_eq!(snapshot.events[1].subject, 0);
+        let mut journal = LifecycleJournal::new(u32::MAX - 1, 3);
+        journal.record(
+            LifecycleKind::Detached,
+            3,
+            LifecycleCause::None,
+            Unresolved::None,
+        );
+        let before = journal.copy(false, 0);
+        journal.record(
+            LifecycleKind::Detached,
+            3,
+            LifecycleCause::None,
+            Unresolved::None,
+        );
+        assert_eq!(journal.copy(false, 0), before);
+        assert_eq!(before.sequence, u32::MAX);
+        assert_eq!(before.saturated, 1);
+    }
+
+    #[test]
+    fn command_ticket_keeps_arrival_through_dispatch_and_completion() {
+        let mut journal = ObservationJournal::default();
+        let ticket = journal.begin(
+            RecognizedCommand::Preserved {
+                intent: ManualIntent::Reverse,
+            },
+            stamp(),
+        );
+        let facts = ModifierFacts {
+            left_control: true,
+            left_alt: true,
+            ..ModifierFacts::default()
+        };
+        journal.record(ticket, CommandStage::ExecutorDispatch(facts), stamp());
+        journal.complete(
+            CompletionObservation {
+                command: ticket.identity.unwrap(),
+                witnessed: true,
+                completion: CommandCompletion::ManualMark,
+            },
+            stamp(),
+        );
+        let window = journal.copy();
+        assert_eq!(window.sequence.value, 3);
+        assert_eq!(window.count, 3);
+        assert_eq!(ticket.identity.unwrap().id.arrival.value, 1);
+        let arrival = window.events[0].unwrap();
+        assert!(matches!(
+            arrival.body,
+            ObservationBody::Command(CommandObservation {
+                stage: CommandStage::Arrival(ModifierKnowledge::Unknown),
+                ..
+            })
+        ));
+        assert_eq!(window.events[2].unwrap().stamp, stamp());
+        assert!(window.events[3..].iter().all(Option::is_none));
+        for _ in 0..32 {
+            journal.observer(
+                ObserverObservation {
+                    stage: ObserverStage::Arrival,
+                },
+                stamp(),
+            );
+        }
+        let window = journal.copy();
+        assert_eq!(window.sequence.value, 35);
+        assert_eq!(window.count, 32);
+        assert_eq!(window.events[0].unwrap().sequence.value, 4);
+    }
+
+    #[test]
+    fn observation_saturation_freezes_events_and_new_tickets() {
+        let mut journal = ObservationJournal::new(u32::MAX - 1);
+        let ticket = journal.begin(
+            RecognizedCommand::Preserved {
+                intent: ManualIntent::Convert,
+            },
+            stamp(),
+        );
+        assert_eq!(ticket.identity.unwrap().id.arrival.value, u32::MAX);
+        let before = journal.copy();
+        assert!(before.saturated);
+        journal.record(
+            ticket,
+            CommandStage::Exception(ModifierKnowledge::Unknown),
+            stamp(),
+        );
+        assert!(
+            journal
+                .begin(
+                    RecognizedCommand::Preserved {
+                        intent: ManualIntent::Convert
+                    },
+                    stamp()
+                )
+                .identity
+                .is_none()
+        );
+        assert_eq!(journal.copy(), before);
+    }
+
+    #[test]
+    fn modifier_projection_and_release_classification_match_sdk_flags() {
+        let mut state = [0; 256];
+        state[0xa2] = 0x80;
+        state[0xa4] = 0x80;
+        assert!(ModifierFacts::project(&state).exact());
+        for key in [0xa3, 0xa5, 0x10, 0xa0, 0xa1, 0x5b, 0x5c] {
+            state[key] = 0x80;
+            assert!(!ModifierFacts::project(&state).exact());
+            state[key] = 0;
+        }
+        assert_eq!(
+            classify_relevant_release(0x12, 0),
+            Some(ReleaseModifier::LeftAlt)
+        );
+        assert_eq!(
+            classify_relevant_release(0x12, 1 << 24),
+            Some(ReleaseModifier::RightAlt)
+        );
+        assert_eq!(
+            classify_relevant_release(0xa4, 1 << 24),
+            Some(ReleaseModifier::AltUnresolved)
+        );
+        assert_eq!(
+            classify_relevant_release(0xa3, 0),
+            Some(ReleaseModifier::ControlUnresolved)
+        );
+        assert_eq!(classify_relevant_release(0x41, 0), None);
+    }
+}
