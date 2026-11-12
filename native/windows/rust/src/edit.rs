@@ -945,7 +945,6 @@ impl Frame {
             return false;
         }
         self.service.count(Counter::Attempted);
-        // Consume this proposal's write before crossing the foreign boundary.
         self.effect.set(Effect::Attempted);
         if !self.exact(native::set_text(&range, cookie, &plan.mark)) {
             return false;

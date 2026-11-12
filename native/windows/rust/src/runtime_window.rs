@@ -269,7 +269,6 @@ mod tests {
             if code == HCBT_DESTROYWND as i32 {
                 DESTROYED.set(DESTROYED.get() + 1);
                 // SAFETY: CBT supplies a thread-owned HWND before its destruction.
-                // Retirement must already have detached the maintenance callback.
                 unsafe {
                     SendMessageW(
                         HWND(w.0 as *mut _),
