@@ -293,6 +293,11 @@ unsafe extern "system" fn ITfSource_UnadviseSink(
             let index = (a1 - 1) as usize;
             m.unadvises[index].set(m.unadvises[index].get() + 1);
             p.hit("UnadviseSink");
+            p.hit(if index == 0 {
+                "UnadviseThreadSink"
+            } else {
+                "UnadviseProfileSink"
+            });
             m.unsink_results[index].get()
         })
     }

@@ -499,6 +499,8 @@ impl Drop for Provider {
     }
 }
 pub const BOUNDARIES: &[&str] = &[
+    "UnadviseThreadSink",
+    "UnadviseProfileSink",
     "thread.GetCompartment",
     "thread.GetValue",
     "identity",

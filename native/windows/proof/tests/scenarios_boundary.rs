@@ -8,6 +8,60 @@ use crate::support::{
 use std::{ffi::c_void, rc::Rc};
 use windows::Win32::{Foundation::*, System::Com::IAgileObject, UI::TextServices::*};
 use windows_core::{BSTR, GUID, HRESULT, IUnknown, Interface};
+
+#[test]
+fn boundary_failed_constructor_query_releases_context_and_service_owners() {
+    let api = Api::load();
+    let counts: unsafe extern "system" fn(*mut i32, *mut i32) -> HRESULT =
+        unsafe { api.export(b"KeyrillTestCounts\0") };
+    let (mut before, mut workers) = (0, 0);
+    unsafe {
+        assert_eq!(counts(&mut before, &mut workers), S_OK);
+    }
+    {
+        let c = client::Client::new();
+        let references = unsafe { com_slots::owner(c.context_a.as_raw()).references.get() };
+        let document = Rc::clone(&c.a);
+        c.host.on("context.QI", 0, move || {
+            document.results.borrow_mut().insert("QI", E_FAIL);
+        });
+        assert!(!c.key(b'g' as u16, false));
+        assert_eq!(
+            unsafe { com_slots::owner(c.context_a.as_raw()).references.get() },
+            references
+        );
+        crate::support::oracle::no_effects(&c);
+    }
+    let mut after = 0;
+    unsafe {
+        assert_eq!(counts(&mut after, &mut workers), S_OK);
+    }
+    assert_eq!(after, before);
+}
+
+#[test]
+fn boundary_teardown_reentry_and_hresult_failure_detach_each_sink_once() {
+    for (index, boundary) in [
+        (2, "UnadviseKeyEventSink"),
+        (0, "UnadviseThreadSink"),
+        (1, "UnadviseProfileSink"),
+    ] {
+        for failure in [false, true] {
+            let c = client::Client::new();
+            c.manager.unsink_results[index].set(if failure { E_FAIL } else { S_OK });
+            let service = c.service.clone();
+            c.host.on(boundary, 0, move || unsafe {
+                assert_eq!((service.vtable().base__.Deactivate)(service.as_raw()), S_OK);
+            });
+            assert_eq!(c.deactivate(), if failure { E_FAIL } else { S_OK });
+            assert_eq!(c.manager.unadvises.each_ref().map(|n| n.get()), [1; 3]);
+            assert!(!c.key(b'g' as u16, false));
+            assert_eq!(c.deactivate(), S_OK);
+            assert_eq!(c.manager.unadvises.each_ref().map(|n| n.get()), [1; 3]);
+            crate::support::oracle::no_effects(&c);
+        }
+    }
+}
 struct Instance {
     api: Api,
     host: Rc<HostCapsule>,

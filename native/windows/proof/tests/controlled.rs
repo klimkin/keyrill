@@ -6,6 +6,7 @@ mod scenarios_sources;
 mod scenarios_diagnostics;
 mod scenarios_editing;
 mod scenarios_finish;
+mod scenarios_keyboard;
 mod scenarios_lifecycle;
 mod scenarios_metadata;
 mod scenarios_service_publication;
