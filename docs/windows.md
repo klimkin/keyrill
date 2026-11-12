@@ -4,7 +4,7 @@ This is an x64 Text Services Framework adapter with manual conversion and config
 correction. It links the
 existing Rust engine through [the C ABI](../include/keyrill.h). It has no replacement backend,
 hooks, input injection, clipboard transport, or runtime network access. Admission covers the
-proof editor and the version-bounded Notepad main-document candidate described below.
+proof editor and the tested version-bounded Notepad main document described below.
 
 The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
 maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
@@ -27,8 +27,9 @@ fixture sequence, not physical keyboard evidence or general application support.
 EN-to-RU experiment below also passed with fresh owned evidence and an independent no-Space
 document/caret oracle. This completes the controlled-editor proof, not general Windows support.
 Manual commands, shared model correction in both directions, and vocabulary reloads also passed
-automated real-editor acceptance as described below. Application coverage, settings, and packaging
-remain later work. Unretained final destruction and complete callback drainage are not established
+automated real-editor acceptance as described below. Ordinary Notepad acceptance is recorded in
+the bounded admission section. Further application coverage, settings, and packaging remain later
+work. Unretained final destruction and complete callback drainage are not established
 by the bounded shutdown assertion.
 
 ## Build and check without installation
@@ -80,8 +81,8 @@ Its client ID and cookie belong only to those doubles. They never establish live
 
 ## Bounded Notepad admission and observation
 
-The runtime admits the main document of packaged x64 Notepad **11.2607.14.0** as a candidate
-for the existing owned-composition executor. Its package family
+The runtime admits the tested main document of packaged x64 Notepad **11.2607.14.0**
+through the existing owned-composition executor. Its package family
 `Microsoft.WindowsNotepad_8wekyb3d8bbwe`, package name `Microsoft.WindowsNotepad`, architecture,
 executable basename and exact version are captured at service activation. Other Notepad versions
 retain metadata observation and pass every key. Rust, the C ABI and macOS do not change.
@@ -121,17 +122,51 @@ Owned range, text, caret, returned range, and acknowledgement checks remain in t
 There is no UIA runtime dependency, admission override, second editor or new editing transport.
 
 Controlled native facts and COM schedules establish these branches, including zero ACP/text/
-composition/write before failed admission. They do not establish an owned operation in ordinary
-Notepad. First live acceptance still requires the exact reviewed DLL loaded by a fresh unmodified
-Notepad process, a nonnull owned composition, exact returned ranges and readback, an independent
-full public document/caret oracle and zero Unknown effects. Correction, retained reversal,
-manual conversion, model/vocabulary behavior, continuation, Undo, focus, tab, source and close
-remain separate live gates. Unchanged FINISH performs one exact owned-range replacement
-before ending the composition and preserves the original full selection. Controlled tests cover
-selection movement by replacement, composition end, or both, including clone gravity, moved carets,
-noncollapsed selections, and active-end style. Actual Notepad selection preservation and Undo
-remain unproven. The mapping of a platform-requested focus-loss commit also remains a live gate.
+composition/write before failed admission. Separate live runs loaded the reviewed DLL in fresh
+unmodified Notepad processes and checked owned operations against independent full-document
+and end-caret UIA predicates. Those runs passed the bounded behavior checks below with zero
+Unknown effects. Unchanged FINISH performs one exact owned-range replacement before ending
+the composition and preserves the original full selection. Actual checks include whole-document
+selection and native Undo. Controlled tests additionally cover clone gravity, noncollapsed
+selection movement by either native effect, and active-end style. The complete selection-style
+matrix has controlled coverage. Mapping a separately requested saved-text focus-loss commit
+remains a live gate.
 Focus and termination notifications grant no new write authority or saved-text writeback.
+
+### Notepad behavior acceptance
+
+The following checks used the packaged x64 version above and the same reviewed production
+service. Generated-key runs used fixture or model policy with public synthetic dictionary files.
+Each named public-document predicate checked exact UTF-16 text and a collapsed end caret.
+The source, prepared model, dictionary readiness, owned serial, lifecycle, and write outcomes
+were observed separately through the content-free service publisher.
+
+| Check | Observed result |
+|---|---|
+| EN fixture correction and rapid continuation | `привет x`, then native Undo leaves `привет ` |
+| EN model input `cgbcjr ` | `список ` with both dictionary sources ready |
+| RU model input `цщкдв ` | `world `, then reversal restores `цщкдв ` in the same owned composition |
+| Manual conversion and reversal | Exact whole-word results, retained ownership, and one verified write per command |
+| Provisional punctuation and PC ё | `[jhjij` converts to `хорошо` and PC backtick input converts to `ёлка` |
+| Vocabulary reload during a retained receipt | Reversal remains available in the same owned composition |
+| Protected word and forbidden target | `cgbcjr ` stays literal under the corresponding public vocabulary rules |
+| Oversized vocabulary reload | The last good protection remains active; restoring empty files restores correction |
+| Text surrounding an owned word | Conversion and reversal preserve the whole prefix and suffix. End leaves `left привет right` with its end caret |
+| Find and tab changes | Public Find input passes through; returning to the document preserves its exact text and end caret |
+
+Physical runs separately passed manual conversion and boundary reversal while focus stayed
+in Notepad. The held-Z run made one verified restoration followed by two acknowledged no-write
+repetitions. Ownership survived the observed Alt-then-Ctrl release callbacks. The restored
+`ghbdtn ` and its end caret passed both before release and after the later focus transition.
+A separate physical run confirmed that switching to chat expires the owned receipt before Z.
+An earlier physical attempt also ended its composition before command delivery; its initiating
+focus action was unrecorded.
+
+Both modifier release orders, denial, reentry, unknown effects, and lifecycle cancellation have
+controlled native coverage. Bare Alt opened normal Notepad keytips in separate generated-key
+checks before and after successful commands. The full physical modifier matrix, owned source
+changes, owned close, and final callback drainage retain their separate coverage limits.
+The controlled-editor lifecycle evidence remains recorded in its own sections.
 
 For an unadmitted Notepad version, after the existing source and loaded-layout checks, the first
 key callback in a native
@@ -237,8 +272,8 @@ or grants runtime admission. The helper module links only into the inspector and
 No inspector command registers the DLL, selects an input source, changes policy, requests text
 from the service or widens admission. The maintainer registers the reviewed exact DLL path with
 the existing registration tool and selects the source. First confirm a fresh activation,
-matching source digest and actual loaded DLL. Ordinary Notepad support still requires actual
-owned-composition and physical application acceptance under the bounded contract above.
+matching source digest and actual loaded DLL. New host versions require their own owned-composition
+and physical application acceptance under the bounded contract above.
 
 ### Observation protocol
 
@@ -333,8 +368,8 @@ post-acquisition known refusals, exact-modifier refusal, stale dispatch, executo
 independent release identities, nested commands, and releases around exact termination.
 Pure schedules cover all 512 high-bit source combinations, strict wire rejection, overflow,
 saturation, and frozen protocol-1 header rejection. Direct `GetKeyboardState` failure and
-its call count lack an injected seam and receive source review. Physical Notepad command
-retention remains a separate acceptance gate.
+its call count lack an injected seam and receive source review. The Notepad acceptance above
+records physical command retention separately from these controlled schedules.
 
 Windows provides [atomic aligned 32-bit access](https://learn.microsoft.com/en-us/windows/win32/sync/interlocked-variable-access).
 Writers use [interlocked stores with a full memory barrier](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-interlockedexchange)
@@ -349,8 +384,8 @@ This is diagnostic evidence, not authentication against a malicious process in t
 Publication happens after the outermost service callback. It copies existing scalar observations
 without waiting, allocating, performing I/O or querying COM or the host. Missing diagnostics keep
 the same admission and key disposition. Controlled tests compare the exact document, caret,
-service snapshot and lifecycle with publication enabled and disabled. Packaged-process mapping
-access and ordinary Notepad routing remain separate live gates.
+service snapshot and lifecycle with publication enabled and disabled. Live Notepad runs separately
+observed packaged-process mapping access and ordinary service routing.
 
 ## Manual conversion and reversal
 
@@ -370,7 +405,7 @@ using `ToUnicodeEx` without changing its keyboard state. Rust decides whether pu
 provisional word text or a finish request. PC backtick can therefore start `ёлка` as `` `krf ``,
 and `[jhjij` can convert to `хорошо`. Coalesced repeats remain finish-and-pass requests.
 
-This branch also contains a native command-delivery candidate for ordinary Notepad.
+Ordinary Notepad uses native command delivery.
 Activation registers K and Z with `ITfKeystrokeMgr::PreserveKey`, using distinct stable GUIDs
 and exactly `TF_MOD_LCONTROL | TF_MOD_LALT` on keydown. The same binding table registers an
 Alt-press observer with `VK_MENU` and `TF_MOD_IGNORE_ALL_MODIFIER`. All registrations must return `S_OK`
@@ -388,7 +423,8 @@ these queries. Known commands require actual left Ctrl and left Alt, with no Shi
 right Alt, or Windows key. Caps Lock remains allowed. The callback dispatches a zero-text manual
 or reverse event through the same executor. It supplies no scan code or repeat count, and the
 adapter invents neither. Each repeated manual callback can convert the owned text again.
-Repeated reversal cannot reuse an expired receipt. Held-key delivery remains a native-client gate.
+Repeated reversal cannot reuse an expired receipt. The bounded Notepad physical run above covers
+held-Z delivery and its no-write repetitions.
 The ordinary `KeyEntered` counter continues to count only ordinary-key callbacks.
 
 The observer always returns FALSE. It revokes the preceding Alt cycle before native queries
@@ -411,26 +447,27 @@ release order is supported. Source, focus, context, generation, ownership, termi
 ordinary new input and fresh Alt presses expire permission. Release validation reads native
 metadata only, with no text query, composition readback, edit session, Rust plan or write.
 
-This candidate assumes a bounded host contract for packaged x64 Notepad 11.2607.14.0.
+This path assumes a bounded host contract for packaged x64 Notepad 11.2607.14.0.
 Within unchanged source, context, generation and owned composition, either the witnessed
 cycle's actual release arrives, or a fresh observed Alt press or invalidation revokes it
 before a later cycle's release arrives. Missing both the original release and a later observer
 is indistinguishable and excluded. Controlled tests document that limit. An actual occurrence
-rejects this route. Observer delivery, ordering and normal bare-Alt menu behavior remain live
-gates. The combined observer and release intervention does not isolate which mechanism causes
-any eventual retention improvement.
+rejects this route. Live runs observed the observer, command completion, retained ownership,
+and matching Alt release. Separate generated-key checks preserved bare-Alt menu behavior.
+The combined observer and release intervention does not isolate each mechanism's contribution.
 
 Controlled registration and callback tests do not prove delivery in ordinary Notepad.
-The decisive live gate requires the exact reviewed DLL, a fresh owned `ghbdtn`, and the original
+When changing this route or admitting another host, run live acceptance with the reviewed DLL,
+a fresh owned `ghbdtn`, and the original
 left Ctrl + left Alt + K chord with no intervening focus or source action. Delivery must precede
 composition termination and produce one verified write, exact `привет` without Space, the end
-caret, and zero Unknown effects. Reversal and the remaining application gates follow separately.
+caret, and zero Unknown effects. Check reversal and that host's other application behavior separately.
 The same owned composition must survive command release with no menu transition. Separate
 bare Alt must retain normal menu behavior after success, refusal, cancellation and focus or
-source changes. Both physical press and release orders, held commands and physical admission
-remain required. Controlled success and generated chords do not close these actual-client gates.
-Absent, late, or unusable delivery rejects this candidate. A callback after termination cannot
-recover the committed word or establish new editing authority.
+source changes. Record physical press and release order, held commands, and physical admission
+separately. The bounded results above cover the observed sequences. Further modifier combinations
+and host versions need their own checks. Absent, late, or unusable delivery rejects the tested route.
+A callback after termination cannot recover the committed word or establish new editing authority.
 
 Commands use the same owned composition, exact range/text/caret checks, readback, and Rust
 acknowledgement as fixture correction. A successful acknowledged command can consume its key
@@ -510,9 +547,10 @@ preserved the existing mark and receipt without a document write. All recorded c
 unknown edit effects. Tests used only public synthetic vocabulary in private fixture files.
 
 These runs used agent-generated keys. They add real TSF routing and document evidence without
-adding physical keyboard evidence. Admission still covers only the proof editor. General
-application support, settings UI, and packaging remain unproved. Controlled worker tests and
-actual DLL lifetime checks passed under Windows AddressSanitizer. Pending I/O completion in
+adding physical keyboard evidence. The separate Notepad acceptance above extends admission to
+its version-bounded main document. Further application coverage, settings UI, and packaging
+remain later work. Controlled worker tests and actual DLL lifetime checks passed under Windows
+AddressSanitizer. Pending I/O completion in
 those tests was simulated, so they do not establish actual kernel-pending I/O behavior.
 
 ## Editing authority

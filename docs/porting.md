@@ -6,14 +6,14 @@ first; its state table, safety invariants and rejected mechanisms apply to every
 Don't write a second inference engine, and don't build a cross-platform editing abstraction
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
-Windows has an [SDK TSF proof](windows.md) with a passed first controlled-editor proof,
-owned manual conversion and reversal, and shared Rust model and vocabulary integration.
-Automated real-editor checks cover both model directions and vocabulary reload behavior.
-General Windows application support remains unproved. No Linux adapter exists.
-Packaged x64 Notepad 11.2607.14.0 has a compiled main-document admission candidate through the
-same executor. Other versions remain metadata-only and pass input. An explicit-PID inspector
-supplies independent field evidence and named public-document checks. Actual owned composition,
-correction and lifecycle support remain live gates; see
+Windows has passed controlled-editor and bounded ordinary
+Notepad acceptance. Packaged x64 Notepad 11.2607.14.0 uses the same owned-composition executor,
+shared model, and vocabulary integration. Exact UIA checks cover both model directions,
+retained reversal, rapid continuation, native Undo, and vocabulary reloads. Physical command
+checks cover conversion and held reversal within one focus interval. Other versions remain
+metadata-only and pass input. Application coverage, settings, and packaging remain later work.
+No Linux adapter exists. An explicit-PID inspector supplies independent field evidence and
+named public-document checks. The evidence limits are recorded with
 [Windows admission](windows.md#bounded-notepad-admission-and-observation).
 Each platform starts with the same first slice: one real
 editor, physical keys, an owned composition, a Rust decision, a verified update, commit, then
@@ -125,11 +125,11 @@ These follow from the architecture and apply on every platform:
 The SDK implementation is in `native/windows/`; its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
-termination on focus loss. The adapter admits proof controls and a version-bounded Notepad
-main-document candidate, with ordinary Notepad editing still awaiting live acceptance. TSF remains a proposal
-([ADR 007](adr/007-windows-tsf.md)): granted edit sessions, explicit
-contexts and owned compositions fit the contract better than UI Automation reads plus synthetic
-replacement. Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
+termination on focus loss. The adapter admits proof controls and the tested version-bounded
+Notepad main document. Granted edit sessions, explicit contexts, and owned compositions satisfy
+the editing contract. [TSF design](adr/007-windows-tsf.md).
+
+Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
 native COM shim if it narrows lifetime risk.
 
 The Windows executor replaces the exact owned range once for each MARK or FINISH that reaches
@@ -141,16 +141,18 @@ then verifies and, if needed, restores that complete selection after replacement
 end. Restoration uses a metadata-only range clone and at most one `SetSelection`; failed checks
 stop without retry or another character write. Controlled doubles cover selection movement by
 either native effect, clone gravity, exact selection styles, and fresh policy refusal.
-Actual Notepad selection preservation and Undo remain separate live gates.
+Actual Notepad checks cover rapid continuation, native Undo, caret movement, and whole-document
+selection. The complete selection-style matrix has controlled coverage.
 
-The Windows branch contains a bounded `PreserveKey` delivery candidate for manual conversion
+The Windows branch uses bounded `PreserveKey` delivery for manual conversion
 and reversal. Two exact left Ctrl + left Alt commands and one declined Alt-press observer belong
 to one activation through a shared binding table. A provisional
 stack owner accounts for late successful registrations before rollback, and reactivation waits
 for the whole activation call and all captured releases. Unknown mandatory acquisition or cleanup
 effects fault the instance. Ordinary and preserved callbacks share native admission and the
 existing executor. A command GUID supplies no modifier, repeat, or document-authority facts.
-Actual Notepad delivery before termination remains unproved; see
+Physical Notepad runs observed command delivery and retained ownership through modifier release,
+as described in
 [the command contract](windows.md#manual-conversion-and-reversal).
 The Windows host probe uses a separate protocol-3 command and modifier-release observation
 window. Callback-local tickets preserve command identity through reentry. Lifecycle anchors
@@ -159,9 +161,9 @@ entry. Separate completion records distinguish verified manual MARK, no-write re
 refusal and unknown effects. The observer witnesses an Alt cycle before a verified command can
 grant one release permission on its owned composition. Release validation performs metadata
 queries only. Missing original release plus missing later observer is an excluded indistinguishable
-host schedule. Actual Notepad observer delivery, bare-Alt behavior, retention and physical
-admission remain open gates. See
-[the observation protocol](windows.md#observation-protocol) for retention and coverage rules.
+host schedule. Actual Notepad checks observed delivery and retention, with separate generated
+bare-Alt checks and the physical coverage limits recorded in
+[Notepad acceptance](windows.md#notepad-behavior-acceptance).
 
 | Interface | Documented behavior | Obligation |
 |---|---|---|
