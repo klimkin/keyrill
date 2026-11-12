@@ -24,6 +24,8 @@ struct KrWorkerReady {
 // The creator owns Worker until Free. Each returned owner transfers one Arc token,
 // released exactly once with DictionaryRelease after every dictionary borrow drains.
 extern "C" {
+// A successful setter retains paired callback storage until replacement or null-table clear.
+// Clear before releasing the caller's DLL reference. Started workers hold independent leases.
 BOOL WINAPI KeyrillTestWorkerHooks(const KrWorkerHooks *) noexcept;
 void *WINAPI KeyrillTestWorkerCreate() noexcept;
 BOOL WINAPI KeyrillTestWorkerStart(void *, const KrWorkerSource *, uint32_t activation,

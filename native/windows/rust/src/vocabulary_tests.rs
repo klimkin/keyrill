@@ -3,6 +3,69 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicUsize};
 
+#[cfg(feature = "test-api")]
+#[test]
+fn configured_hooks_retain_through_snapshot_and_release_outside_lock() {
+    struct Owner {
+        retained: AtomicUsize,
+        released: AtomicUsize,
+        unlocked: AtomicBool,
+    }
+
+    unsafe extern "system" fn retain_owner(context: *mut c_void) {
+        // SAFETY: the setter caller or its retained snapshot keeps this Arc allocation live.
+        unsafe { Arc::increment_strong_count(context.cast::<Owner>()) };
+        let owner = unsafe { &*context.cast::<Owner>() };
+        owner.retained.fetch_add(1, Ordering::AcqRel);
+        if !TEST_HOOKS.get().is_some_and(|slot| slot.try_lock().is_ok()) {
+            owner.unlocked.store(false, Ordering::Release);
+        }
+    }
+
+    unsafe extern "system" fn release_owner(context: *mut c_void) {
+        // SAFETY: this callback consumes exactly one successful retain_owner strong reference.
+        let owner = unsafe { Arc::from_raw(context.cast::<Owner>()) };
+        owner.released.fetch_add(1, Ordering::AcqRel);
+        if !TEST_HOOKS.get().is_some_and(|slot| slot.try_lock().is_ok()) {
+            owner.unlocked.store(false, Ordering::Release);
+        }
+    }
+
+    TEST_HOOKS.get_or_init(|| Mutex::new(None));
+    let owner = Arc::new(Owner {
+        retained: AtomicUsize::new(0),
+        released: AtomicUsize::new(0),
+        unlocked: AtomicBool::new(true),
+    });
+    let weak = Arc::downgrade(&owner);
+    let hooks = Hooks {
+        context: Arc::as_ptr(&owner).cast_mut().cast(),
+        retain_context: retain_owner as *mut c_void,
+        release_context: release_owner as *mut c_void,
+        ..Hooks::default()
+    };
+    // SAFETY: the owned table and original Arc stay live until the setter retains them.
+    assert!(unsafe { test_api::KeyrillTestWorkerHooks(&hooks) }.as_bool());
+    assert_eq!(owner.retained.load(Ordering::Acquire), 1);
+    let snapshot = configured_hooks().expect("retained startup snapshot");
+    // SAFETY: null explicitly clears the stored table and performs no pointer read.
+    assert!(unsafe { test_api::KeyrillTestWorkerHooks(std::ptr::null()) }.as_bool());
+    assert_eq!(owner.released.load(Ordering::Acquire), 0);
+    drop(owner);
+    let worker_lease = HookLease::acquire(snapshot.0).expect("startup retains from live snapshot");
+    drop(snapshot);
+    let remaining = weak
+        .upgrade()
+        .expect("worker lease retains callback context");
+    assert_eq!(remaining.retained.load(Ordering::Acquire), 2);
+    assert_eq!(remaining.released.load(Ordering::Acquire), 1);
+    drop(worker_lease);
+    assert_eq!(remaining.released.load(Ordering::Acquire), 2);
+    assert!(remaining.unlocked.load(Ordering::Acquire));
+    drop(remaining);
+    assert!(weak.upgrade().is_none());
+}
+
 struct PublicFiles(PathBuf);
 
 impl PublicFiles {

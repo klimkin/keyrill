@@ -55,7 +55,7 @@ pub(crate) struct Hooks {
 }
 
 #[cfg(feature = "test-api")]
-static TEST_HOOKS: std::sync::OnceLock<Mutex<Hooks>> = std::sync::OnceLock::new();
+static TEST_HOOKS: std::sync::OnceLock<Mutex<Option<Arc<HookLease>>>> = std::sync::OnceLock::new();
 
 // SAFETY: the dependency boundary requires every callback and context to support worker threads.
 unsafe impl Send for Hooks {}
@@ -219,6 +219,15 @@ impl Drop for HookLease {
             let _ = unsafe { kr_worker_lifetime(self.0.release_context, self.0.context) }.checked();
         }
     }
+}
+
+#[cfg(feature = "test-api")]
+fn configured_hooks() -> Option<Arc<HookLease>> {
+    TEST_HOOKS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()?
+        .clone()
 }
 
 #[derive(Default)]
@@ -1161,19 +1170,20 @@ impl Worker {
     ) -> bool {
         self.stop();
         #[cfg(feature = "test-api")]
-        let hooks = if hooks.call.is_null() {
-            TEST_HOOKS
-                .get_or_init(|| Mutex::new(Hooks::default()))
-                .lock()
-                .map(|hooks| *hooks)
-                .unwrap_or_default()
+        let configured = if hooks.call.is_null() {
+            configured_hooks()
         } else {
-            hooks
+            None
         };
-        catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(feature = "test-api")]
+        let hooks = configured.as_ref().map_or(hooks, |lease| lease.0);
+        let started = catch_unwind(AssertUnwindSafe(|| {
             self.launch(model, activation, owner, hooks)
         }))
-        .unwrap_or(false)
+        .unwrap_or(false);
+        #[cfg(feature = "test-api")]
+        drop(configured);
+        started
     }
 
     fn launch(&mut self, model: &Model, activation: u32, owner: ModuleOwner, hooks: Hooks) -> bool {
@@ -1290,23 +1300,25 @@ mod test_api {
 
     #[unsafe(no_mangle)]
     pub(crate) unsafe extern "system" fn KeyrillTestWorkerHooks(hooks: *const Hooks) -> BOOL {
-        if hooks.is_null() {
-            return BOOL(0);
-        }
         BOOL::from(
             catch_unwind(AssertUnwindSafe(|| {
-                // SAFETY: the test caller lends a complete hooks table during this call.
-                let hooks = unsafe { *hooks };
-                if hooks.retain_context.is_null() != hooks.release_context.is_null() {
-                    return false;
-                }
-                let Ok(mut destination) = TEST_HOOKS
-                    .get_or_init(|| Mutex::new(Hooks::default()))
-                    .lock()
-                else {
-                    return false;
+                let replacement = if hooks.is_null() {
+                    None
+                } else {
+                    // SAFETY: the test caller lends a complete table through its retain callback.
+                    let Ok(lease) = HookLease::acquire(unsafe { *hooks }) else {
+                        return false;
+                    };
+                    Some(Arc::new(lease))
                 };
-                *destination = hooks;
+                let retired = {
+                    let Ok(mut destination) = TEST_HOOKS.get_or_init(|| Mutex::new(None)).lock()
+                    else {
+                        return false;
+                    };
+                    std::mem::replace(&mut *destination, replacement)
+                };
+                drop(retired);
                 true
             }))
             .unwrap_or(false),
