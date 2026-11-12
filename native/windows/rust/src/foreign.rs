@@ -1,5 +1,7 @@
 //! The only owner of host COM references. Generated ownership helpers stay out of this module too.
 
+pub(crate) mod registrar;
+
 use crate::field_contract::{Facts, HostIdentity};
 use std::ffi::c_void;
 use std::marker::PhantomData;

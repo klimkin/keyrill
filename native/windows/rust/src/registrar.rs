@@ -1,8 +1,12 @@
 //! Maintainer CLI for the existing TSF profiles and per-user COM registration.
 
-use crate::foreign::{self, Call, Lease};
+#[cfg(feature = "test-api")]
+use crate::foreign;
+use crate::foreign::{Call, Lease, registrar as native};
 use crate::profiles::{PROFILES, Profile, SERVICE_ID};
-use std::ffi::{OsStr, OsString, c_void};
+#[cfg(feature = "test-api")]
+use std::ffi::c_void;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use windows::Win32::Foundation::{
@@ -17,61 +21,11 @@ use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
     RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{HKL, KLF_NOTELLSHELL, LoadKeyboardLayoutW};
+use windows::Win32::UI::Input::KeyboardAndMouse::{KLF_NOTELLSHELL, LoadKeyboardLayoutW};
 use windows::Win32::UI::TextServices::{
-    IEnumTfLanguageProfiles, ITfCategoryMgr, ITfInputProcessorProfiles, TF_LANGUAGEPROFILE,
+    ITfCategoryMgr, ITfInputProcessorProfiles, TF_LANGUAGEPROFILE,
 };
-use windows_core::{BOOL, BSTR, GUID, HRESULT, Interface, PCWSTR};
-
-unsafe extern "C" {
-    fn kr_registrar_create(category: BOOL, output: *mut *mut c_void) -> Call;
-    fn kr_registrar_entries(manager: *mut c_void, language: u16, output: *mut *mut c_void) -> Call;
-    fn kr_registrar_next(
-        entries: *mut c_void,
-        entry: *mut TF_LANGUAGEPROFILE,
-        fetched: *mut u32,
-    ) -> Call;
-    fn kr_registrar_description(
-        manager: *mut c_void,
-        service: *const GUID,
-        language: u16,
-        profile: *const GUID,
-        output: *mut *const u16,
-    ) -> Call;
-    fn kr_registrar_enable(
-        manager: *mut c_void,
-        service: *const GUID,
-        language: u16,
-        profile: *const GUID,
-        enabled: BOOL,
-    ) -> Call;
-    fn kr_registrar_enabled(
-        manager: *mut c_void,
-        service: *const GUID,
-        language: u16,
-        profile: *const GUID,
-        output: *mut BOOL,
-    ) -> Call;
-    fn kr_registrar_service(manager: *mut c_void, service: *const GUID, install: BOOL) -> Call;
-    fn kr_registrar_add(
-        manager: *mut c_void,
-        service: *const GUID,
-        language: u16,
-        profile: *const GUID,
-        description: *const u16,
-        description_length: u32,
-        dll: *const u16,
-        dll_length: u32,
-    ) -> Call;
-    fn kr_registrar_substitute(
-        manager: *mut c_void,
-        service: *const GUID,
-        language: u16,
-        profile: *const GUID,
-        layout: HKL,
-    ) -> Call;
-    fn kr_registrar_category(manager: *mut c_void, service: *const GUID, install: BOOL) -> Call;
-}
+use windows_core::{BOOL, BSTR, HRESULT, Interface, PCWSTR};
 
 enum Command {
     Status,
@@ -110,7 +64,6 @@ fn report(stage: &str, result: HRESULT, profile: &str) -> HRESULT {
 
 fn returned(call: Call) -> HRESULT {
     if call.exception != 0 {
-        foreign::quarantine();
         E_UNEXPECTED
     } else {
         call.result
@@ -131,46 +84,24 @@ fn win32_failure(result: HRESULT) -> HRESULT {
     if result.is_err() { result } else { E_FAIL }
 }
 
-fn pointer<T: Interface>(value: &Lease<T>) -> *mut c_void {
-    value.address() as *mut c_void
-}
-
-fn acquired<T: Interface>(call: Call, output: *mut c_void) -> Result<Lease<T>, HRESULT> {
-    let result = returned(call);
-    if result != S_OK && !output.is_null() {
-        foreign::quarantine();
-    }
-    exact(result)?;
-    if output.is_null() {
-        return Err(E_UNEXPECTED);
-    }
-    // SAFETY: exact S_OK transfers one reference for T from the typed acquisition call.
-    unsafe { foreign::adopt(output) }.map_err(|result| result.result)
-}
-
-fn create<T: Interface>(category: bool, stage: &str) -> Result<Lease<T>, HRESULT> {
-    let mut output = std::ptr::null_mut();
-    // SAFETY: output is initialized writable storage. The caller fixes T to the selected class.
-    let call = unsafe { kr_registrar_create(BOOL::from(category), &mut output) };
+fn acquisition<T: Interface>(
+    stage: &str,
+    (call, value): (Call, Result<Lease<T>, HRESULT>),
+) -> Result<Lease<T>, HRESULT> {
     let _ = report(stage, call.result, "service");
-    acquired(call, output)
+    value
 }
-
 fn presence(manager: &Lease<ITfInputProcessorProfiles>, profile: &Profile) -> HRESULT {
-    let mut output = std::ptr::null_mut();
-    // SAFETY: the lease retains the manager and output is a distinct writable pointer slot.
-    let call = unsafe { kr_registrar_entries(pointer(manager), profile.language, &mut output) };
+    let (call, entries) = native::entries(manager, profile.language);
     let _ = report("EnumLanguageProfiles", call.result, label(profile));
-    let entries: Lease<IEnumTfLanguageProfiles> = match acquired(call, output) {
+    let entries = match entries {
         Ok(entries) => entries,
         Err(result) => return result,
     };
     loop {
         let mut entry = TF_LANGUAGEPROFILE::default();
         let mut fetched = 0;
-        // SAFETY: the lease retains the enumerator and outputs are initialized distinct storage.
-        let result =
-            returned(unsafe { kr_registrar_next(pointer(&entries), &mut entry, &mut fetched) });
+        let result = returned(native::next(&entries, &mut entry, &mut fetched));
         if result == S_FALSE && fetched == 0 {
             return report("Profile presence", S_FALSE, label(profile));
         }
@@ -192,16 +123,7 @@ fn presence(manager: &Lease<ITfInputProcessorProfiles>, profile: &Profile) -> HR
             continue;
         }
         let mut description = std::ptr::null();
-        // SAFETY: the manager lease is live and description is a writable BSTR result slot.
-        let call = unsafe {
-            kr_registrar_description(
-                pointer(manager),
-                &SERVICE_ID,
-                profile.language,
-                &profile.id,
-                &mut description,
-            )
-        };
+        let call = native::description(manager, profile, &mut description);
         let result = report(
             "GetLanguageProfileDescription",
             returned(call),
@@ -252,16 +174,7 @@ fn enable_profiles(manager: &Lease<ITfInputProcessorProfiles>, enabled: bool) ->
         return result;
     }
     for profile in &PROFILES {
-        // SAFETY: the manager lease and immutable GUIDs remain live throughout the native call.
-        let call = unsafe {
-            kr_registrar_enable(
-                pointer(manager),
-                &SERVICE_ID,
-                profile.language,
-                &profile.id,
-                BOOL::from(enabled),
-            )
-        };
+        let call = native::enable(manager, profile, enabled);
         let result = report("EnableLanguageProfile", returned(call), label(profile));
         if let Err(result) = exact(result) {
             return report(
@@ -277,16 +190,7 @@ fn enable_profiles(manager: &Lease<ITfInputProcessorProfiles>, enabled: bool) ->
     }
     for profile in &PROFILES {
         let mut actual = BOOL(0);
-        // SAFETY: manager and GUIDs are live and actual is a writable BOOL result slot.
-        let call = unsafe {
-            kr_registrar_enabled(
-                pointer(manager),
-                &SERVICE_ID,
-                profile.language,
-                &profile.id,
-                &mut actual,
-            )
-        };
+        let call = native::enabled(manager, profile, &mut actual);
         let result = report(
             "IsEnabledLanguageProfile readback",
             returned(call),
@@ -383,15 +287,18 @@ fn registry(dll: Option<&[u16]>) -> HRESULT {
 }
 
 fn register(dll: Option<&[u16]>) -> HRESULT {
-    let manager: Lease<ITfInputProcessorProfiles> =
-        match create(false, "CoCreateInstance InputProcessorProfiles") {
-            Ok(manager) => manager,
-            Err(result) => return result,
-        };
-    let categories: Lease<ITfCategoryMgr> = match create(true, "CoCreateInstance CategoryMgr") {
-        Ok(categories) => categories,
+    let manager: Lease<ITfInputProcessorProfiles> = match acquisition(
+        "CoCreateInstance InputProcessorProfiles",
+        native::profiles(),
+    ) {
+        Ok(manager) => manager,
         Err(result) => return result,
     };
+    let categories: Lease<ITfCategoryMgr> =
+        match acquisition("CoCreateInstance CategoryMgr", native::categories()) {
+            Ok(categories) => categories,
+            Err(result) => return result,
+        };
     let install = dll.is_some();
     if install {
         let result = registry(dll);
@@ -399,12 +306,9 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
             return result;
         }
     }
-    // SAFETY: manager and service GUID are live for the complete fenced call.
     let service = report(
         if install { "Register" } else { "Unregister" },
-        returned(unsafe {
-            kr_registrar_service(pointer(&manager), &SERVICE_ID, BOOL::from(install))
-        }),
+        returned(native::service(&manager, install)),
         "service",
     );
     if install && service.is_err() {
@@ -412,20 +316,7 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
     }
     if let Some(dll) = dll {
         for profile in &PROFILES {
-            let description: Vec<u16> = profile.description.encode_utf16().collect();
-            // SAFETY: all buffers and GUIDs are live, with explicit lengths excluding the DLL NUL.
-            let call = unsafe {
-                kr_registrar_add(
-                    pointer(&manager),
-                    &SERVICE_ID,
-                    profile.language,
-                    &profile.id,
-                    description.as_ptr(),
-                    description.len() as u32,
-                    dll.as_ptr(),
-                    (dll.len() - 1) as u32,
-                )
-            };
+            let call = native::add(&manager, profile, dll);
             let result = report("AddLanguageProfile", returned(call), label(profile));
             if result.is_err() {
                 return result;
@@ -446,18 +337,9 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
                     );
                 }
             };
-            // SAFETY: the manager lease and profile GUID remain live through the native call.
             let result = report(
                 "SubstituteKeyboardLayout",
-                returned(unsafe {
-                    kr_registrar_substitute(
-                        pointer(&manager),
-                        &SERVICE_ID,
-                        profile.language,
-                        &profile.id,
-                        layout,
-                    )
-                }),
+                returned(native::substitute(&manager, profile, layout)),
                 label(profile),
             );
             if result.is_err() {
@@ -465,16 +347,13 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
             }
         }
     }
-    // SAFETY: categories and service GUID are live for the complete fenced call.
     let category = report(
         if install {
             "RegisterCategory"
         } else {
             "UnregisterCategory"
         },
-        returned(unsafe {
-            kr_registrar_category(pointer(&categories), &SERVICE_ID, BOOL::from(install))
-        }),
+        returned(native::category(&categories, install)),
         "service",
     );
     if install {
@@ -494,11 +373,13 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
 }
 
 fn status() -> HRESULT {
-    let manager: Lease<ITfInputProcessorProfiles> =
-        match create(false, "CoCreateInstance InputProcessorProfiles status") {
-            Ok(manager) => manager,
-            Err(result) => return result,
-        };
+    let manager: Lease<ITfInputProcessorProfiles> = match acquisition(
+        "CoCreateInstance InputProcessorProfiles status",
+        native::profiles(),
+    ) {
+        Ok(manager) => manager,
+        Err(result) => return result,
+    };
     let mut path = registry_path();
     path.pop();
     path.extend("\\InprocServer32".encode_utf16().chain(Some(0)));
@@ -545,18 +426,9 @@ fn status() -> HRESULT {
         }
         let mut enabled = BOOL(0);
         let available = if registered == S_OK {
-            // SAFETY: manager/GUIDs are live and enabled is a writable output slot.
             report(
                 "IsEnabledLanguageProfile status",
-                returned(unsafe {
-                    kr_registrar_enabled(
-                        pointer(&manager),
-                        &SERVICE_ID,
-                        profile.language,
-                        &profile.id,
-                        &mut enabled,
-                    )
-                }),
+                returned(native::enabled(&manager, profile, &mut enabled)),
                 label(profile),
             )
         } else {
@@ -593,7 +465,10 @@ fn status() -> HRESULT {
 }
 
 fn enable(enabled: bool, check: bool) -> HRESULT {
-    let manager = match create(false, "CoCreateInstance InputProcessorProfiles preflight") {
+    let manager = match acquisition(
+        "CoCreateInstance InputProcessorProfiles preflight",
+        native::profiles(),
+    ) {
         Ok(manager) => manager,
         Err(result) => return result,
     };
