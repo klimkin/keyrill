@@ -65,38 +65,8 @@ fn identity() {
 
 fn main() {
     identity();
-    println!("cargo:rerun-if-changed=foreign_calls.cpp");
-    println!("cargo:rerun-if-changed=foreign_calls.h");
-    println!("cargo:rerun-if-changed=registrar_calls.cpp");
-    println!("cargo:rerun-if-changed=registrar_calls.h");
-    println!("cargo:rerun-if-changed=worker_calls.cpp");
-    println!("cargo:rerun-if-changed=worker_calls.h");
-    println!("cargo:rerun-if-env-changed=KEYRILL_ASAN");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllGetClassObject,PRIVATE");
+        println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllCanUnloadNow,PRIVATE");
     }
-    println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllGetClassObject,PRIVATE");
-    println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllCanUnloadNow,PRIVATE");
-    let mut native = cc::Build::new();
-    native
-        .cpp(true)
-        .file("foreign_calls.cpp")
-        .file("registrar_calls.cpp")
-        .file("worker_calls.cpp")
-        .flag("/std:c++20")
-        .flag("/EHsc")
-        .warnings_into_errors(true);
-    if std::env::var("KEYRILL_ASAN").as_deref() == Ok("ON") {
-        let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
-        native
-            .flag("/fsanitize=address")
-            .flag("/Zi")
-            .flag("/FS")
-            .flag(format!(
-                "/Fd{}",
-                output.join("keyrill-native.pdb").display()
-            ));
-        println!("cargo:rustc-link-arg=/DEBUG");
-    }
-    native.compile("keyrill_foreign_calls");
 }

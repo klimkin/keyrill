@@ -8,7 +8,6 @@ fn frame(current: Rc<dyn Fn() -> bool>) -> Rc<Frame> {
         current,
         entry: Cell::new(Entry::Ready),
         value: Cell::new(Metadata::default()),
-        witnesses: RefCell::new(Vec::new()),
         panicked: Cell::new(false),
         _owner: com::create_owned(Service::new()),
     })
@@ -39,10 +38,7 @@ fn expired_callback_never_reads_borrowed_current_flag() {
 #[test]
 fn current_loss_takes_precedence_over_native_status() {
     let frame = frame(Rc::new(|| false));
-    assert!(!frame.good(Call {
-        result: E_FAIL,
-        exception: 0,
-    }));
+    assert!(!frame.good(Call { result: E_FAIL }));
     assert_eq!(frame.value.get().reason, Reason::Stale);
     assert_eq!(frame.value.get().result, 0);
 }
@@ -50,10 +46,7 @@ fn current_loss_takes_precedence_over_native_status() {
 #[test]
 fn native_status_requires_exact_success() {
     let frame = frame(Rc::new(|| true));
-    assert!(!frame.good(Call {
-        result: S_FALSE,
-        exception: 0,
-    }));
+    assert!(!frame.good(Call { result: S_FALSE }));
     assert_eq!(frame.value.get().reason, Reason::Native);
     assert_eq!(frame.value.get().result, S_FALSE.0 as u32);
 }
@@ -81,16 +74,12 @@ fn normally_returned_interface_is_retired_after_nonexact_status() {
     // SAFETY: the generated object transfers exactly its one live COM reference to this lease.
     let lease = unsafe { foreign::adopt::<ITfEditSession>(object.into_raw()) }.unwrap();
     let output = frame.required(|| Returned {
-        call: Call {
-            result: S_FALSE,
-            exception: 0,
-        },
+        call: Call { result: S_FALSE },
         value: Some(lease),
     });
     assert!(output.is_none());
     assert_eq!(drops.get(), 1);
     assert_eq!(frame.value.get().reason, Reason::Native);
-    assert!(frame.releases_ok());
 }
 
 #[test]

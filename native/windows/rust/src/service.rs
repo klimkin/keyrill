@@ -174,7 +174,7 @@ impl Resources {
                 E_FAIL
             });
         }
-        if call.exception != 0 || !absent_allowed {
+        if !absent_allowed {
             self.uncertain.set(true);
         }
     }
@@ -206,23 +206,11 @@ impl Resources {
 impl Drop for Resources {
     fn drop(&mut self) {
         let _ = self.drain();
-        let witnesses = [
-            self.profiles.as_ref().map(Lease::release_witness),
-            self.keys.as_ref().map(Lease::release_witness),
-            self.source.as_ref().map(Lease::release_witness),
-            self.manager.as_ref().map(Lease::release_witness),
-        ];
         // Release can reenter. Draining stays visible until every captured lease has been released.
         drop(self.profiles.take());
         drop(self.keys.take());
         drop(self.source.take());
         drop(self.manager.take());
-        if witnesses.iter().flatten().any(|witness| witness.failed()) {
-            self.uncertain.set(true);
-        }
-        if self.uncertain.get() {
-            foreign::quarantine();
-        }
         if let Some(owner) = self.owner.upgrade() {
             let mut state = owner.state.borrow_mut();
             if state.epoch == self.epoch && state.activation == Activation::Draining {
@@ -628,24 +616,13 @@ impl Service {
             let identity = unsafe { foreign::query::<IUnknown>(composition) };
             let identity = match identity {
                 Ok(identity) => identity,
-                Err(error) => {
-                    let exception = error.call().exception != 0;
+                Err(_) => {
                     self.lifecycle(
                         LifecycleKind::TerminationUnresolved,
                         serial,
                         LifecycleCause::None,
-                        if exception {
-                            Unresolved::Exception
-                        } else {
-                            Unresolved::IdentityFailure
-                        },
+                        Unresolved::IdentityFailure,
                     );
-                    if exception {
-                        if self.current_owned(guard, Some(&owned.identity)) {
-                            self.invalidate_if(guard, true);
-                        }
-                        return E_FAIL;
-                    }
                     return S_OK;
                 }
             };
@@ -761,11 +738,8 @@ impl Service {
                 &native.profile_cookie,
             ),
         ] {
-            native.uncertain.set(true);
             let (call, cookie) = tsf::advise(source, &id, sink);
-            if call.exception == 0 {
-                native.uncertain.set(false);
-            }
+
             if call.exact() {
                 target.set(cookie);
                 if cookie == TF_INVALID_COOKIE {
@@ -779,21 +753,15 @@ impl Service {
             }
         }
         let keys = native.keys.as_ref().ok_or(E_FAIL)?;
-        native.uncertain.set(true);
         let call = tsf::advise_keys(keys, native.client, sinks.keys);
-        if call.exception == 0 {
-            native.uncertain.set(false);
-        }
+
         if call.exact() {
             native.key_sink.set(true);
         }
         self.acquisition(native.epoch, call)?;
         for binding in &BINDINGS {
-            native.uncertain.set(true);
             let call = tsf::preserve(keys, native.client, binding);
-            if call.exception == 0 {
-                native.uncertain.set(false);
-            }
+
             if call.exact() {
                 native.bindings.set(native.bindings.get() + 1);
             }
@@ -1046,7 +1014,7 @@ impl Service {
             return;
         }
         let call = tsf::advise_single(&source, resources.client, provider);
-        if call.exception == 0 && call.result.is_ok() && self.same_activation(epoch) {
+        if call.result.is_ok() && self.same_activation(epoch) {
             let retired = self.state.borrow_mut().diagnostic_source.replace(source);
             drop(retired);
         } else {
@@ -1124,13 +1092,8 @@ impl Service {
             && decision.current()
             && self.current_owned(guard, Some(ownership))
             && crate::keys::active_profile(&profile, mode);
-        let witness = profiles.release_witness();
         drop(profiles);
-        if !exact
-            || witness.failed()
-            || !decision.current()
-            || !self.current_owned(guard, Some(ownership))
-        {
+        if !exact || !decision.current() || !self.current_owned(guard, Some(ownership)) {
             return None;
         }
         // SAFETY: the native key callback retains context through this synchronous, read-only proof.
@@ -1361,24 +1324,10 @@ impl Service {
 
     fn admission_call(&self, guard: Guard, call: Call, stage: Stage) -> Result<(), HRESULT> {
         if !call.exact() {
-            self.refuse(
-                stage,
-                if call.exception != 0 {
-                    Cause::Exception
-                } else {
-                    Cause::Native
-                },
-                if call.exception != 0 {
-                    S_OK
-                } else {
-                    call.result
-                },
-            );
+            self.refuse(stage, Cause::Native, call.result);
             self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
-            if call.exception != 0 {
-                self.invalidate_if(guard, true);
-            }
-            return Err(if call.exception != 0 { E_FAIL } else { S_OK });
+
+            return Err(S_OK);
         }
         if !self.current(guard) {
             self.refuse(stage, Cause::Stale, S_OK);
@@ -1474,26 +1423,14 @@ impl Service {
                     Stage::Layout,
                     if matches!(error, foreign::InterfaceError::Missing) {
                         Cause::Missing
-                    } else if error.call().exception != 0 {
-                        Cause::Exception
                     } else {
                         Cause::Native
                     },
-                    if error.call().exception != 0 {
-                        S_OK
-                    } else {
-                        error.call().result
-                    },
+                    error.call().result,
                 );
                 self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
-                if error.call().exception != 0 {
-                    self.invalidate_if(guard, true);
-                }
-                return Err(if error.call().exception != 0 {
-                    E_FAIL
-                } else {
-                    S_OK
-                });
+
+                return Err(S_OK);
             }
         };
         if !self.current(guard) {
@@ -1555,13 +1492,11 @@ impl Service {
             unsafe { self.observe_host(owner.clone(), context) };
             return Err(S_OK);
         }
-        let witnesses = [substitute.release_witness(), manager.release_witness()];
         drop(substitute);
         drop(manager);
-        if witnesses.iter().any(foreign::ReleaseWitness::failed) {
-            self.refuse(Stage::Layout, Cause::Exception, S_OK);
-            self.invalidate_if(guard, true);
-            return Err(E_FAIL);
+        if !self.current(guard) {
+            self.refuse(Stage::Layout, Cause::Stale, S_OK);
+            return Err(S_OK);
         }
         Ok(AdmittedKey {
             guard,
@@ -1755,22 +1690,8 @@ impl Service {
             match unsafe { Frame::editing(Rc::clone(self), owner, context, event, authority) } {
                 Ok(frame) => frame,
                 Err(call) => {
-                    self.refuse(
-                        Stage::Handle,
-                        if call.exception != 0 {
-                            Cause::Exception
-                        } else {
-                            Cause::Native
-                        },
-                        if call.exception != 0 {
-                            S_OK
-                        } else {
-                            call.result
-                        },
-                    );
-                    if call.exception != 0 {
-                        self.invalidate_if(guard, true);
-                    }
+                    self.refuse(Stage::Handle, Cause::Native, call.result);
+
                     return Execution::default();
                 }
             };
@@ -1794,8 +1715,7 @@ impl Service {
             state.diagnostics.request_result = result.outer.result.0 as u32;
             state.diagnostics.session_result = result.callback.0 as u32;
         }
-        if result.outer.exception == 0
-            && result.outer.result.is_ok()
+        if result.outer.result.is_ok()
             && result.callback.is_ok()
             && result.entered
             && result.completed
@@ -1811,9 +1731,7 @@ impl Service {
                 },
             }
         } else {
-            if result.outer.exception != 0 {
-                self.refuse(Stage::Request, Cause::Exception, S_OK);
-            } else if result.outer.result.is_err() {
+            if result.outer.result.is_err() {
                 self.refuse(Stage::Request, Cause::Native, result.outer.result);
             } else if result.callback.is_err() {
                 self.refuse(Stage::Session, Cause::Native, result.callback);
@@ -1823,9 +1741,7 @@ impl Service {
             let eaten = frame.unknown_disposition();
             self.invalidate_if(
                 guard,
-                result.outer.exception != 0
-                    || result.effect != Effect::Unattempted
-                    || self.owned().is_some(),
+                result.effect != Effect::Unattempted || self.owned().is_some(),
             );
             Execution {
                 eaten,
@@ -2030,10 +1946,7 @@ impl Service {
             return foreign::document::capture(&dependencies.table, window, &host);
         }
         foreign::Returned {
-            call: Call {
-                result: S_OK,
-                exception: 0,
-            },
+            call: Call { result: S_OK },
             value: crate::field::capture(window, host),
         }
     }
@@ -2069,16 +1982,8 @@ impl Service {
             Err(call) => {
                 if self.state.borrow().epoch == guard.epoch {
                     self.state.borrow_mut().metadata = crate::observation::Metadata {
-                        reason: if call.exception != 0 {
-                            crate::observation::Reason::Exception
-                        } else {
-                            crate::observation::Reason::Native
-                        },
-                        result: if call.exception != 0 {
-                            0
-                        } else {
-                            call.result.0 as u32
-                        },
+                        reason: crate::observation::Reason::Native,
+                        result: call.result.0 as u32,
                         ..crate::observation::Metadata::default()
                     };
                 }

@@ -3,7 +3,7 @@ use crate::diagnostics::{Cause, Counter, LifecycleCause, LifecycleKind, Stage, U
 use crate::engine::Plan;
 use crate::field::{self, Identity};
 use crate::foreign::document as native;
-use crate::foreign::{self, Call, InterfaceError, Lease, ReleaseWitness, Returned};
+use crate::foreign::{self, Call, InterfaceError, Lease, Returned};
 use crate::service::{Authority, Owned, OwnedIdentity, Service};
 use keyrill_ffi::NativeEvent;
 use std::cell::{Cell, RefCell};
@@ -52,8 +52,6 @@ pub(crate) struct Frame {
     stage: Cell<Stage>,
     field: Cell<Option<Identity>>,
     ownership: RefCell<Option<Rc<OwnedIdentity>>>,
-    witnesses: RefCell<Vec<ReleaseWitness>>,
-    release_fault: Cell<bool>,
     eaten: Cell<bool>,
     completion: Cell<Completion>,
     last_action: Cell<u32>,
@@ -71,7 +69,6 @@ struct Observe<'a> {
 }
 impl Drop for Observe<'_> {
     fn drop(&mut self) {
-        self.frame.note_release_failure();
         self.frame.stage.set(self.previous);
     }
 }
@@ -101,26 +98,6 @@ impl Frame {
         diagnose: bool,
         decision: Option<Rc<Cell<bool>>>,
     ) -> Rc<Self> {
-        let witnesses = match &work {
-            Work::Editing(editing) => {
-                let mut witnesses = vec![
-                    editing.context.release_witness(),
-                    editing.authority.manager.release_witness(),
-                ];
-                witnesses.extend(editing.identity.as_ref().map(Lease::release_witness));
-                if let Some(owned) = &editing.authority.owned {
-                    witnesses.extend([
-                        owned._context.release_witness(),
-                        owned.context_id.release_witness(),
-                        owned.composition.release_witness(),
-                        owned.composition_id.release_witness(),
-                    ]);
-                }
-                witnesses
-            }
-            #[cfg(feature = "test-api")]
-            Work::Probe => Vec::new(),
-        };
         Rc::new(Self {
             service,
             work,
@@ -131,8 +108,6 @@ impl Frame {
             stage: Cell::new(Stage::Session),
             field: Cell::new(None),
             ownership: RefCell::new(ownership),
-            witnesses: RefCell::new(witnesses),
-            release_fault: Cell::new(false),
             eaten: Cell::new(false),
             completion: Cell::new(Completion::Refused),
             last_action: Cell::new(0),
@@ -179,9 +154,7 @@ impl Frame {
             Ok(identity) => Some(identity),
             Err(error) => {
                 let call = error.call();
-                if call.exception != 0 {
-                    return Err(call);
-                }
+
                 if diagnose {
                     service.refuse(
                         Stage::Session,
@@ -247,9 +220,15 @@ impl Frame {
             return None;
         }
         let result = frame.alive().then_some(field);
-        let retirement = frame.witnesses.borrow().clone();
+        let service = Rc::clone(&frame.service);
+        let guard = editing.authority.guard;
+        let ownership = frame.ownership.borrow().clone();
+        let decision = frame.decision.clone();
         drop(frame);
-        result.filter(|_| !retirement.iter().any(ReleaseWitness::failed))
+        result.filter(|_| {
+            decision.as_ref().is_none_or(|decision| !decision.get())
+                && service.current_owned(guard, ownership.as_ref())
+        })
     }
 
     fn editing_work(&self) -> Option<&Editing> {
@@ -282,14 +261,6 @@ impl Frame {
         }
     }
 
-    fn note_release_failure(&self) {
-        let failed = self.witnesses.borrow().iter().any(ReleaseWitness::failed);
-        if failed && !self.release_fault.replace(true) {
-            self.refuse(self.stage.get(), Cause::Exception, S_OK);
-            self.invalidate(true);
-        }
-    }
-
     pub(crate) fn alive(&self) -> bool {
         if !self.service.owner_thread()
             || self.expired.get()
@@ -298,10 +269,6 @@ impl Frame {
                 .as_ref()
                 .is_some_and(|decision| decision.get())
         {
-            return false;
-        }
-        self.note_release_failure();
-        if self.release_fault.get() {
             return false;
         }
         if let Some(editing) = self.editing_work() {
@@ -322,11 +289,6 @@ impl Frame {
     }
 
     fn status(&self, call: Call, expected: HRESULT) -> bool {
-        if call.exception != 0 {
-            self.refuse(self.stage.get(), Cause::Exception, S_OK);
-            self.invalidate(true);
-            return false;
-        }
         if call.result != expected {
             self.refuse(
                 self.stage.get(),
@@ -346,17 +308,9 @@ impl Frame {
         self.status(call, S_OK)
     }
 
-    fn track<T: Interface>(&self, lease: &Lease<T>) {
-        self.witnesses.borrow_mut().push(lease.release_witness());
-    }
-
     fn required<T: Interface>(&self, output: Returned<Option<Lease<T>>>) -> Option<Lease<T>> {
-        if let Some(value) = &output.value {
-            self.track(value);
-        }
         if !self.exact(output.call) {
             drop(output.value);
-            self.note_release_failure();
             return None;
         }
         if output.value.is_none() {
@@ -370,10 +324,7 @@ impl Frame {
         query: std::result::Result<Lease<T>, InterfaceError>,
     ) -> Option<Lease<T>> {
         match query {
-            Ok(lease) => {
-                self.track(&lease);
-                Some(lease)
-            }
+            Ok(lease) => Some(lease),
             Err(error) => {
                 if matches!(error, InterfaceError::Missing) {
                     self.check(false, Cause::Missing);
@@ -475,11 +426,8 @@ impl Frame {
             output.value.empty() || output.value.zero_integer(),
             Cause::Predicate,
         );
-        let clear = output.value.clear();
-        if clear.exception != 0 {
-            self.exact(clear);
-            return true;
-        }
+        let _ = output.value.clear();
+
         !allowed || !self.check(self.alive(), Cause::Stale)
     }
 
@@ -527,32 +475,23 @@ impl Frame {
         };
         self.stage.set(Stage::AppValue);
         let output = native::property_value(&property, cookie, range);
-        if output.call.exception == 0
-            && output.call.result == E_FAIL
-            && output.value.empty()
-            && field.kind == 1
-        {
+        if output.call.result == E_FAIL && output.value.empty() && field.kind == 1 {
             let alive = self.check(self.alive(), Cause::Stale);
-            let clear = output.value.clear();
-            return alive && clear.exception == 0 && self.alive();
+            let _ = output.value.clear();
+            return alive && self.alive();
         }
         let valid = self.exact(output.call)
             && self.check(output.value.unknown(), Cause::WrongType)
             && self.check(output.value.has_unknown(), Cause::Missing);
         if !valid {
-            let clear = output.value.clear();
-            if clear.exception != 0 {
-                self.exact(clear);
-            }
+            let _ = output.value.clear();
+
             return false;
         }
         self.stage.set(Stage::ScopeInterface);
         let scope = output.value.input_scope();
-        let clear = output.value.clear();
-        if clear.exception != 0 || !self.alive() {
-            if clear.exception != 0 {
-                self.exact(clear);
-            }
+        let _ = output.value.clear();
+        if !self.alive() {
             return false;
         }
         let Some(scope) = self.queried(scope) else {
@@ -609,9 +548,6 @@ impl Frame {
         }
         self.stage.set(Stage::Selection);
         let selection = native::selection(&editing.context, cookie);
-        if let Some(range) = &selection.value.range {
-            self.track(range);
-        }
         if !self.exact(selection.call) {
             return None;
         }
@@ -662,9 +598,6 @@ impl Frame {
         let context = self.queried(editing.context.query::<ITfContextComposition>())?;
         let entries = self.required(native::compositions(&context))?;
         let next = native::next(&entries);
-        if let Some(view) = &next.value.view {
-            self.track(view);
-        }
         if !self.status(next.call, S_FALSE)
             || !self.check(
                 next.value.fetched == 0 && next.value.view.is_none(),
@@ -687,9 +620,6 @@ impl Frame {
             return false;
         };
         let first = native::next(&entries);
-        if let Some(view) = &first.value.view {
-            self.track(view);
-        }
         if !self.exact(first.call) || first.value.fetched != 1 {
             return false;
         }
@@ -704,9 +634,6 @@ impl Frame {
             return false;
         }
         let last = native::next(&entries);
-        if let Some(view) = &last.value.view {
-            self.track(view);
-        }
         self.status(last.call, S_FALSE) && last.value.fetched == 0 && last.value.view.is_none()
     }
 

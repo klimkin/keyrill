@@ -2,7 +2,7 @@
 
 use crate::com::OwnServiceLease;
 use crate::foreign::document as native;
-use crate::foreign::{self, Call, InterfaceError, Lease, ReleaseWitness, Returned};
+use crate::foreign::{self, Call, InterfaceError, Lease, Returned};
 use crate::observation::{Focus, Metadata, Reason, Scope};
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -34,7 +34,6 @@ struct Frame {
     current: Rc<dyn Fn() -> bool>,
     entry: Cell<Entry>,
     value: Cell<Metadata>,
-    witnesses: RefCell<Vec<ReleaseWitness>>,
     panicked: Cell<bool>,
     // The actual generated service allocation outlives every captured host reference.
     _owner: OwnServiceLease,
@@ -51,18 +50,7 @@ impl Frame {
         self.update(|value| value.reason = reason);
     }
 
-    fn releases_ok(&self) -> bool {
-        if self.witnesses.borrow().iter().any(ReleaseWitness::failed) {
-            self.reason(Reason::Exception);
-            return false;
-        }
-        true
-    }
-
     fn alive(&self) -> bool {
-        if !self.releases_ok() {
-            return false;
-        }
         if self.value.get().reason == Reason::Exception {
             return false;
         }
@@ -74,11 +62,6 @@ impl Frame {
     }
 
     fn good(&self, call: Call) -> bool {
-        if call.exception != 0 {
-            foreign::quarantine();
-            self.reason(Reason::Exception);
-            return false;
-        }
         if !self.alive() {
             return false;
         }
@@ -92,10 +75,6 @@ impl Frame {
         true
     }
 
-    fn track<T: Interface>(&self, lease: &Lease<T>) {
-        self.witnesses.borrow_mut().push(lease.release_witness());
-    }
-
     fn required<T: Interface>(
         &self,
         query: impl FnOnce() -> Returned<Option<Lease<T>>>,
@@ -104,12 +83,8 @@ impl Frame {
             return None;
         }
         let output = query();
-        if let Some(lease) = &output.value {
-            self.track(lease);
-        }
         if !self.good(output.call) {
             drop(output.value);
-            self.releases_ok();
             return None;
         }
         output.value
@@ -128,10 +103,7 @@ impl Frame {
         output: std::result::Result<Lease<T>, InterfaceError>,
     ) -> Option<Lease<T>> {
         match output {
-            Ok(lease) => {
-                self.track(&lease);
-                self.alive().then_some(lease)
-            }
+            Ok(lease) => self.alive().then_some(lease),
             Err(error) => {
                 self.good(error.call());
                 None
@@ -271,9 +243,6 @@ impl Frame {
             return None;
         }
         let selected = native::selection(&context, cookie);
-        if let Some(range) = &selected.value.range {
-            self.track(range);
-        }
         if !self.good(selected.call) {
             return None;
         }
@@ -386,10 +355,7 @@ impl Frame {
         self.update(|value| {
             value.request = request.result.0 as u32;
             value.session = callback.0 as u32;
-            if request.exception != 0 {
-                foreign::quarantine();
-                value.reason = Reason::Exception;
-            } else if self.panicked.get() {
+            if self.panicked.get() {
                 value.reason = Reason::Exception;
             } else if request.result != S_OK {
                 value.reason = Reason::Request;
@@ -448,7 +414,6 @@ pub(crate) fn observe(
     client: u32,
     current: Rc<dyn Fn() -> bool>,
 ) -> Observed {
-    let witnesses = vec![context.release_witness(), manager.release_witness()];
     let frame = Rc::new(Frame {
         inputs: RefCell::new(Some(Inputs {
             context,
@@ -458,7 +423,6 @@ pub(crate) fn observe(
         current,
         entry: Cell::new(Entry::Ready),
         value: Cell::new(Metadata::default()),
-        witnesses: RefCell::new(witnesses),
         panicked: Cell::new(false),
         _owner: owner,
     });
@@ -469,10 +433,7 @@ pub(crate) fn observe(
     let inputs = frame.inputs.borrow_mut().take();
     drop(inputs);
     if catch_unwind(AssertUnwindSafe(|| {
-        if frame.releases_ok()
-            && frame.value.get().reason != Reason::Exception
-            && !(frame.current)()
-        {
+        if frame.value.get().reason != Reason::Exception && !(frame.current)() {
             frame.reason(Reason::Stale);
         }
     }))

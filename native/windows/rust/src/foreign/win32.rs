@@ -1,7 +1,6 @@
 //! Mutable Win32 buffers retain mutable pointer provenance across the native call.
 
 use windows::Win32::Foundation::{HANDLE, HMODULE, HWND};
-use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows_core::{BOOL, Error, PCWSTR, Result};
 
@@ -46,19 +45,6 @@ pub(crate) fn next_volume(enumeration: HANDLE, output: &mut [u16]) -> Result<()>
     windows_core::link!("kernel32.dll" "system" fn FindNextVolumeW(enumeration: HANDLE, output: *mut u16, capacity: u32) -> BOOL);
     // SAFETY: the caller owns the enumeration handle, and output is complete writable storage.
     unsafe { FindNextVolumeW(enumeration, output.as_mut_ptr(), output.len() as u32).ok() }
-}
-
-pub(crate) unsafe fn volume_paths(
-    volume: PCWSTR,
-    output: &mut [u16],
-    length: &mut u32,
-) -> Result<()> {
-    windows_core::link!("kernel32.dll" "system" fn GetVolumePathNamesForVolumeNameW(volume: PCWSTR, output: *mut u16, capacity: u32, length: *mut u32) -> BOOL);
-    // SAFETY: the caller supplies a terminated volume name and distinct complete output storage.
-    unsafe {
-        GetVolumePathNamesForVolumeNameW(volume, output.as_mut_ptr(), output.len() as u32, length)
-            .ok()
-    }
 }
 
 pub(crate) fn volume_filesystem(file: HANDLE, output: &mut [u16]) -> Result<()> {
@@ -112,24 +98,5 @@ pub(crate) fn translate(
             flags,
             layout,
         )
-    }
-}
-
-pub(crate) unsafe fn read_file(
-    file: HANDLE,
-    output: &mut [u8],
-    operation: &mut OVERLAPPED,
-) -> Result<()> {
-    windows_core::link!("kernel32.dll" "system" fn ReadFile(file: HANDLE, output: *mut u8, length: u32, transferred: *mut u32, operation: *mut OVERLAPPED) -> BOOL);
-    // SAFETY: the caller pins output/operation and drains a pending read before either can retire.
-    unsafe {
-        ReadFile(
-            file,
-            output.as_mut_ptr(),
-            output.len() as u32,
-            std::ptr::null_mut(),
-            operation,
-        )
-        .ok()
     }
 }

@@ -1,5 +1,4 @@
 use crate::diagnostics::{self, RuntimeSnapshot, Snapshot, SnapshotV2};
-use crate::foreign;
 use crate::service::{LOCKS, OBJECTS, ObjectLease, Service, Sinks, WORKERS};
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -661,13 +660,12 @@ pub unsafe extern "system" fn DllGetClassObject(
     })
 }
 
-/// Report whether COM objects, workers, server locks and uncertain foreign ownership have drained.
+/// Report whether COM objects, workers and server locks have drained.
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     if OBJECTS.load(Ordering::Acquire) == 0
         && LOCKS.load(Ordering::Acquire) == 0
         && WORKERS.load(Ordering::Acquire) == 0
-        && !foreign::uncertain()
     {
         S_OK
     } else {

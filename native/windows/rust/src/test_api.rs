@@ -19,7 +19,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
 unsafe extern "system" fn KeyrillTestBuildDigest(count: u32, output: *mut u32) -> HRESULT {
@@ -49,7 +49,7 @@ pub(crate) struct Probe {
     version: u32,
     outer: HRESULT,
     callback: HRESULT,
-    foreign_exception: u32,
+    reserved: u32,
     entered: BOOL,
     completed: BOOL,
     effect: u32,
@@ -291,10 +291,7 @@ unsafe extern "system" fn KeyrillTestCreate(
             if table.retain.is_some() != table.release.is_some() {
                 return E_INVALIDARG;
             }
-            match foreign::DependencyLease::new(table) {
-                Ok(owner) => Some(owner),
-                Err(call) => return call.result,
-            }
+            Some(foreign::DependencyLease::new(table))
         };
         let service = Service::with_dependencies(dependencies);
         let owner = com::create_owned(Rc::clone(&service));
@@ -380,16 +377,8 @@ unsafe extern "system" fn KeyrillTestMetadata(
         handle.service.checked(|| {
             let failed = |call: foreign::Call| {
                 let metadata = crate::observation::Metadata {
-                    reason: if call.exception != 0 {
-                        crate::observation::Reason::Exception
-                    } else {
-                        crate::observation::Reason::Native
-                    },
-                    result: if call.exception != 0 {
-                        0
-                    } else {
-                        call.result.0 as u32
-                    },
+                    reason: crate::observation::Reason::Native,
+                    result: call.result.0 as u32,
                     ..crate::observation::Metadata::default()
                 };
                 // SAFETY: the checked output remains writable until this synchronous call returns.
@@ -500,7 +489,7 @@ unsafe extern "system" fn KeyrillTestProbe(
                 version: VERSION,
                 outer: E_UNEXPECTED,
                 callback: E_UNEXPECTED,
-                foreign_exception: 0,
+                reserved: 0,
                 entered: BOOL(0),
                 completed: BOOL(0),
                 effect: 0,
@@ -529,7 +518,6 @@ unsafe extern "system" fn KeyrillTestProbe(
                         } else {
                             call.result
                         };
-                        output.foreign_exception = call.exception;
                     }
                 }
             } else if operation == 1 {
@@ -540,7 +528,7 @@ unsafe extern "system" fn KeyrillTestProbe(
                         let result = frame.request(&context, 42);
                         output.outer = result.outer.result;
                         output.callback = result.callback;
-                        output.foreign_exception = result.outer.exception;
+
                         output.entered = BOOL(result.entered as i32);
                         output.completed = BOOL(result.completed as i32);
                         output.effect = match result.effect {
@@ -551,7 +539,6 @@ unsafe extern "system" fn KeyrillTestProbe(
                     }
                     Err(call) => {
                         output.outer = call.result;
-                        output.foreign_exception = call.exception;
                     }
                 }
             } else {

@@ -1,8 +1,6 @@
 //! Typed document queries and effects. Values own memory, while callers retain editing authority.
 
-use super::{
-    Call, Dependencies, InterfaceError, Lease, Returned, quarantine, query, returned_interface,
-};
+use super::{Call, Dependencies, InterfaceError, Lease, Returned, query, returned_interface};
 use crate::field_contract::{Facts, HostIdentity};
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;
@@ -10,156 +8,120 @@ use windows::Win32::Foundation::{HWND, S_OK};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Variant::{VARIANT, VT_EMPTY, VT_I4, VT_UNKNOWN};
 use windows::Win32::UI::TextServices::*;
-use windows_core::{BOOL, GUID, HRESULT, Interface};
-
-unsafe extern "C" {
-    fn kr_foreign_focus(manager: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_top(document: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_view(context: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_window(view: *mut c_void, output: *mut HWND) -> Call;
-    fn kr_foreign_status(context: *mut c_void, output: *mut TS_STATUS) -> Call;
-    fn kr_foreign_compartment(
-        manager: *mut c_void,
-        id: *const GUID,
-        output: *mut *mut c_void,
-    ) -> Call;
-    fn kr_foreign_property(context: *mut c_void, id: *const GUID, output: *mut *mut c_void)
-    -> Call;
-    fn kr_foreign_whitespace(unit: u16, output: *mut BOOL) -> Call;
-    fn kr_foreign_property_value(
-        property: *mut c_void,
-        cookie: u32,
-        range: *mut c_void,
-        output: *mut VARIANT,
-    ) -> Call;
-    fn kr_foreign_compartment_value(compartment: *mut c_void, output: *mut VARIANT) -> Call;
-    fn kr_foreign_variant_clear(value: *mut VARIANT) -> Call;
-    fn kr_foreign_scopes(scope: *mut c_void, output: *mut *mut InputScope, count: *mut u32)
-    -> Call;
-    fn kr_foreign_range_context(range: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_extent(range: *mut c_void, start: *mut i32, length: *mut i32) -> Call;
-    fn kr_foreign_selection(
-        context: *mut c_void,
-        cookie: u32,
-        output: *mut TF_SELECTION,
-        fetched: *mut u32,
-    ) -> Call;
-    fn kr_foreign_set_selection(
-        context: *mut c_void,
-        cookie: u32,
-        selection: *const TF_SELECTION,
-    ) -> Call;
-    fn kr_foreign_clone(range: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_shift_start(
-        range: *mut c_void,
-        cookie: u32,
-        amount: i32,
-        shifted: *mut i32,
-    ) -> Call;
-    fn kr_foreign_shift_end(
-        range: *mut c_void,
-        cookie: u32,
-        amount: i32,
-        shifted: *mut i32,
-    ) -> Call;
-    fn kr_foreign_collapse(range: *mut c_void, cookie: u32, anchor: TfAnchor) -> Call;
-    fn kr_foreign_compositions(context: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_next(entries: *mut c_void, output: *mut *mut c_void, fetched: *mut u32) -> Call;
-    fn kr_foreign_text(
-        range: *mut c_void,
-        cookie: u32,
-        output: *mut u16,
-        capacity: u32,
-        count: *mut u32,
-    ) -> Call;
-    fn kr_foreign_set_text(range: *mut c_void, cookie: u32, text: *const u16, length: i32) -> Call;
-    fn kr_foreign_start_composition(
-        context: *mut c_void,
-        cookie: u32,
-        range: *mut c_void,
-        sink: *mut c_void,
-        output: *mut *mut c_void,
-    ) -> Call;
-    fn kr_foreign_composition_range(composition: *mut c_void, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_end_composition(composition: *mut c_void, cookie: u32) -> Call;
-    fn kr_foreign_field(
-        capture: Option<
-            unsafe extern "system" fn(
-                *mut c_void,
-                HWND,
-                *const HostIdentity,
-                *mut Facts,
-            ) -> HRESULT,
-        >,
-        context: *mut c_void,
-        window: HWND,
-        host: *const HostIdentity,
-        output: *mut Facts,
-    ) -> Call;
-}
+use windows_core::{GUID, HRESULT, Interface};
 
 fn pointer<T: Interface>(lease: &Lease<T>) -> *mut c_void {
     lease.owner.pointer.as_ptr()
 }
 
-fn interface<T: Interface, U: Interface>(
-    owner: &Lease<T>,
-    call: unsafe extern "C" fn(*mut c_void, *mut *mut c_void) -> Call,
-) -> Returned<Option<Lease<U>>> {
+pub(crate) fn focus(manager: &Lease<ITfThreadMgr>) -> Returned<Option<Lease<ITfDocumentMgr>>> {
     let mut output = std::ptr::null_mut();
-    // SAFETY: owner retains its typed SDK object and the C++ function fences its direct host call.
-    let result = unsafe { call(pointer(owner), &mut output) };
-    returned_interface(result, output)
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfThreadMgr>(pointer(manager)).GetFocus)(pointer(manager), &mut output)
+    };
+    returned_interface(Call { result }, output)
 }
 
-pub(crate) fn focus(manager: &Lease<ITfThreadMgr>) -> Returned<Option<Lease<ITfDocumentMgr>>> {
-    interface(manager, kr_foreign_focus)
-}
 pub(crate) fn top(document: &Lease<ITfDocumentMgr>) -> Returned<Option<Lease<ITfContext>>> {
-    interface(document, kr_foreign_top)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfDocumentMgr>(pointer(document)).GetTop)(pointer(document), &mut output)
+    };
+    returned_interface(Call { result }, output)
 }
+
 pub(crate) fn view(context: &Lease<ITfContext>) -> Returned<Option<Lease<ITfContextView>>> {
-    interface(context, kr_foreign_view)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfContext>(pointer(context)).GetActiveView)(pointer(context), &mut output)
+    };
+    returned_interface(Call { result }, output)
 }
+
 pub(crate) fn property(
     context: &Lease<ITfContext>,
 ) -> Returned<Option<Lease<ITfReadOnlyProperty>>> {
     let mut output = std::ptr::null_mut();
     // SAFETY: context is retained, the generated SDK GUID is immutable, and output is writable.
-    let call = unsafe { kr_foreign_property(pointer(context), &GUID_PROP_INPUTSCOPE, &mut output) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfContext>(pointer(context)).GetAppProperty)(
+                pointer(context),
+                &GUID_PROP_INPUTSCOPE,
+                &mut output,
+            )
+        },
+    };
     returned_interface(call, output)
 }
 
 pub(crate) fn whitespace(unit: u16) -> Returned<bool> {
-    let mut output = BOOL(0);
-    // SAFETY: UCRT classifies one scalar UTF-16 unit and writes a distinct initialized BOOL.
-    let call = unsafe { kr_foreign_whitespace(unit, &mut output) };
+    unsafe extern "C" {
+        fn iswspace(unit: u16) -> i32;
+    }
+    // SAFETY: UCRT classifies one UTF-16 unit without borrowing any document storage.
+    let value = unsafe { iswspace(unit) != 0 };
     Returned {
-        call,
-        value: output.as_bool(),
+        call: Call { result: S_OK },
+        value,
     }
 }
 pub(crate) fn range_context(range: &Lease<ITfRange>) -> Returned<Option<Lease<ITfContext>>> {
-    interface(range, kr_foreign_range_context)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfRange>(pointer(range)).GetContext)(pointer(range), &mut output)
+    };
+    returned_interface(Call { result }, output)
 }
+
 pub(crate) fn clone_range(range: &Lease<ITfRange>) -> Returned<Option<Lease<ITfRange>>> {
-    interface(range, kr_foreign_clone)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result =
+        unsafe { (super::vtable::<ITfRange>(pointer(range)).Clone)(pointer(range), &mut output) };
+    returned_interface(Call { result }, output)
 }
+
 pub(crate) fn compositions(
     context: &Lease<ITfContextComposition>,
 ) -> Returned<Option<Lease<IEnumITfCompositionView>>> {
-    interface(context, kr_foreign_compositions)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfContextComposition>(pointer(context)).EnumCompositions)(
+            pointer(context),
+            &mut output,
+        )
+    };
+    returned_interface(Call { result }, output)
 }
+
 pub(crate) fn composition_range(
     composition: &Lease<ITfComposition>,
 ) -> Returned<Option<Lease<ITfRange>>> {
-    interface(composition, kr_foreign_composition_range)
+    let mut output = std::ptr::null_mut();
+    // SAFETY: the lease retains this typed interface and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfComposition>(pointer(composition)).GetRange)(
+            pointer(composition),
+            &mut output,
+        )
+    };
+    returned_interface(Call { result }, output)
 }
 
 pub(crate) fn window(view: &Lease<ITfContextView>) -> Returned<HWND> {
     let mut output = HWND::default();
     // SAFETY: view is retained and output is distinct initialized HWND storage.
-    let call = unsafe { kr_foreign_window(pointer(view), &mut output) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfContextView>(pointer(view)).GetWnd)(pointer(view), &mut output)
+        },
+    };
     Returned {
         call,
         value: output,
@@ -169,7 +131,11 @@ pub(crate) fn window(view: &Lease<ITfContextView>) -> Returned<HWND> {
 pub(crate) fn status(context: &Lease<ITfContext>) -> Returned<TS_STATUS> {
     let mut output = TS_STATUS::default();
     // SAFETY: context is retained and output is a complete initialized SDK status structure.
-    let call = unsafe { kr_foreign_status(pointer(context), &mut output) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfContext>(pointer(context)).GetStatus)(pointer(context), &mut output)
+        },
+    };
     Returned {
         call,
         value: output,
@@ -182,20 +148,28 @@ pub(crate) fn compartment(
 ) -> Returned<Option<Lease<ITfCompartment>>> {
     let mut output = std::ptr::null_mut();
     // SAFETY: manager and id are live, and output is distinct writable storage.
-    let call = unsafe { kr_foreign_compartment(pointer(manager), id, &mut output) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfCompartmentMgr>(pointer(manager)).GetCompartment)(
+                pointer(manager),
+                id,
+                &mut output,
+            )
+        },
+    };
     returned_interface(call, output)
 }
 
 pub(crate) struct Value {
     raw: VARIANT,
-    normally_returned: bool,
+    needs_clear: bool,
 }
 
 impl Value {
     fn new() -> Self {
         Self {
             raw: VARIANT::default(),
-            normally_returned: false,
+            needs_clear: false,
         }
     }
     pub(crate) fn empty(&self) -> bool {
@@ -232,26 +206,22 @@ impl Value {
         if raw.is_null() {
             return Err(InterfaceError::Missing);
         }
-        // SAFETY: the variant retains the live SDK interface for the complete fenced QI.
+        // SAFETY: the variant retains the live SDK interface for the complete QI.
         unsafe { query(raw) }
     }
     pub(crate) fn clear(mut self) -> Call {
         self.release()
     }
     fn release(&mut self) -> Call {
-        if !self.normally_returned {
-            return Call {
-                result: S_OK,
-                exception: 0,
-            };
+        if !self.needs_clear {
+            return Call { result: S_OK };
         }
-        self.normally_returned = false;
-        // SAFETY: a normally completed typed GetValue transfers the initialized VARIANT to caller cleanup.
-        let call = unsafe { kr_foreign_variant_clear(&mut self.raw) };
-        if call.exception != 0 {
-            quarantine();
+        self.needs_clear = false;
+        windows_core::link!("oleaut32.dll" "system" fn VariantClear(value: *mut VARIANT) -> HRESULT);
+        // SAFETY: typed GetValue transfers this initialized VARIANT to caller cleanup.
+        Call {
+            result: unsafe { VariantClear(&mut self.raw) },
         }
-        call
     }
 }
 
@@ -264,11 +234,16 @@ impl Drop for Value {
 pub(crate) fn compartment_value(compartment: &Lease<ITfCompartment>) -> Returned<Value> {
     let mut value = Value::new();
     // SAFETY: compartment is retained and the initialized VARIANT is complete writable output storage.
-    let call = unsafe { kr_foreign_compartment_value(pointer(compartment), &mut value.raw) };
-    value.normally_returned = call.exception == 0;
-    if call.exception != 0 {
-        quarantine();
-    }
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfCompartment>(pointer(compartment)).GetValue)(
+                pointer(compartment),
+                &mut value.raw,
+            )
+        },
+    };
+    value.needs_clear = true;
+
     Returned { call, value }
 }
 
@@ -279,13 +254,18 @@ pub(crate) fn property_value(
 ) -> Returned<Value> {
     let mut value = Value::new();
     // SAFETY: property/range are retained for this cookie, with initialized distinct VARIANT output.
-    let call = unsafe {
-        kr_foreign_property_value(pointer(property), cookie, pointer(range), &mut value.raw)
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfReadOnlyProperty>(pointer(property)).GetValue)(
+                pointer(property),
+                cookie,
+                pointer(range),
+                &mut value.raw,
+            )
+        },
     };
-    value.normally_returned = call.exception == 0;
-    if call.exception != 0 {
-        quarantine();
-    }
+    value.needs_clear = true;
+
     Returned { call, value }
 }
 
@@ -317,12 +297,16 @@ pub(crate) fn scopes(scope: &Lease<ITfInputScope>) -> Returned<Scopes> {
     let mut output = std::ptr::null_mut();
     let mut count = 0;
     // SAFETY: scope is retained and outputs are distinct writable pointer/count slots.
-    let call = unsafe { kr_foreign_scopes(pointer(scope), &mut output, &mut count) };
-    if call.exception != 0 {
-        quarantine();
-        output = std::ptr::null_mut();
-        count = 0;
-    }
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfInputScope>(pointer(scope)).GetInputScopes)(
+                pointer(scope),
+                &mut output,
+                &mut count,
+            )
+        },
+    };
+
     Returned {
         call,
         value: Scopes {
@@ -341,8 +325,18 @@ pub(crate) fn selection(context: &Lease<ITfContext>, cookie: u32) -> Returned<Se
     let mut selection = TF_SELECTION::default();
     let mut fetched = 0;
     // SAFETY: context is retained, and the complete SDK structure/count are initialized writable outputs.
-    let call =
-        unsafe { kr_foreign_selection(pointer(context), cookie, &mut selection, &mut fetched) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfContext>(pointer(context)).GetSelection)(
+                pointer(context),
+                cookie,
+                TF_DEFAULT_SELECTION,
+                1,
+                &mut selection,
+                &mut fetched,
+            )
+        },
+    };
     let raw = selection
         .range
         .as_ref()
@@ -365,21 +359,38 @@ pub(crate) fn set_selection(
     style: TF_SELECTIONSTYLE,
 ) -> Call {
     // SAFETY: this is a borrowed ABI carrier. ManuallyDrop suppresses an implicit host Release;
-    // the Lease retains the one real ownership reference throughout the fenced synchronous call.
+    // the Lease retains the one real ownership reference throughout the synchronous call.
     let borrowed = unsafe { ITfRange::from_raw(pointer(range)) };
     let selection = TF_SELECTION {
         range: ManuallyDrop::new(Some(borrowed)),
         style,
     };
     // SAFETY: retained context/range and the local SDK selection remain live through the call.
-    unsafe { kr_foreign_set_selection(pointer(context), cookie, &selection) }
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfContext>(pointer(context)).SetSelection)(
+                pointer(context),
+                cookie,
+                1,
+                &selection,
+            )
+        },
+    }
 }
 
 pub(crate) fn extent(range: &Lease<ITfRangeACP>) -> Returned<(i32, i32)> {
     let mut start = 0;
     let mut length = 0;
     // SAFETY: range is retained and both output scalars are distinct initialized slots.
-    let call = unsafe { kr_foreign_extent(pointer(range), &mut start, &mut length) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfRangeACP>(pointer(range)).GetExtent)(
+                pointer(range),
+                &mut start,
+                &mut length,
+            )
+        },
+    };
     Returned {
         call,
         value: (start, length),
@@ -389,7 +400,17 @@ pub(crate) fn extent(range: &Lease<ITfRangeACP>) -> Returned<(i32, i32)> {
 pub(crate) fn shift_start(range: &Lease<ITfRange>, cookie: u32, amount: i32) -> Returned<i32> {
     let mut shifted = 0;
     // SAFETY: the range is retained and shifted is distinct initialized output storage.
-    let call = unsafe { kr_foreign_shift_start(pointer(range), cookie, amount, &mut shifted) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfRange>(pointer(range)).ShiftStart)(
+                pointer(range),
+                cookie,
+                amount,
+                &mut shifted,
+                std::ptr::null(),
+            )
+        },
+    };
     Returned {
         call,
         value: shifted,
@@ -398,7 +419,17 @@ pub(crate) fn shift_start(range: &Lease<ITfRange>, cookie: u32, amount: i32) -> 
 pub(crate) fn shift_end(range: &Lease<ITfRange>, cookie: u32, amount: i32) -> Returned<i32> {
     let mut shifted = 0;
     // SAFETY: the range is retained and shifted is distinct initialized output storage.
-    let call = unsafe { kr_foreign_shift_end(pointer(range), cookie, amount, &mut shifted) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfRange>(pointer(range)).ShiftEnd)(
+                pointer(range),
+                cookie,
+                amount,
+                &mut shifted,
+                std::ptr::null(),
+            )
+        },
+    };
     Returned {
         call,
         value: shifted,
@@ -406,7 +437,11 @@ pub(crate) fn shift_end(range: &Lease<ITfRange>, cookie: u32, amount: i32) -> Re
 }
 pub(crate) fn collapse(range: &Lease<ITfRange>, cookie: u32, anchor: TfAnchor) -> Call {
     // SAFETY: the retained range and cookie are supplied by the currently guarded edit frame.
-    unsafe { kr_foreign_collapse(pointer(range), cookie, anchor) }
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfRange>(pointer(range)).Collapse)(pointer(range), cookie, anchor)
+        },
+    }
 }
 
 pub(crate) struct CompositionEntry {
@@ -417,7 +452,16 @@ pub(crate) fn next(entries: &Lease<IEnumITfCompositionView>) -> Returned<Composi
     let mut output = std::ptr::null_mut();
     let mut fetched = 0;
     // SAFETY: entries is retained, and both output slots are initialized and distinct.
-    let call = unsafe { kr_foreign_next(pointer(entries), &mut output, &mut fetched) };
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<IEnumITfCompositionView>(pointer(entries)).Next)(
+                pointer(entries),
+                1,
+                &mut output,
+                &mut fetched,
+            )
+        },
+    };
     let view = returned_interface(call, output).value;
     Returned {
         call,
@@ -433,14 +477,17 @@ pub(crate) fn text(range: &Lease<ITfRange>, cookie: u32, capacity: usize) -> Ret
     let mut units = vec![0; capacity];
     let mut count = 0;
     // SAFETY: the bounded buffer is live, range retained, and count is a distinct initialized output.
-    let call = unsafe {
-        kr_foreign_text(
-            pointer(range),
-            cookie,
-            units.as_mut_ptr(),
-            capacity as u32,
-            &mut count,
-        )
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfRange>(pointer(range)).GetText)(
+                pointer(range),
+                cookie,
+                0,
+                windows_core::PWSTR(units.as_mut_ptr()),
+                capacity as u32,
+                &mut count,
+            )
+        },
     };
     units.truncate((count as usize).min(capacity));
     Returned {
@@ -450,7 +497,17 @@ pub(crate) fn text(range: &Lease<ITfRange>, cookie: u32, capacity: usize) -> Ret
 }
 pub(crate) fn set_text(range: &Lease<ITfRange>, cookie: u32, units: &[u16]) -> Call {
     // SAFETY: the guarded frame retains range and bounded UTF-16 input through this single write.
-    unsafe { kr_foreign_set_text(pointer(range), cookie, units.as_ptr(), units.len() as i32) }
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfRange>(pointer(range)).SetText)(
+                pointer(range),
+                cookie,
+                0,
+                windows_core::PCWSTR(units.as_ptr()),
+                units.len() as i32,
+            )
+        },
+    }
 }
 pub(crate) fn start_composition(
     context: &Lease<ITfContextComposition>,
@@ -460,14 +517,29 @@ pub(crate) fn start_composition(
 ) -> Returned<Option<Lease<ITfComposition>>> {
     let mut output = std::ptr::null_mut();
     // SAFETY: context/range are retained and the detached frame retains its own generated sink object.
-    let call = unsafe {
-        kr_foreign_start_composition(pointer(context), cookie, pointer(range), sink, &mut output)
+    let call = Call {
+        result: unsafe {
+            (super::vtable::<ITfContextComposition>(pointer(context)).StartComposition)(
+                pointer(context),
+                cookie,
+                pointer(range),
+                sink,
+                &mut output,
+            )
+        },
     };
     returned_interface(call, output)
 }
 pub(crate) fn end_composition(composition: &Lease<ITfComposition>, cookie: u32) -> Call {
     // SAFETY: the frame retains and freshly validates its exact owned composition before this call.
-    unsafe { kr_foreign_end_composition(pointer(composition), cookie) }
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfComposition>(pointer(composition)).EndComposition)(
+                pointer(composition),
+                cookie,
+            )
+        },
+    }
 }
 
 pub(crate) fn capture(
@@ -477,17 +549,39 @@ pub(crate) fn capture(
 ) -> Returned<Facts> {
     let mut output = Facts::default();
     // SAFETY: the dependency owner retains this typed callback/context, and outputs are complete objects.
-    let call = unsafe {
-        kr_foreign_field(
-            dependencies.capture,
-            dependencies.context,
-            window,
-            host,
-            &mut output,
-        )
+    let capture = dependencies.capture.expect("validated field callback");
+    let call = Call {
+        result: unsafe { capture(dependencies.context, window, host, &mut output) },
     };
     Returned {
         call,
         value: output,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_keeps_native_u180e_classification() {
+        unsafe extern "C" {
+            fn iswctype(unit: u16, mask: u16) -> i32;
+        }
+        // SAFETY: the UCRT SPACE character-class mask independently supplies the native expectation.
+        let expected = unsafe { iswctype(0x180e, 0x8) != 0 };
+        assert_eq!(whitespace(0x180e).value, expected);
+        for (unit, expected) in [
+            (0x20, true),
+            (0x09, true),
+            (0x0a, true),
+            (0x41, false),
+            (0, false),
+            (0xd800, false),
+        ] {
+            let output = whitespace(unit);
+            assert!(output.call.exact());
+            assert_eq!(output.value, expected, "UTF-16 unit {unit:04x}");
+        }
     }
 }

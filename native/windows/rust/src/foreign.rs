@@ -6,29 +6,29 @@ pub(crate) mod tsf;
 pub(crate) mod win32;
 
 use crate::field_contract::{Facts, HostIdentity};
-use std::cell::Cell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HMODULE, HWND, S_OK};
-use windows::Win32::System::LibraryLoader::{
-    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
-};
+use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, S_OK};
 use windows::Win32::UI::TextServices::{ITfContext, ITfEditSession};
-use windows_core::{GUID, HRESULT, Interface, PCWSTR};
+use windows_core::{HRESULT, IUnknown, Interface};
+
+/// Read the SDK vtable of an interface retained by the caller.
+unsafe fn vtable<'a, T: Interface>(pointer: *mut c_void) -> &'a T::Vtable {
+    // SAFETY: the caller supplies a live T whose first pointer is its SDK vtable.
+    unsafe { &**pointer.cast::<*const T::Vtable>() }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Call {
     pub(crate) result: HRESULT,
-    pub(crate) exception: u32,
 }
 
 impl Call {
     pub(crate) fn exact(self) -> bool {
-        self.result == S_OK && self.exception == 0
+        self.result == S_OK
     }
 }
 
@@ -81,29 +81,9 @@ impl InterfaceError {
     pub(crate) fn call(self) -> Call {
         match self {
             Self::Native(call) => call,
-            Self::Missing => Call {
-                result: S_OK,
-                exception: 0,
-            },
+            Self::Missing => Call { result: S_OK },
         }
     }
-}
-
-unsafe extern "C" {
-    fn kr_foreign_query(object: *mut c_void, id: *const GUID, output: *mut *mut c_void) -> Call;
-    fn kr_foreign_add_ref(object: *mut c_void, count: *mut u32) -> Call;
-    fn kr_foreign_release(object: *mut c_void, count: *mut u32) -> Call;
-    fn kr_foreign_request(
-        context: *mut c_void,
-        client: u32,
-        session: *mut c_void,
-        flags: u32,
-        session_result: *mut HRESULT,
-    ) -> Call;
-    fn kr_foreign_lifetime(
-        call: unsafe extern "system" fn(*mut c_void),
-        context: *mut c_void,
-    ) -> Call;
 }
 
 #[repr(C)]
@@ -129,16 +109,12 @@ pub(crate) struct DependencyLease {
 
 impl DependencyLease {
     #[cfg(feature = "test-api")]
-    pub(crate) fn new(table: Dependencies) -> Result<Self, Call> {
+    pub(crate) fn new(table: Dependencies) -> Self {
         if let Some(retain) = table.retain {
-            // SAFETY: the validated dependency owner retains callbacks and context through release.
-            let result = unsafe { kr_foreign_lifetime(retain, table.context) };
-            if !result.exact() {
-                quarantine();
-                return Err(result);
-            }
+            // SAFETY: the dependency owner retains callbacks and context through release.
+            unsafe { retain(table.context) };
         }
-        Ok(Self { table })
+        Self { table }
     }
 }
 
@@ -146,58 +122,36 @@ impl Drop for DependencyLease {
     fn drop(&mut self) {
         if let Some(release) = self.table.release {
             // SAFETY: this is the one release paired with the successful dependency acquisition.
-            let result = unsafe { kr_foreign_lifetime(release, self.table.context) };
-            if !result.exact() {
-                quarantine();
-            }
+            unsafe { release(self.table.context) };
         }
     }
 }
 
-static UNCERTAIN: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn uncertain() -> bool {
-    UNCERTAIN.load(Ordering::Acquire)
-}
-
-pub(crate) fn quarantine() {
-    UNCERTAIN.store(true, Ordering::Release);
+/// Keep callback code mapped when a native object or I/O operation cannot retire yet.
+pub(crate) fn retain_module() {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
+    };
     let mut module = HMODULE::default();
-    // SAFETY: FROM_ADDRESS interprets this address as module code, never as UTF-16 text.
-    // PIN retains that module through process exit when a foreign reference has unknown ownership.
-    unsafe {
-        let _ = GetModuleHandleExW(
+    // SAFETY: FROM_ADDRESS interprets this function address as code. PIN keeps its DLL mapped.
+    let _ = unsafe {
+        GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-            PCWSTR(quarantine as *const () as *const u16),
+            windows_core::PCWSTR(retain_module as *const () as *const u16),
             &mut module,
-        );
-    }
+        )
+    };
 }
 
 struct Owner {
     pointer: NonNull<c_void>,
-    release_failed: Rc<Cell<bool>>,
-}
-
-#[derive(Clone)]
-pub(crate) struct ReleaseWitness(Rc<Cell<bool>>);
-
-impl ReleaseWitness {
-    pub(crate) fn failed(&self) -> bool {
-        self.0.get()
-    }
 }
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        let mut count = 0;
-        // SAFETY: this owner holds exactly one reference and surrenders it once through the fence.
-        let result = unsafe { kr_foreign_release(self.pointer.as_ptr(), &mut count) };
-        if !result.exact() {
-            self.release_failed.set(true);
-            // A throwing Release may have already deleted the object. Never retry it.
-            quarantine();
-        }
+        // SAFETY: this owner holds exactly one live reference and surrenders it once.
+        unsafe { (vtable::<IUnknown>(self.pointer.as_ptr()).Release)(self.pointer.as_ptr()) };
     }
 }
 
@@ -220,12 +174,8 @@ impl<T: Interface> Lease<T> {
         self.owner.pointer.as_ptr() as usize
     }
 
-    pub(crate) fn release_witness(&self) -> ReleaseWitness {
-        ReleaseWitness(Rc::clone(&self.owner.release_failed))
-    }
-
     pub(crate) fn query<U: Interface>(&self) -> Result<Lease<U>, InterfaceError> {
-        // SAFETY: this Rust lease retains the host across the complete fenced acquisition.
+        // SAFETY: this Rust lease retains the host across the complete acquisition.
         unsafe { query(self.owner.pointer.as_ptr()) }
     }
 }
@@ -236,14 +186,10 @@ pub(crate) unsafe fn adopt<T: Interface>(pointer: *mut c_void) -> Result<Lease<T
     let Some(pointer) = NonNull::new(pointer) else {
         return Err(Call {
             result: E_UNEXPECTED,
-            exception: 0,
         });
     };
     Ok(Lease {
-        owner: Rc::new(Owner {
-            pointer,
-            release_failed: Rc::new(Cell::new(false)),
-        }),
+        owner: Rc::new(Owner { pointer }),
         interface: PhantomData,
     })
 }
@@ -257,14 +203,10 @@ fn returned_interface<T: Interface>(
     call: Call,
     pointer: *mut c_void,
 ) -> Returned<Option<Lease<T>>> {
-    let value = if call.exception != 0 {
-        quarantine();
-        None
-    } else if pointer.is_null() {
+    let value = if pointer.is_null() {
         None
     } else {
-        // SAFETY: the typed SDK output transfers one memory reference on normal completion.
-        // Its HRESULT remains separate and grants no document authority.
+        // SAFETY: a COM output transfers its reference even when the caller rejects the status.
         unsafe { adopt(pointer) }.ok()
     };
     Returned { call, value }
@@ -273,51 +215,29 @@ fn returned_interface<T: Interface>(
 /// Acquire a reference from an inbound pointer while its caller retains it.
 pub(crate) unsafe fn retain<T: Interface>(pointer: *mut c_void) -> Result<Lease<T>, Call> {
     let Some(pointer) = NonNull::new(pointer) else {
-        return Err(Call {
-            result: E_POINTER,
-            exception: 0,
-        });
+        return Err(Call { result: E_POINTER });
     };
-    let mut count = 0;
-    // SAFETY: the inbound caller retains this live interface until the callback returns.
-    let result = unsafe { kr_foreign_add_ref(pointer.as_ptr(), &mut count) };
-    if !result.exact() {
-        quarantine();
-        return Err(result);
-    }
+    // SAFETY: the inbound caller retains this interface until its callback returns.
+    unsafe { (vtable::<IUnknown>(pointer.as_ptr()).AddRef)(pointer.as_ptr()) };
     Ok(Lease {
-        owner: Rc::new(Owner {
-            pointer,
-            release_failed: Rc::new(Cell::new(false)),
-        }),
+        owner: Rc::new(Owner { pointer }),
         interface: PhantomData,
     })
 }
 
 pub(crate) unsafe fn query<T: Interface>(pointer: *mut c_void) -> Result<Lease<T>, InterfaceError> {
     if pointer.is_null() {
-        return Err(InterfaceError::Native(Call {
-            result: E_POINTER,
-            exception: 0,
-        }));
+        return Err(InterfaceError::Native(Call { result: E_POINTER }));
     }
     let mut output = std::ptr::null_mut();
     // SAFETY: the caller retains the live host and output is a distinct writable pointer slot.
-    let result = unsafe { kr_foreign_query(pointer, &T::IID, &mut output) };
+    let result = Call {
+        result: unsafe {
+            (vtable::<IUnknown>(pointer).QueryInterface)(pointer, &T::IID, &mut output)
+        },
+    };
     if !result.exact() {
-        if result.exception != 0 {
-            quarantine();
-        } else {
-            let retired = returned_interface::<T>(result, output).value;
-            let witness = retired.as_ref().map(Lease::release_witness);
-            drop(retired);
-            if witness.is_some_and(|witness| witness.failed()) {
-                return Err(InterfaceError::Native(Call {
-                    result: E_UNEXPECTED,
-                    exception: 1,
-                }));
-            }
-        }
+        drop(returned_interface::<T>(result, output).value);
         return Err(InterfaceError::Native(result));
     }
     if output.is_null() {
@@ -336,13 +256,13 @@ pub(crate) fn request(
     let mut session_result = E_UNEXPECTED;
     // SAFETY: local Rust COM and the lease retain both objects throughout this synchronous call.
     let result = unsafe {
-        kr_foreign_request(
+        (vtable::<ITfContext>(context.owner.pointer.as_ptr()).RequestEditSession)(
             context.owner.pointer.as_ptr(),
             client,
             session.as_raw(),
-            flags,
+            windows::Win32::UI::TextServices::TF_CONTEXT_EDIT_CONTEXT_FLAGS(flags),
             &mut session_result,
         )
     };
-    (result, session_result)
+    (Call { result }, session_result)
 }

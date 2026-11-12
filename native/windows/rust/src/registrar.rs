@@ -60,14 +60,6 @@ fn report(stage: &str, result: HRESULT, profile: &str) -> HRESULT {
     result
 }
 
-fn returned(call: Call) -> HRESULT {
-    if call.exception != 0 {
-        E_UNEXPECTED
-    } else {
-        call.result
-    }
-}
-
 fn exact(result: HRESULT) -> Result<(), HRESULT> {
     if result == S_OK {
         Ok(())
@@ -99,7 +91,7 @@ fn presence(manager: &Lease<ITfInputProcessorProfiles>, profile: &Profile) -> HR
     loop {
         let mut entry = TF_LANGUAGEPROFILE::default();
         let mut fetched = 0;
-        let result = returned(native::next(&entries, &mut entry, &mut fetched));
+        let result = native::next(&entries, &mut entry, &mut fetched).result;
         if result == S_FALSE && fetched == 0 {
             return report("Profile presence", S_FALSE, label(profile));
         }
@@ -122,14 +114,8 @@ fn presence(manager: &Lease<ITfInputProcessorProfiles>, profile: &Profile) -> HR
         }
         let mut description = std::ptr::null();
         let call = native::description(manager, profile, &mut description);
-        let result = report(
-            "GetLanguageProfileDescription",
-            returned(call),
-            label(profile),
-        );
-        if call.exception != 0 {
-            return result;
-        }
+        let result = report("GetLanguageProfileDescription", call.result, label(profile));
+
         // SAFETY: a normally returned BSTR is caller-owned, including on a failed HRESULT.
         let description = unsafe { BSTR::from_raw(description) };
         if result.is_err() {
@@ -173,7 +159,7 @@ fn enable_profiles(manager: &Lease<ITfInputProcessorProfiles>, enabled: bool) ->
     }
     for profile in &PROFILES {
         let call = native::enable(manager, profile, enabled);
-        let result = report("EnableLanguageProfile", returned(call), label(profile));
+        let result = report("EnableLanguageProfile", call.result, label(profile));
         if let Err(result) = exact(result) {
             return report(
                 "EnableLanguageProfile unexpected result",
@@ -191,7 +177,7 @@ fn enable_profiles(manager: &Lease<ITfInputProcessorProfiles>, enabled: bool) ->
         let call = native::enabled(manager, profile, &mut actual);
         let result = report(
             "IsEnabledLanguageProfile readback",
-            returned(call),
+            call.result,
             label(profile),
         );
         if let Err(result) = exact(result) {
@@ -306,7 +292,7 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
     }
     let service = report(
         if install { "Register" } else { "Unregister" },
-        returned(native::service(&manager, install)),
+        native::service(&manager, install).result,
         "service",
     );
     if install && service.is_err() {
@@ -315,7 +301,7 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
     if let Some(dll) = dll {
         for profile in &PROFILES {
             let call = native::add(&manager, profile, dll);
-            let result = report("AddLanguageProfile", returned(call), label(profile));
+            let result = report("AddLanguageProfile", call.result, label(profile));
             if result.is_err() {
                 return result;
             }
@@ -337,7 +323,7 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
             };
             let result = report(
                 "SubstituteKeyboardLayout",
-                returned(native::substitute(&manager, profile, layout)),
+                native::substitute(&manager, profile, layout).result,
                 label(profile),
             );
             if result.is_err() {
@@ -351,7 +337,7 @@ fn register(dll: Option<&[u16]>) -> HRESULT {
         } else {
             "UnregisterCategory"
         },
-        returned(native::category(&categories, install)),
+        native::category(&categories, install).result,
         "service",
     );
     if install {
@@ -426,7 +412,7 @@ fn status() -> HRESULT {
         let available = if registered == S_OK {
             report(
                 "IsEnabledLanguageProfile status",
-                returned(native::enabled(&manager, profile, &mut enabled)),
+                native::enabled(&manager, profile, &mut enabled).result,
                 label(profile),
             )
         } else {

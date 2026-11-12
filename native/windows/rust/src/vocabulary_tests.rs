@@ -360,3 +360,81 @@ fn real_worker_settles_retains_and_releases_after_count() {
     assert!(packet.sources[1].dictionary.is_none());
     events.stop(&mut worker);
 }
+
+#[test]
+fn native_worker_status_and_output_preserve_the_sdk_abi() {
+    unsafe extern "system" fn read_success(
+        _: HANDLE,
+        buffer: *mut u8,
+        _: u32,
+        _: *mut u32,
+        _: *mut OVERLAPPED,
+    ) -> BOOL {
+        // SAFETY: the test caller supplies one writable byte through the complete native ABI.
+        unsafe {
+            buffer.write(0xa5);
+            SetLastError(WIN32_ERROR(0x81234567));
+        }
+        BOOL(7)
+    }
+    unsafe extern "system" fn read_failure(
+        _: HANDLE,
+        buffer: *mut u8,
+        _: u32,
+        _: *mut u32,
+        _: *mut OVERLAPPED,
+    ) -> BOOL {
+        // SAFETY: failed native operations may still write their caller-owned output buffer.
+        unsafe {
+            buffer.write(0x5a);
+            SetLastError(WIN32_ERROR(0x81234567));
+        }
+        BOOL(0)
+    }
+    unsafe extern "system" fn completion(
+        _: HANDLE,
+        _: *mut OVERLAPPED,
+        count: *mut u32,
+        _: BOOL,
+    ) -> BOOL {
+        // SAFETY: the test caller supplies a distinct writable count slot.
+        unsafe {
+            count.write(0x12345678);
+        }
+        BOOL(-1)
+    }
+    let mut buffer = [0];
+    let mut operation = OVERLAPPED::default();
+    for (target, value, error, byte) in [
+        (read_success as *mut c_void, 7, 0, 0xa5),
+        (read_failure as *mut c_void, 0, 0x81234567, 0x5a),
+    ] {
+        // SAFETY: target has the exact ReadFile ABI and each mutable output stays live through return.
+        let result = unsafe {
+            native_read(
+                target,
+                HANDLE::default(),
+                buffer.as_mut_ptr(),
+                1,
+                &mut operation,
+            )
+        };
+        assert_eq!(result.value, value);
+        assert_eq!(result.error, error);
+        assert_eq!(buffer, [byte]);
+    }
+    let mut count = 0;
+    // SAFETY: completion has the exact SDK ABI and operation/count are distinct writable outputs.
+    let result = unsafe {
+        native_completion(
+            completion as *mut c_void,
+            HANDLE::default(),
+            &mut operation,
+            &mut count,
+            BOOL(0),
+        )
+    };
+    assert_eq!(result.value, usize::MAX);
+    assert_eq!(result.error, 0);
+    assert_eq!(count, 0x12345678);
+}

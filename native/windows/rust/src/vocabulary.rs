@@ -18,9 +18,7 @@ use windows::Wdk::Storage::FileSystem::{
 use windows::Win32::Foundation::*;
 use windows::Win32::Storage::FileSystem::*;
 use windows::Win32::System::IO::*;
-use windows::Win32::System::LibraryLoader::{
-    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExW,
-};
+use windows::Win32::System::LibraryLoader::GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
@@ -65,110 +63,245 @@ unsafe impl Sync for Hooks {}
 struct Call {
     value: usize,
     error: u32,
-    exception: u32,
 }
 
-impl Call {
-    fn boolean(result: windows_core::Result<()>) -> Self {
-        match result {
-            Ok(()) => Self {
-                value: 1,
-                error: 0,
-                exception: 0,
-            },
-            Err(error) => Self {
-                value: 0,
-                error: error.code().0 as u32 & 0xffff,
-                exception: 0,
-            },
-        }
-    }
+unsafe fn native_hook(
+    target: *mut c_void,
+    context: *mut c_void,
+    boundary: u32,
+    handle: HANDLE,
+    index: usize,
+) {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    let call: unsafe extern "system" fn(*mut c_void, u32, HANDLE, usize) =
+        unsafe { std::mem::transmute(target) };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    unsafe { call(context, boundary, handle, index) };
+}
 
-    fn checked(self) -> Result<Self, Error> {
-        if self.exception != 0 {
-            crate::foreign::quarantine();
-            return Err(Error::Startup);
-        }
-        Ok(self)
+unsafe fn native_lifetime(target: *mut c_void, context: *mut c_void) {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    let call: unsafe extern "system" fn(*mut c_void) = unsafe { std::mem::transmute(target) };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    unsafe { call(context) };
+}
+
+unsafe fn native_read(
+    target: *mut c_void,
+    file: HANDLE,
+    buffer: *mut u8,
+    count: u32,
+    operation: *mut OVERLAPPED,
+) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn ReadFile(file: HANDLE, buffer: *mut u8, count: u32, transferred: *mut u32, operation: *mut OVERLAPPED) -> BOOL);
+    type Native =
+        unsafe extern "system" fn(HANDLE, *mut u8, u32, *mut u32, *mut OVERLAPPED) -> BOOL;
+    let call: Native = if target.is_null() {
+        ReadFile
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(file, buffer, count, std::ptr::null_mut(), operation) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
     }
 }
 
-unsafe extern "C" {
-    fn kr_worker_hook(
-        target: *mut c_void,
-        context: *mut c_void,
-        boundary: u32,
-        handle: HANDLE,
-        index: usize,
-    ) -> Call;
-    fn kr_worker_lifetime(target: *mut c_void, context: *mut c_void) -> Call;
-    fn kr_worker_open(
-        target: *mut c_void,
-        output: *mut HANDLE,
-        access: u32,
-        attributes: *mut OBJECT_ATTRIBUTES,
-        io: *mut IO_STATUS_BLOCK,
-        file_attributes: u32,
-        sharing: u32,
-        disposition: u32,
-        options: u32,
-    ) -> Call;
-    fn kr_worker_read(
-        target: *mut c_void,
-        file: HANDLE,
-        buffer: *mut u8,
-        count: u32,
-        operation: *mut OVERLAPPED,
-    ) -> Call;
-    fn kr_worker_completion(
-        target: *mut c_void,
-        file: HANDLE,
-        operation: *mut OVERLAPPED,
-        count: *mut u32,
-        wait: BOOL,
-    ) -> Call;
-    fn kr_worker_cancel(target: *mut c_void, file: HANDLE, operation: *mut OVERLAPPED) -> Call;
-    fn kr_worker_event(target: *mut c_void) -> Call;
-    fn kr_worker_pin(
-        target: *mut c_void,
-        flags: u32,
-        address: PCWSTR,
-        module: *mut HMODULE,
-    ) -> Call;
-    fn kr_worker_submit(
-        target: *mut c_void,
-        callback: PTP_SIMPLE_CALLBACK,
-        context: *mut c_void,
-    ) -> Call;
-    fn kr_worker_long_running(target: *mut c_void, instance: PTP_CALLBACK_INSTANCE) -> Call;
-    fn kr_worker_volume_paths(
-        target: *mut c_void,
-        guid: PCWSTR,
-        paths: PWSTR,
-        capacity: u32,
-        length: *mut u32,
-    ) -> Call;
+unsafe fn native_completion(
+    target: *mut c_void,
+    file: HANDLE,
+    operation: *mut OVERLAPPED,
+    count: *mut u32,
+    wait: BOOL,
+) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn GetOverlappedResult(file: HANDLE, operation: *mut OVERLAPPED, count: *mut u32, wait: BOOL) -> BOOL);
+    type Native = unsafe extern "system" fn(HANDLE, *mut OVERLAPPED, *mut u32, BOOL) -> BOOL;
+    let call: Native = if target.is_null() {
+        GetOverlappedResult
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(file, operation, count, wait) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_cancel(target: *mut c_void, file: HANDLE, operation: *mut OVERLAPPED) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn CancelIoEx(file: HANDLE, operation: *mut OVERLAPPED) -> BOOL);
+    type Native = unsafe extern "system" fn(HANDLE, *mut OVERLAPPED) -> BOOL;
+    let call: Native = if target.is_null() {
+        CancelIoEx
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(file, operation) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_event(target: *mut c_void) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn CreateEventW(security: *const c_void, manual: BOOL, initial: BOOL, name: PCWSTR) -> HANDLE);
+    type Native = unsafe extern "system" fn(*const c_void, BOOL, BOOL, PCWSTR) -> HANDLE;
+    let call: Native = if target.is_null() {
+        CreateEventW
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(std::ptr::null(), BOOL(1), BOOL(0), PCWSTR::null()) };
+    let error = if !result.0.is_null() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_pin(
+    target: *mut c_void,
+    flags: u32,
+    address: PCWSTR,
+    module: *mut HMODULE,
+) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn GetModuleHandleExW(flags: u32, address: PCWSTR, module: *mut HMODULE) -> BOOL);
+    type Native = unsafe extern "system" fn(u32, PCWSTR, *mut HMODULE) -> BOOL;
+    let call: Native = if target.is_null() {
+        GetModuleHandleExW
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(flags, address, module) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_submit(
+    target: *mut c_void,
+    callback: PTP_SIMPLE_CALLBACK,
+    context: *mut c_void,
+) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn TrySubmitThreadpoolCallback(callback: PTP_SIMPLE_CALLBACK, context: *mut c_void, environment: *const c_void) -> BOOL);
+    type Native =
+        unsafe extern "system" fn(PTP_SIMPLE_CALLBACK, *mut c_void, *const c_void) -> BOOL;
+    let call: Native = if target.is_null() {
+        TrySubmitThreadpoolCallback
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(callback, context, std::ptr::null()) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_long_running(target: *mut c_void, instance: PTP_CALLBACK_INSTANCE) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn CallbackMayRunLong(instance: PTP_CALLBACK_INSTANCE) -> BOOL);
+    type Native = unsafe extern "system" fn(PTP_CALLBACK_INSTANCE) -> BOOL;
+    let call: Native = if target.is_null() {
+        CallbackMayRunLong
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(instance) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
+}
+
+unsafe fn native_volume_paths(
+    target: *mut c_void,
+    guid: PCWSTR,
+    paths: PWSTR,
+    capacity: u32,
+    length: *mut u32,
+) -> Call {
+    // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+    windows_core::link!("kernel32.dll" "system" fn GetVolumePathNamesForVolumeNameW(guid: PCWSTR, paths: PWSTR, capacity: u32, length: *mut u32) -> BOOL);
+    type Native = unsafe extern "system" fn(PCWSTR, PWSTR, u32, *mut u32) -> BOOL;
+    let call: Native = if target.is_null() {
+        GetVolumePathNamesForVolumeNameW
+    } else {
+        unsafe { std::mem::transmute::<*mut c_void, Native>(target) }
+    };
+    // SAFETY: the caller retains all handles and output storage until the operation drains.
+    let result = unsafe { call(guid, paths, capacity, length) };
+    let error = if result.as_bool() {
+        0
+    } else {
+        unsafe { GetLastError() }.0
+    };
+    Call {
+        value: result.0 as usize,
+        error,
+    }
 }
 
 impl Hooks {
-    fn at(self, boundary: Boundary, handle: HANDLE, index: usize) -> Result<(), Error> {
+    fn at(self, boundary: Boundary, handle: HANDLE, index: usize) {
         if !self.call.is_null() {
-            // SAFETY: validated callback storage lives through the dependency lease. C++ catches throws.
-            unsafe { kr_worker_hook(self.call, self.context, boundary as u32, handle, index) }
-                .checked()?;
+            // SAFETY: validated callback storage lives through the dependency lease. Callbacks obey the no-throw ABI contract.
+            unsafe { native_hook(self.call, self.context, boundary as u32, handle, index) };
         }
-        Ok(())
     }
 
     fn event(self, failure: Error) -> Result<Handle, Error> {
-        // SAFETY: the event has no borrowed security descriptor or name. Injected calls are fenced.
-        let handle = unsafe {
-            if self.native.event.is_null() {
-                CreateEventW(None, true, false, PCWSTR::null()).map_err(|_| failure)?
-            } else {
-                HANDLE(kr_worker_event(self.native.event).checked()?.value as *mut c_void)
-            }
-        };
+        // SAFETY: the event has no borrowed security descriptor or name.
+        let handle = unsafe { HANDLE(native_event(self.native.event).value as *mut c_void) };
         Handle::new(handle).ok_or(failure)
     }
 
@@ -181,17 +314,13 @@ impl Hooks {
     ) -> Call {
         // SAFETY: the file, operation, buffer and event remain owned until completion drains.
         unsafe {
-            if self.native.completion.is_null() {
-                Call::boolean(GetOverlappedResult(file, operation, count, wait))
-            } else {
-                kr_worker_completion(
-                    self.native.completion,
-                    file,
-                    operation,
-                    count,
-                    BOOL::from(wait),
-                )
-            }
+            native_completion(
+                self.native.completion,
+                file,
+                operation,
+                count,
+                BOOL::from(wait),
+            )
         }
     }
 }
@@ -205,7 +334,7 @@ impl HookLease {
         }
         if !hooks.retain_context.is_null() {
             // SAFETY: the caller supplies one paired acquisition and release for the complete table.
-            unsafe { kr_worker_lifetime(hooks.retain_context, hooks.context) }.checked()?;
+            unsafe { native_lifetime(hooks.retain_context, hooks.context) };
         }
         Ok(Self(hooks))
     }
@@ -215,7 +344,7 @@ impl Drop for HookLease {
     fn drop(&mut self) {
         if !self.0.release_context.is_null() {
             // SAFETY: this is the sole release paired with the successful retained callback owner.
-            let _ = unsafe { kr_worker_lifetime(self.0.release_context, self.0.context) }.checked();
+            unsafe { native_lifetime(self.0.release_context, self.0.context) };
         }
     }
 }
@@ -384,23 +513,14 @@ fn volume(drive: &[u16], hooks: Hooks) -> Result<Vec<u16>, Error> {
         let mut length = 0;
         // SAFETY: guid is terminated by volume enumeration. All output storage is live for the call.
         let result = unsafe {
-            if hooks.native.volume_paths.is_null() {
-                Call::boolean(crate::foreign::win32::volume_paths(
-                    PCWSTR(guid.as_ptr()),
-                    &mut paths,
-                    &mut length,
-                ))
-            } else {
-                kr_worker_volume_paths(
-                    hooks.native.volume_paths,
-                    PCWSTR(guid.as_ptr()),
-                    PWSTR(paths.as_mut_ptr()),
-                    paths.len() as u32,
-                    &mut length,
-                )
-            }
-        }
-        .checked()?;
+            native_volume_paths(
+                hooks.native.volume_paths,
+                PCWSTR(guid.as_ptr()),
+                PWSTR(paths.as_mut_ptr()),
+                paths.len() as u32,
+                &mut length,
+            )
+        };
         if result.value == 0 || length as usize > paths.len() {
             return Err(Error::Unavailable);
         }
@@ -593,24 +713,35 @@ fn open(
             )
             .0
         } else {
-            let result = kr_worker_open(
-                hooks.native.open,
+            // SAFETY: the dependency owner provides this exact system ABI function and retains its code.
+            let call: unsafe extern "system" fn(
+                *mut HANDLE,
+                u32,
+                *mut OBJECT_ATTRIBUTES,
+                *mut IO_STATUS_BLOCK,
+                *const i64,
+                u32,
+                u32,
+                u32,
+                u32,
+                *const c_void,
+                u32,
+            ) -> NTSTATUS = std::mem::transmute(hooks.native.open);
+            // SAFETY: the caller retains all handles and output storage until the operation drains.
+            let status = call(
                 &mut owned.raw,
                 access.0,
                 &mut owned.attributes,
                 &mut owned.io,
+                std::ptr::null(),
                 0,
                 sharing.0,
                 FILE_OPEN.0,
                 options.0,
+                std::ptr::null(),
+                0,
             );
-            if result.exception != 0 {
-                crate::foreign::quarantine();
-                // The thrown callback may have initiated an asynchronous open into this storage.
-                std::mem::forget(owned);
-                return Err(Error::Startup);
-            }
-            result.value as i32
+            status.0
         }
     };
     let handle = Handle::new(owned.raw);
@@ -655,20 +786,11 @@ struct ReadOperation {
 fn drain(file: &mut Handle, pending: &mut Option<Box<ReadOperation>>, hooks: Hooks) {
     let operation = &mut pending.as_mut().expect("pending I/O is owned").operation;
     // SAFETY: this is the one cancellation attempt for the still-owned operation.
-    let cancel = unsafe {
-        if hooks.native.cancel.is_null() {
-            Call::boolean(CancelIoEx(file.0, Some(operation)))
-        } else {
-            kr_worker_cancel(hooks.native.cancel, file.0, operation)
-        }
-    };
-    let _ = cancel.checked();
+    let _ = unsafe { native_cancel(hooks.native.cancel, file.0, operation) };
     let mut count = 0;
     let completion = hooks.completion(file.0, operation, &mut count, true);
-    if completion.exception != 0
-        || (completion.value == 0 && completion.error == ERROR_IO_INCOMPLETE.0)
-    {
-        crate::foreign::quarantine();
+    if completion.value == 0 && completion.error == ERROR_IO_INCOMPLETE.0 {
+        crate::foreign::retain_module();
         // Completion is uncertain. Kernel references may still target this storage and file.
         std::mem::forget(pending.take());
         std::mem::forget(std::mem::take(file));
@@ -703,27 +825,15 @@ fn read(file: &mut Handle, stop: HANDLE, length: usize, hooks: Hooks) -> Result<
         let count = (owned.bytes.len() - offset).min(65536);
         // SAFETY: Box fixes the operation address and the vector will not reallocate until drained.
         let result = unsafe {
-            if hooks.native.read.is_null() {
-                Call::boolean(crate::foreign::win32::read_file(
-                    file.0,
-                    &mut owned.bytes[offset..offset + count],
-                    &mut owned.operation,
-                ))
-            } else {
-                kr_worker_read(
-                    hooks.native.read,
-                    file.0,
-                    owned.bytes.as_mut_ptr().add(offset),
-                    count as u32,
-                    &mut owned.operation,
-                )
-            }
+            native_read(
+                hooks.native.read,
+                file.0,
+                owned.bytes.as_mut_ptr().add(offset),
+                count as u32,
+                &mut owned.operation,
+            )
         };
-        if result.exception != 0 {
-            crate::foreign::quarantine();
-            drain(file, &mut pending, hooks);
-            return Err(Error::Startup);
-        }
+
         if result.value == 0 && result.error == ERROR_IO_PENDING.0 {
             // SAFETY: both wait handles remain owned through the following drain/completion.
             let waited = unsafe {
@@ -749,8 +859,8 @@ fn read(file: &mut Handle, stop: HANDLE, length: usize, hooks: Hooks) -> Result<
         } else {
             result
         };
-        if result.exception != 0 || (result.value == 0 && result.error == ERROR_IO_INCOMPLETE.0) {
-            crate::foreign::quarantine();
+        if result.value == 0 && result.error == ERROR_IO_INCOMPLETE.0 {
+            crate::foreign::retain_module();
             drain(file, &mut pending, hooks);
             return Err(Error::Startup);
         }
@@ -864,7 +974,7 @@ fn observe(path: &Path, stop: HANDLE, hooks: Hooks) -> Result<Observation, Error
             Boundary::ParentOpened,
             parents.last().ok_or(Error::Unavailable)?.handle.0,
             index,
-        )?;
+        );
         check_stop(stop)?;
         let handle = child(&parents, component, true)?;
         let metadata = inspect(handle.0, true, Some(serial))?;
@@ -874,7 +984,7 @@ fn observe(path: &Path, stop: HANDLE, hooks: Hooks) -> Result<Observation, Error
         Boundary::ParentOpened,
         parents.last().ok_or(Error::Unavailable)?.handle.0,
         path.components.len() - 1,
-    )?;
+    );
     let mut file = child(
         &parents,
         path.components.last().ok_or(Error::Unavailable)?,
@@ -892,9 +1002,9 @@ fn observe(path: &Path, stop: HANDLE, hooks: Hooks) -> Result<Observation, Error
     if before.standard.EndOfFile < 0 || before.standard.EndOfFile as u64 > MAX_BYTES as u64 {
         return Err(Error::Unavailable);
     }
-    hooks.at(Boundary::BeforeRead, file.0, 0)?;
+    hooks.at(Boundary::BeforeRead, file.0, 0);
     let bytes = read(&mut file, stop, before.standard.EndOfFile as usize, hooks)?;
-    hooks.at(Boundary::AfterRead, file.0, 0)?;
+    hooks.at(Boundary::AfterRead, file.0, 0);
     if !before.same_file(&inspect(file.0, false, Some(serial))?) {
         return Err(Error::Unstable);
     }
@@ -1020,7 +1130,7 @@ impl SourceState {
             };
         } else {
             self.staged = None;
-            hooks.at(Boundary::BeforeParse, HANDLE::default(), 0)?;
+            hooks.at(Boundary::BeforeParse, HANDLE::default(), 0);
             check_stop(stop)?;
             let dictionary = DictionaryOwner::parse(&observation.bytes)?;
             check_stop(stop)?;
@@ -1054,8 +1164,7 @@ struct State {
 
 impl State {
     fn publish(&self, ready: Ready) -> Result<(), Error> {
-        self.hooks
-            .at(Boundary::BeforePublish, HANDLE::default(), 0)?;
+        self.hooks.at(Boundary::BeforePublish, HANDLE::default(), 0);
         let replaced = {
             let mut mailbox = self.mailbox.lock().map_err(|_| Error::Startup)?;
             if self.revoked.load(Ordering::Acquire) {
@@ -1065,25 +1174,15 @@ impl State {
             }
         };
         drop(replaced);
-        self.hooks.at(Boundary::Published, HANDLE::default(), 0)
+        self.hooks.at(Boundary::Published, HANDLE::default(), 0);
+        Ok(())
     }
 
     fn run(&self, instance: PTP_CALLBACK_INSTANCE, ready: &mut Ready) -> Result<(), Error> {
-        self.hooks.at(Boundary::BeforeWork, HANDLE::default(), 0)?;
+        self.hooks.at(Boundary::BeforeWork, HANDLE::default(), 0);
         check_stop(self.stop.0)?;
         // SAFETY: instance is provided by the native threadpool for this callback.
-        let long_running = unsafe {
-            if self.hooks.native.long_running.is_null() {
-                Call {
-                    value: CallbackMayRunLong(instance).0 as usize,
-                    error: 0,
-                    exception: 0,
-                }
-            } else {
-                kr_worker_long_running(self.hooks.native.long_running, instance)
-            }
-        }
-        .checked()?;
+        let long_running = unsafe { native_long_running(self.hooks.native.long_running, instance) };
         if long_running.value == 0 {
             return Err(Error::Startup);
         }
@@ -1143,7 +1242,7 @@ unsafe extern "system" fn work(instance: PTP_CALLBACK_INSTANCE, context: *mut c_
             }
         }));
     }
-    let _ = hooks.at(Boundary::Cleanup, HANDLE::default(), 0);
+    hooks.at(Boundary::Cleanup, HANDLE::default(), 0);
     let Launch {
         state,
         module: _,
@@ -1151,7 +1250,7 @@ unsafe extern "system" fn work(instance: PTP_CALLBACK_INSTANCE, context: *mut c_
     } = *launch;
     let _ = catch_unwind(AssertUnwindSafe(|| drop(state)));
     WORKERS.fetch_sub(1, Ordering::AcqRel);
-    let _ = hooks.at(Boundary::AfterCount, HANDLE::default(), 0);
+    hooks.at(Boundary::AfterCount, HANDLE::default(), 0);
     drop(lease);
 }
 
@@ -1209,25 +1308,14 @@ impl Worker {
         if owner == ModuleOwner::Dll {
             // SAFETY: FROM_ADDRESS interprets the callback address as code. Output belongs to Launch.
             let pinned = unsafe {
-                if hooks.native.pin.is_null() {
-                    Call::boolean(GetModuleHandleExW(
-                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                        PCWSTR(work as *const () as *const u16),
-                        &mut launch.module,
-                    ))
-                } else {
-                    kr_worker_pin(
-                        hooks.native.pin,
-                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                        PCWSTR(work as *const () as *const u16),
-                        &mut launch.module,
-                    )
-                }
+                native_pin(
+                    hooks.native.pin,
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                    PCWSTR(work as *const () as *const u16),
+                    &mut launch.module,
+                )
             };
-            if pinned.exception != 0 {
-                crate::foreign::quarantine();
-                return false;
-            }
+
             if pinned.value == 0 || launch.module.is_invalid() {
                 return false;
             }
@@ -1235,25 +1323,8 @@ impl Worker {
         WORKERS.fetch_add(1, Ordering::AcqRel);
         let raw = Box::into_raw(launch);
         // SAFETY: submission transfers the owned Launch to one callback on success only.
-        let submitted = unsafe {
-            if hooks.native.submit.is_null() {
-                Call::boolean(TrySubmitThreadpoolCallback(
-                    Some(work),
-                    Some(raw.cast()),
-                    None,
-                ))
-            } else {
-                kr_worker_submit(hooks.native.submit, Some(work), raw.cast())
-            }
-        };
-        if submitted.exception != 0 {
-            crate::foreign::quarantine();
-            state.revoked.store(true, Ordering::Release);
-            // SAFETY: the independently retained state owns this stop event.
-            let _ = unsafe { SetEvent(state.stop.0) };
-            // Submission may have transferred ownership. The callback or quarantine keeps Launch alive.
-            return false;
-        }
+        let submitted = unsafe { native_submit(hooks.native.submit, Some(work), raw.cast()) };
+
         if submitted.value == 0 {
             // SAFETY: exact failed submission did not transfer ownership to a callback.
             let launch = unsafe { Box::from_raw(raw) };

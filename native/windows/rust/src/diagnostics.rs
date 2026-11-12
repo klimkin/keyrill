@@ -62,7 +62,8 @@ pub(crate) enum Cause {
     NotActive,
     WrongProfile,
     Substitute,
-    Exception,
+    #[expect(dead_code, reason = "reserved public diagnostic wire value")]
+    ReservedException,
 }
 
 #[repr(u32)]
@@ -179,7 +180,8 @@ pub(crate) enum Unresolved {
     NullArgument,
     IdentityFailure,
     Stale,
-    Exception,
+    #[expect(dead_code, reason = "reserved public diagnostic wire value")]
+    ReservedException,
 }
 
 #[repr(C)]
