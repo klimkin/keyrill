@@ -139,6 +139,7 @@ pub struct Provider {
     pub ITfCompartment: Slot<ITfCompartment_Vtbl>,
     pub ITfRangeACP: Slot<ITfRangeACP_Vtbl>,
     pub ITfComposition: Slot<ITfComposition_Vtbl>,
+    pub composition_alias: Slot<ITfComposition_Vtbl>,
     pub ITfCompositionView: Slot<ITfCompositionView_Vtbl>,
     pub IEnumITfCompositionView: Slot<IEnumITfCompositionView_Vtbl>,
     pub ITfThreadMgr: Slot<ITfThreadMgr_Vtbl>,
@@ -176,6 +177,7 @@ impl Provider {
             ITfCompartment: Slot::new(&ITFCOMPARTMENT_TABLE),
             ITfRangeACP: Slot::new(&ITFRANGEACP_TABLE),
             ITfComposition: Slot::new(&ITFCOMPOSITION_TABLE),
+            composition_alias: Slot::new(&ITFCOMPOSITION_TABLE),
             ITfCompositionView: Slot::new(&ITFCOMPOSITIONVIEW_TABLE),
             IEnumITfCompositionView: Slot::new(&IENUMITFCOMPOSITIONVIEW_TABLE),
             ITfThreadMgr: Slot::new(&ITFTHREADMGR_TABLE),
@@ -202,6 +204,7 @@ impl Provider {
         p.ITfCompartment.owner = address;
         p.ITfRangeACP.owner = address;
         p.ITfComposition.owner = address;
+        p.composition_alias.owner = address;
         p.ITfCompositionView.owner = address;
         p.IEnumITfCompositionView.owner = address;
         p.ITfThreadMgr.owner = address;

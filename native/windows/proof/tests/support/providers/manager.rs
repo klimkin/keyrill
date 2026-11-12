@@ -331,8 +331,8 @@ unsafe extern "system" fn ITfSourceSingle_UnadviseSingleSink(
             p.manager()
                 .diagnostic_unadvises
                 .set(p.manager().diagnostic_unadvises.get() + 1);
-            p.hit("UnadviseSingleSink");
             replace_reference(&p.manager().diagnostic, None);
+            p.hit("UnadviseSingleSink");
             p.result("UnadviseSingleSink")
         })
     }

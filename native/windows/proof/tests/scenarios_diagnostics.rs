@@ -353,3 +353,71 @@ fn diagnostic_lifetime_counters_survive_activation_but_not_other_instances() {
     assert!(!eaten.as_bool());
     assert_eq!(snapshot(&c.service).latest[2], 5);
 }
+
+#[test]
+fn optional_diagnostic_registration_drains_each_captured_ownership_once() {
+    for case in 0..9 {
+        let c = Client::new();
+        assert_eq!(c.deactivate(), S_OK);
+        let advises = c.manager.diagnostic_advises.get();
+        let unadvises = c.manager.diagnostic_unadvises.get();
+        if case == 0 {
+            c.manager
+                .results
+                .borrow_mut()
+                .insert("diagnostic.QI", E_NOINTERFACE);
+        }
+        if [1, 2, 6, 7].contains(&case) {
+            c.manager.results.borrow_mut().insert(
+                "AdviseSingleSink",
+                if case == 2 || case == 7 {
+                    S_FALSE
+                } else {
+                    E_FAIL
+                },
+            );
+        }
+        if [4, 5, 6, 7].contains(&case) {
+            c.manager.results.borrow_mut().insert(
+                "UnadviseSingleSink",
+                if case == 5 || case == 7 {
+                    S_FALSE
+                } else {
+                    E_FAIL
+                },
+            );
+        }
+        if case == 3 || case == 8 {
+            let service = c.service.clone();
+            c.host.on(
+                if case == 3 {
+                    "AdviseSingleSink"
+                } else {
+                    "UnadviseSingleSink"
+                },
+                0,
+                move || unsafe {
+                    assert_eq!((service.vtable().base__.Deactivate)(service.as_raw()), S_OK);
+                },
+            );
+        }
+        let activation = c.reactivate();
+        if case == 3 {
+            assert!(activation.is_err());
+        } else {
+            assert_eq!(activation, S_OK);
+        }
+        assert_eq!(c.deactivate(), S_OK);
+        assert_eq!(c.deactivate(), S_OK);
+        assert!(c.manager.diagnostic.borrow().is_none(), "case {case}");
+        assert_eq!(
+            c.manager.diagnostic_advises.get(),
+            advises + u32::from(case != 0)
+        );
+        assert_eq!(
+            c.manager.diagnostic_unadvises.get(),
+            unadvises + u32::from(case != 0)
+        );
+        oracle::no_effects(&c);
+    }
+}
