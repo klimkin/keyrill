@@ -231,6 +231,7 @@ pub(crate) struct LifecycleJournal {
 }
 
 impl LifecycleJournal {
+    #[cfg(test)]
     pub(crate) fn new(sequence: u32, allocated: u32) -> Self {
         Self {
             window: LifecycleSnapshot {
@@ -509,6 +510,7 @@ pub(crate) struct ObservationJournal {
     window: ObservationWindow,
 }
 impl ObservationJournal {
+    #[cfg(test)]
     pub(crate) fn new(sequence: u32) -> Self {
         Self {
             window: ObservationWindow {

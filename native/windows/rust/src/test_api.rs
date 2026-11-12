@@ -14,7 +14,9 @@ use windows::Win32::Foundation::{
     E_INVALIDARG, E_POINTER, E_UNEXPECTED, HWND, LPARAM, S_OK, WPARAM,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
-use windows::Win32::UI::TextServices::{ITfContext, TF_INPUTPROCESSORPROFILE, TF_PRESERVEDKEY};
+use windows::Win32::UI::TextServices::{
+    ITfContext, ITfThreadMgr, TF_INPUTPROCESSORPROFILE, TF_PRESERVEDKEY,
+};
 use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 
 const VERSION: u32 = 2;
@@ -349,6 +351,76 @@ unsafe extern "system" fn KeyrillTestMaintain(handle: *mut c_void) -> HRESULT {
         }
         // SAFETY: the test caller retains its live handle for this synchronous entry.
         unsafe { &*handle.cast::<Handle>() }.service.maintain()
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestMetadata(
+    handle: *mut c_void,
+    context: *mut c_void,
+    manager: *mut c_void,
+    client: u32,
+    current: *const u32,
+    output: *mut crate::observation::Metadata,
+) -> HRESULT {
+    const {
+        assert!(size_of::<crate::observation::Metadata>() == 40);
+    }
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the versioned SDK transport supplies a complete writable metadata object.
+        unsafe { output.write(crate::observation::Metadata::default()) };
+        if handle.is_null() || context.is_null() || manager.is_null() || current.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the test caller retains the live handle throughout this synchronous transport.
+        let handle = unsafe { &*handle.cast::<Handle>() };
+        handle.service.checked(|| {
+            let failed = |call: foreign::Call| {
+                let metadata = crate::observation::Metadata {
+                    reason: if call.exception != 0 {
+                        crate::observation::Reason::Exception
+                    } else {
+                        crate::observation::Reason::Native
+                    },
+                    result: if call.exception != 0 {
+                        0
+                    } else {
+                        call.result.0 as u32
+                    },
+                    ..crate::observation::Metadata::default()
+                };
+                // SAFETY: the checked output remains writable until this synchronous call returns.
+                unsafe { output.write(metadata) };
+                S_OK
+            };
+            // SAFETY: the SDK caller retains both incoming interfaces throughout capture and observation.
+            let context = match unsafe { foreign::retain::<ITfContext>(context) } {
+                Ok(context) => context,
+                Err(call) => return failed(call),
+            };
+            // SAFETY: the SDK caller retains this incoming thread manager throughout the call.
+            let manager = match unsafe { foreign::retain::<ITfThreadMgr>(manager) } {
+                Ok(manager) => manager,
+                Err(call) => return failed(call),
+            };
+            let current = Rc::new(move || {
+                // SAFETY: only same-thread, unexpired observation uses this synchronous caller flag.
+                unsafe { current.read() != 0 }
+            });
+            let observed = crate::host_metadata::observe(
+                handle.owner.clone(),
+                context,
+                manager,
+                client,
+                current,
+            );
+            // SAFETY: metadata is a copied content-free value and output remains writable.
+            unsafe { output.write(observed.metadata) };
+            S_OK
+        })
     })
 }
 

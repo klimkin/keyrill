@@ -77,6 +77,8 @@ struct State {
     observations: diagnostics::ObservationJournal,
     publisher: Option<Rc<crate::observation::Publisher>>,
     metadata: crate::observation::Metadata,
+    observing_host: bool,
+    observed_generation: u64,
     alt_cycle: Option<Rc<AltCycle>>,
     release_permission: Option<Rc<AltCycle>>,
     release_decision: Option<Rc<Cell<bool>>>,
@@ -265,6 +267,13 @@ struct AdmissionCall<'a>(&'a Service);
 impl Drop for AdmissionCall<'_> {
     fn drop(&mut self) {
         self.0.state.borrow_mut().admitting_key = false;
+    }
+}
+
+struct HostObservationCall<'a>(&'a Service);
+impl Drop for HostObservationCall<'_> {
+    fn drop(&mut self) {
+        self.0.state.borrow_mut().observing_host = false;
     }
 }
 
@@ -921,6 +930,7 @@ impl Service {
                         let mut state = self.state.borrow_mut();
                         state.host_identity = identity;
                         state.metadata = crate::observation::Metadata::default();
+                        state.observed_generation = 0;
                         state.publisher = Some(Rc::new(publisher));
                     }
                 }
@@ -1379,13 +1389,14 @@ impl Service {
     }
 
     fn admit_key(
-        &self,
+        self: &Rc<Self>,
         context: *mut c_void,
         acquired: Option<&mut diagnostics::ModifierKnowledge>,
+        owner: &crate::com::OwnServiceLease,
     ) -> Result<AdmittedKey, HRESULT> {
         use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
         let state = self.state.borrow();
-        if state.busy || state.admitting_key {
+        if state.busy || state.admitting_key || state.observing_host {
             drop(state);
             self.refuse(Stage::Key, Cause::Reentry, S_OK);
             self.invalidate_word(self.owned().is_some());
@@ -1536,6 +1547,14 @@ impl Service {
             self.invalidate_lifecycle_if(guard, LifecycleCause::KeyAdmission);
             return Err(S_OK);
         }
+        let host = self.state.borrow().host_identity;
+        if host.kind == crate::observation::Kind::PackagedNotepad as u32
+            && !crate::field::known_notepad(&host)
+        {
+            // SAFETY: the native key callback retains its receiving context through admission.
+            unsafe { self.observe_host(owner.clone(), context) };
+            return Err(S_OK);
+        }
         let witnesses = [substitute.release_witness(), manager.release_witness()];
         drop(substitute);
         drop(manager);
@@ -1565,7 +1584,7 @@ impl Service {
             self.inject_panic(1);
             let decision = ReleaseDecision::new(self);
             self.count(Counter::KeyEntered);
-            let admitted = match self.admit_key(context, None) {
+            let admitted = match self.admit_key(context, None, &owner) {
                 Ok(admitted) => admitted,
                 Err(result) => return result,
             };
@@ -1651,7 +1670,7 @@ impl Service {
             };
             let ticket = self.begin_command(diagnostics::RecognizedCommand::Preserved { intent });
             let mut modifiers = diagnostics::ModifierKnowledge::Unknown;
-            let admitted = match self.admit_key(context, Some(&mut modifiers)) {
+            let admitted = match self.admit_key(context, Some(&mut modifiers), &owner) {
                 Ok(admitted) => admitted,
                 Err(result) => {
                     self.revoke_release();
@@ -2017,6 +2036,78 @@ impl Service {
             },
             value: crate::field::capture(window, host),
         }
+    }
+
+    unsafe fn observe_host(
+        self: &Rc<Self>,
+        owner: crate::com::OwnServiceLease,
+        context: *mut c_void,
+    ) {
+        let Some(authority) = self.capture_authority() else {
+            return;
+        };
+        let guard = authority.guard;
+        let manager = authority.manager.clone();
+        let client = authority.client;
+        drop(authority);
+        {
+            let mut state = self.state.borrow_mut();
+            if context.is_null()
+                || state.observing_host
+                || state.observed_generation == guard.generation
+                || !self.state_current(&state, guard)
+            {
+                return;
+            }
+            state.observed_generation = guard.generation;
+            state.observing_host = true;
+        }
+        let _observation = HostObservationCall(self);
+        // SAFETY: the caller retains its live receiving context throughout this synchronous observation.
+        let context = match unsafe { foreign::retain::<ITfContext>(context) } {
+            Ok(context) => context,
+            Err(call) => {
+                if self.state.borrow().epoch == guard.epoch {
+                    self.state.borrow_mut().metadata = crate::observation::Metadata {
+                        reason: if call.exception != 0 {
+                            crate::observation::Reason::Exception
+                        } else {
+                            crate::observation::Reason::Native
+                        },
+                        result: if call.exception != 0 {
+                            0
+                        } else {
+                            call.result.0 as u32
+                        },
+                        ..crate::observation::Metadata::default()
+                    };
+                }
+                return;
+            }
+        };
+        let service = Rc::downgrade(self);
+        let current = Rc::new(move || {
+            service
+                .upgrade()
+                .is_some_and(|service| service.owner_thread() && service.current(guard))
+        });
+        let observed = crate::host_metadata::observe(owner, context, manager, client, current);
+        if self.state.borrow().epoch != guard.epoch {
+            return;
+        }
+        if observed.panicked {
+            self.poisoned.set(true);
+            self.invalidate_if(guard, true);
+        }
+        let metadata = if self.current(guard) || observed.panicked {
+            observed.metadata
+        } else {
+            crate::observation::Metadata {
+                reason: crate::observation::Reason::Stale,
+                ..crate::observation::Metadata::default()
+            }
+        };
+        self.state.borrow_mut().metadata = metadata;
     }
 
     fn observation_stamp(state: &State) -> diagnostics::ObservationStamp {

@@ -128,6 +128,7 @@ pub(crate) struct DependencyLease {
 }
 
 impl DependencyLease {
+    #[cfg(feature = "test-api")]
     pub(crate) fn new(table: Dependencies) -> Result<Self, Call> {
         if let Some(retain) = table.retain {
             // SAFETY: the validated dependency owner retains callbacks and context through release.

@@ -39,6 +39,7 @@ pub(crate) enum Kind {
 pub(crate) enum Reason {
     #[default]
     Unobserved,
+    #[expect(dead_code, reason = "Protocol 3 reserves this SDK wire discriminant.")]
     Unsupported,
     Stale,
     Native,
