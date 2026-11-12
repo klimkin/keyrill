@@ -1,4 +1,7 @@
 //! RichEdit proof editor with the native TSF keystroke and message-pump entry points.
+#[cfg(test)]
+#[path = "editor_shutdown_tests.rs"]
+mod shutdown_tests;
 use crate::diagnostics::{Poller, format_runtime, read_runtime};
 use crate::native::wide;
 use crate::options::FixtureMode;
