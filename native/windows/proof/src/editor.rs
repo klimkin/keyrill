@@ -1,5 +1,8 @@
 //! RichEdit proof editor with the native TSF keystroke and message-pump entry points.
 #[cfg(test)]
+#[path = "editor_fixture_tests.rs"]
+mod fixture_tests;
+#[cfg(test)]
 #[path = "editor_shutdown_tests.rs"]
 mod shutdown_tests;
 use crate::diagnostics::{Poller, format_runtime, read_runtime};
@@ -30,6 +33,21 @@ pub const DENIAL_TITLE: &str = "Keyrill TSF native lock-denial fixture";
 /// Status row published after the native lock-denial style is verified.
 pub const DENIAL_STATUS: &str = "Keyrill native denial v1; setup=Confirmed";
 type ScopeSetter = unsafe extern "system" fn(HWND, InputScope) -> HRESULT;
+#[cfg(test)]
+type ScopeHook = fn(HWND, InputScope, ScopeSetter) -> HRESULT;
+#[cfg(test)]
+thread_local! {
+    static SCOPE_HOOK: Cell<Option<ScopeHook>> = const { Cell::new(None) };
+    static SCOPE_RESET_RESULT: Cell<HRESULT> = const { Cell::new(S_OK) };
+}
+fn set_scope(window: HWND, scope: InputScope, setter: ScopeSetter) -> HRESULT {
+    #[cfg(test)]
+    if let Some(hook) = SCOPE_HOOK.get() {
+        return catch_unwind(AssertUnwindSafe(|| hook(window, scope, setter)))
+            .unwrap_or(E_UNEXPECTED);
+    }
+    unsafe { setter(window, scope) }
+}
 struct Module(HMODULE);
 impl Drop for Module {
     fn drop(&mut self) {
@@ -149,12 +167,14 @@ fn reset_scopes(root: HWND, setter: ScopeSetter) -> HRESULT {
     let mut first = S_OK;
     for id in [101, 102, 103, 104] {
         if let Ok(child) = unsafe { GetDlgItem(Some(root), id) } {
-            let result = unsafe { setter(child, IS_DEFAULT) };
+            let result = set_scope(child, IS_DEFAULT, setter);
             if first == S_OK && result != S_OK {
                 first = result;
             }
         }
     }
+    #[cfg(test)]
+    SCOPE_RESET_RESULT.set(first);
     first
 }
 struct Fixture {
@@ -195,16 +215,10 @@ fn set_text(window: HWND, value: &str) -> Result<()> {
     let text = wide(value);
     unsafe { SetWindowTextW(window, PCWSTR(text.as_ptr())) }
 }
-fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) -> Result<Fixture> {
-    let rich_edit = Module(unsafe { LoadLibraryW(w!("msftedit.dll"))? });
-    let tsf = Module(unsafe { LoadLibraryW(w!("msctf.dll"))? });
-    let raw = unsafe { GetProcAddress(tsf.0, PCSTR(c"SetInputScope".as_ptr().cast())) }
-        .ok_or_else(|| windows::core::Error::from_hresult(E_NOINTERFACE))?;
-    let scope: ScopeSetter = unsafe { std::mem::transmute(raw) };
-    let instance = HINSTANCE(unsafe { GetModuleHandleW(None)? }.0);
+fn register_fixture_class(instance: HINSTANCE, procedure: WNDPROC) -> Result<()> {
     let class = WNDCLASSW {
         hInstance: instance,
-        lpfnWndProc: Some(window_proc),
+        lpfnWndProc: procedure,
         lpszClassName: FIXTURE_CLASS,
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
         hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as usize as *mut _),
@@ -215,11 +229,21 @@ fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) 
         if unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS
             || unsafe { GetClassInfoW(Some(instance), FIXTURE_CLASS, &mut existing) }.is_err()
             || existing.lpfnWndProc.map(|function| function as usize)
-                != Some(window_proc as *const () as usize)
+                != procedure.map(|function| function as usize)
         {
             return Err(windows::core::Error::from_hresult(E_FAIL));
         }
     }
+    Ok(())
+}
+fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) -> Result<Fixture> {
+    let rich_edit = Module(unsafe { LoadLibraryW(w!("msftedit.dll"))? });
+    let tsf = Module(unsafe { LoadLibraryW(w!("msctf.dll"))? });
+    let raw = unsafe { GetProcAddress(tsf.0, PCSTR(c"SetInputScope".as_ptr().cast())) }
+        .ok_or_else(|| windows::core::Error::from_hresult(E_NOINTERFACE))?;
+    let scope: ScopeSetter = unsafe { std::mem::transmute(raw) };
+    let instance = HINSTANCE(unsafe { GetModuleHandleW(None)? }.0);
+    register_fixture_class(instance, Some(window_proc))?;
     let window = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -318,7 +342,7 @@ fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) 
                 Some(LPARAM(SES_USECTF as isize)),
             );
         }
-        let result = unsafe { scope(edit, scope_value) };
+        let result = set_scope(edit, scope_value, scope);
         if result != S_OK {
             return Err(windows::core::Error::from_hresult(result));
         }

@@ -1,4 +1,7 @@
 //! Independent UIA assertions for named proof-editor cases and diagnostic rows.
+#[cfg(test)]
+#[path = "proof_denial_tests.rs"]
+mod denial_tests;
 use crate::diagnostics::{Publication, comparable, format_runtime};
 use crate::editor::{Apartment, DENIAL_STATUS, FIXTURE_CLASS};
 use crate::native::Target;
@@ -263,7 +266,7 @@ impl<'a> Reader<'a> {
             && self.source_result() == Some(result)
     }
     fn denial(&self) -> bool {
-        if self.name(107).as_deref() != Some(DENIAL_STATUS) {
+        if !denial_setup_confirmed(self.name(107).as_deref()) {
             return false;
         }
         let Some(first) = self.publication() else {
@@ -276,7 +279,7 @@ impl<'a> Reader<'a> {
         let Some(second) = self.publication() else {
             return false;
         };
-        self.name(107).as_deref() == Some(DENIAL_STATUS)
+        denial_setup_confirmed(self.name(107).as_deref())
             && denial_matches(&first, &second)
             && self.check_edit(101, "ghbdtn ", true)
             && self.check_edit(102, "", false)
@@ -308,6 +311,9 @@ impl<'a> Reader<'a> {
             && service.snapshot.base[2] == 0
             && service.snapshot.base[0] == value[0]
     }
+}
+fn denial_setup_confirmed(status: Option<&str>) -> bool {
+    status == Some(DENIAL_STATUS)
 }
 /// Require failed native requests with zero session-entry and editing counters.
 pub fn denial_matches(first: &Publication, second: &Publication) -> bool {
