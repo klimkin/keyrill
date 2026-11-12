@@ -5746,8 +5746,9 @@ void LifecycleServiceSchedules() {
             "unresolved schedules have exactly their preexisting native calls");
     Require((scenario == 0 || scenario == 3) == h.service->stopped(),
             "termination preserves sticky stop decisions");
-    Require((scenario == 2 || scenario == 4) || release_seen,
-            "identity release boundary exercised");
+    Require(release_seen == (scenario == 0 || scenario == 1),
+            "normal identity outputs retire under the guard and uncertain exception outputs stay "
+            "quarantined");
     h.Oracle(L"g", 8);
   }
   {
