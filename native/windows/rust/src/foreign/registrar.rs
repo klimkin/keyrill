@@ -1,4 +1,4 @@
-use super::{Call, Lease, adopt, quarantine};
+use super::{Call, Lease, quarantine, returned_interface};
 use crate::profiles::{Profile, SERVICE_ID};
 use std::ffi::c_void;
 use windows::Win32::Foundation::{E_UNEXPECTED, S_OK};
@@ -70,11 +70,8 @@ fn observed(call: Call) -> Call {
 }
 
 fn acquired<T: Interface>(call: Call, output: *mut c_void) -> (Call, Result<Lease<T>, HRESULT>) {
-    let call = observed(call);
+    let returned = returned_interface::<T>(call, output);
     if call.exception != 0 || call.result != S_OK {
-        if !output.is_null() {
-            quarantine();
-        }
         let result = if call.exception == 0 && call.result.is_err() {
             call.result
         } else {
@@ -82,11 +79,7 @@ fn acquired<T: Interface>(call: Call, output: *mut c_void) -> (Call, Result<Leas
         };
         return (call, Err(result));
     }
-    if output.is_null() {
-        return (call, Err(E_UNEXPECTED));
-    }
-    // SAFETY: exact S_OK transfers one reference from the typed acquisition call.
-    (call, unsafe { adopt(output) }.map_err(|error| error.result))
+    (call, returned.value.ok_or(E_UNEXPECTED))
 }
 
 pub(crate) fn profiles() -> (Call, Result<Lease<ITfInputProcessorProfiles>, HRESULT>) {

@@ -17,12 +17,16 @@ void Check(bool passed, const char *message) {
     std::exit(1);
   }
 }
+unsigned live_entries = 0;
 class Entries final
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IEnumTfLanguageProfiles> {
 public:
   Entries(const keyrill::Profile &profile, bool present, HRESULT result)
-      : profile_(profile), present_(present), result_(result) {}
+      : profile_(profile), present_(present), result_(result) {
+    ++live_entries;
+  }
+  ~Entries() { --live_entries; }
   HRESULT STDMETHODCALLTYPE Clone(IEnumTfLanguageProfiles **) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE Next(ULONG count, TF_LANGUAGEPROFILE *entry, ULONG *fetched) override {
     Check(count == 1 && entry && fetched, "enumeration arguments");
@@ -64,6 +68,7 @@ struct Manager final : ITfInputProcessorProfiles {
   unsigned writes = 0;
   ULONG references = 1;
   bool null_entries = false;
+  bool owned_nonexact_entries = false;
   bool throw_enumeration = false;
   ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
   ULONG STDMETHODCALLTYPE Release() override { return --references; }
@@ -83,6 +88,12 @@ struct Manager final : ITfInputProcessorProfiles {
     ++probes[index];
     if (throw_enumeration)
       throw 1;
+    if (owned_nonexact_entries) {
+      Check(Microsoft::WRL::Make<Entries>(keyrill::profiles[index], true, S_OK).CopyTo(entries) ==
+                S_OK,
+            "nonexact enumeration transfers one live reference");
+      return enumeration[index];
+    }
     if (FAILED(enumeration[index]))
       return enumeration[index];
     if (null_entries)
@@ -202,6 +213,16 @@ int wmain(int argc, wchar_t **argv) {
   Manager inconclusive_description;
   inconclusive_description.description = S_FALSE;
   Refuses(inconclusive_description, E_UNEXPECTED, "S_FALSE description refuses enablement");
+  constexpr HRESULT nonexact_results[] = {S_FALSE, E_ACCESSDENIED};
+  for (HRESULT result : nonexact_results) {
+    Manager owned_nonexact;
+    owned_nonexact.owned_nonexact_entries = true;
+    owned_nonexact.enumeration[0] = owned_nonexact.enumeration[1] = result;
+    Refuses(owned_nonexact, FAILED(result) ? result : E_UNEXPECTED,
+            "nonexact owned enumeration refuses enablement");
+    Check(live_entries == 0 && owned_nonexact.references == 1,
+          "normal nonexact enumeration outputs and manager references drain on refusal");
+  }
   Manager throws;
   throws.throw_enumeration = true;
   Refuses(throws, E_UNEXPECTED, "foreign enumeration exception is contained");
