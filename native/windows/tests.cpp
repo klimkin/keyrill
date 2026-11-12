@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -7086,6 +7087,21 @@ void CorrectionAndReversal() {
   Require(h.a.max_request_writes <= 1, "at most one text write per ordinary plan");
   Require(!h.a.active_composition, "Escape ends exact composition");
 }
+void NativeWhitespaceBoundary() {
+  Harness h;
+  constexpr wchar_t separator = L'\u180e';
+  const bool native_boundary = std::iswspace(separator) != 0;
+  h.a.text = L"prefix\u180esuffix";
+  h.a.caret = 7;
+  for (wchar_t letter : std::wstring(L"ghbdtn "))
+    Require(h.Key(letter) == native_boundary, "native UCRT whitespace drives owned admission");
+  const wchar_t *word = native_boundary ? L"привет " : L"ghbdtn ";
+  Require(h.a.text == std::wstring(L"prefix\u180e") + word + L"suffix" && h.a.caret == 14 &&
+              h.a.starts == (native_boundary ? 1 : 0) &&
+              h.a.active_composition == native_boundary && h.a.max_request_writes <= 1 &&
+              h.b.text == L"prefix suffix" && h.b.caret == 7 && h.b.writes == 0,
+          "native whitespace boundary preserves whole documents and exact retained mark");
+}
 void ChangingFinishCaret() {
   using diagnostics::Counter;
   constexpr auto verified = static_cast<size_t>(Counter::Verified);
@@ -7622,7 +7638,8 @@ int wmain(int argc, wchar_t **argv) {
     return 0;
   }
   const bool activation_only = argc == 2 && wcscmp(argv[1], L"--activation") == 0;
-  Require(argc == 1 || activation_only, "known test mode");
+  const bool composition_only = argc == 2 && wcscmp(argv[1], L"--composition") == 0;
+  Require(argc == 1 || activation_only || composition_only, "known test mode");
   RuntimeEnvironment fixture_policy(L"KEYRILL_WINDOWS_POLICY", nullptr);
   RuntimeEnvironment fixture_en(L"KEYRILL_WINDOWS_EN_DICTIONARY", nullptr);
   RuntimeEnvironment fixture_ru(L"KEYRILL_WINDOWS_RU_DICTIONARY", nullptr);
@@ -7635,6 +7652,18 @@ int wmain(int argc, wchar_t **argv) {
     DestroyWindow(controlled_root);
     CoUninitialize();
     puts("Controlled activation schedules passed.");
+    return 0;
+  }
+  if (composition_only) {
+    CorrectionAndReversal();
+    NativeWhitespaceBoundary();
+    Continuation();
+    Denials();
+    Exclusions();
+    FocusAndTermination();
+    DestroyWindow(controlled_root);
+    CoUninitialize();
+    puts("Controlled owned composition schedules passed.");
     return 0;
   }
   puts("RUN dedicated substitute layout regression");
@@ -7700,6 +7729,7 @@ int wmain(int argc, wchar_t **argv) {
   NotepadReplanAdmission();
   puts("RUN correction and reversal");
   CorrectionAndReversal();
+  NativeWhitespaceBoundary();
   puts("RUN changing finish caret");
   ChangingFinishCaret();
   puts("RUN rapid continuation");
