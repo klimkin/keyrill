@@ -665,7 +665,7 @@ and after enumeration. No layout is loaded or activated on this path.
 
 Generation checks surround native queries. Local COM references keep the queried objects alive,
 and a separate key-admission guard makes nested keys invalidate and pass through before event
-handling. The guard releases before `HandleEvent`, whose existing busy guard owns edit-session
+handling. The guard releases before `Service::execute`, whose busy guard owns edit-session
 reentry. Diagnostic callback depth supplies no editing authority. Controlled tests inject profile
 and loaded-layout dependencies per service instance and exercise actual `OnKeyDown`; they do not
 establish physical TSF routing or document acceptance.
