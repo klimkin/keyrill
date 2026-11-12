@@ -1,4 +1,5 @@
 #![cfg(windows)]
+mod scenarios_boundary;
 mod support;
 use support::{client::Client, oracle};
 use windows::Win32::{Foundation::*, UI::TextServices::*};

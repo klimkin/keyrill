@@ -67,6 +67,7 @@ unsafe extern "system" fn query(
             }
             add(value);
             out.write(value);
+            p.hit("QI.after");
             S_OK
         })
     }

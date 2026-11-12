@@ -1,7 +1,7 @@
 use std::{ffi::c_void, path::PathBuf};
 use windows::Win32::{Foundation::*, System::LibraryLoader::*};
 use windows_core::{HRESULT, PCSTR, PCWSTR};
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct HostIdentity {
@@ -124,6 +124,7 @@ const _: () = {
     assert!(std::mem::offset_of!(Probe, identity) == 32);
 };
 pub struct Api {
+    module: HMODULE,
     pub create: unsafe extern "system" fn(
         u32,
         *const Dependencies,
@@ -138,6 +139,12 @@ pub struct Api {
     pub panic: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
 }
 impl Api {
+    pub unsafe fn export<T: Copy>(&self, name: &[u8]) -> T {
+        let value = unsafe { GetProcAddress(self.module, PCSTR(name.as_ptr())) }
+            .expect("required DLL export");
+        assert_eq!(size_of::<T>(), size_of_val(&value));
+        unsafe { std::mem::transmute_copy(&value) }
+    }
     pub fn load() -> Self {
         let path = PathBuf::from(
             std::env::var_os("KEYRILL_TEST_DLL").expect("runner must supply KEYRILL_TEST_DLL"),
@@ -176,6 +183,7 @@ impl Api {
                 "loaded DLL build identity"
             );
             Self {
+                module,
                 create: symbol(module, b"KeyrillTestCreate\0"),
                 release: symbol(module, b"KeyrillTestRelease\0"),
                 event: symbol(module, b"KeyrillTestEvent\0"),
@@ -189,3 +197,28 @@ impl Api {
 mod safe_digest {
     pub type Call = unsafe extern "system" fn(u32, *mut u32) -> windows_core::HRESULT;
 }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FieldIdentity {
+    pub kind: u32,
+    pub field: HWND,
+    pub parent: HWND,
+    pub root: HWND,
+    pub process: u32,
+    pub thread: u32,
+    pub root_thread: u32,
+}
+const _: () = {
+    assert!(size_of::<FieldIdentity>() == 48);
+    assert!(std::mem::offset_of!(FieldIdentity, field) == 8);
+    assert!(std::mem::offset_of!(FieldIdentity, root_thread) == 40);
+    assert!(std::mem::offset_of!(Event, text) == 16);
+    assert!(std::mem::offset_of!(HostIdentity, started) == 8);
+    assert!(std::mem::offset_of!(HostIdentity, version) == 20);
+    assert!(std::mem::offset_of!(FieldWindow, style) == 24);
+    assert!(std::mem::offset_of!(FieldWindow, class_name) == 32);
+    assert!(std::mem::offset_of!(FieldWindow, enabled) == 160);
+    assert!(std::mem::offset_of!(FieldFacts, field) == 80);
+    assert!(std::mem::offset_of!(Dependencies, profiles) == 32);
+    assert!(std::mem::offset_of!(Probe, reserved) == 16);
+};

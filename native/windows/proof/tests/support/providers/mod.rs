@@ -433,6 +433,7 @@ pub const BOUNDARIES: &[&str] = &[
     "Push",
     "capture",
     "QI",
+    "QI.after",
     "RegisterProfile",
     "Release.after",
     "Release.before",

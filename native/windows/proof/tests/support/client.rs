@@ -145,7 +145,7 @@ impl Drop for Client {
         self.host.check();
     }
 }
-unsafe extern "system" fn retain(context: *mut c_void) {
+pub unsafe extern "system" fn retain(context: *mut c_void) {
     let host = unsafe { &*context.cast::<HostCapsule>() };
     com_slots::fence(host, (), || {
         host.dependency_retains
@@ -155,7 +155,7 @@ unsafe extern "system" fn retain(context: *mut c_void) {
         }
     });
 }
-unsafe extern "system" fn release(context: *mut c_void) {
+pub unsafe extern "system" fn release(context: *mut c_void) {
     let owner = unsafe { Rc::from_raw(context.cast::<HostCapsule>()) };
     com_slots::fence(&owner, (), || {
         owner
