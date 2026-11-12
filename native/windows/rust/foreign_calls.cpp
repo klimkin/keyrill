@@ -2,8 +2,12 @@
 #include <cwctype>
 
 extern "C" KrCall kr_foreign_whitespace(WCHAR unit, BOOL *output) noexcept {
-  try { *output = iswspace(unit) != 0; return {S_OK, 0}; }
-  catch (...) { return {E_UNEXPECTED, 1}; }
+  try {
+    *output = iswspace(unit) != 0;
+    return {S_OK, 0};
+  } catch (...) {
+    return {E_UNEXPECTED, 1};
+  }
 }
 
 extern "C" KrCall kr_foreign_advise_single(ITfSourceSingle *source, TfClientId client,
@@ -148,7 +152,8 @@ extern "C" KrCall kr_foreign_compartment(ITfCompartmentMgr *manager, const GUID 
                                          ITfCompartment **output) noexcept {
   KR_RETURN(manager->GetCompartment(*id, output))
 }
-extern "C" KrCall kr_foreign_property(ITfContext *context, const GUID *id, ITfReadOnlyProperty **output) noexcept {
+extern "C" KrCall kr_foreign_property(ITfContext *context, const GUID *id,
+                                      ITfReadOnlyProperty **output) noexcept {
   KR_RETURN(context->GetAppProperty(*id, output))
 }
 extern "C" KrCall kr_foreign_property_value(ITfReadOnlyProperty *property, TfEditCookie cookie,

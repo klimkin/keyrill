@@ -38,7 +38,8 @@ KrCall kr_foreign_window(ITfContextView *view, HWND *output) noexcept;
 KrCall kr_foreign_status(ITfContext *context, TF_STATUS *output) noexcept;
 KrCall kr_foreign_compartment(ITfCompartmentMgr *manager, const GUID *id,
                               ITfCompartment **output) noexcept;
-KrCall kr_foreign_property(ITfContext *context, const GUID *id, ITfReadOnlyProperty **output) noexcept;
+KrCall kr_foreign_property(ITfContext *context, const GUID *id,
+                           ITfReadOnlyProperty **output) noexcept;
 KrCall kr_foreign_whitespace(WCHAR unit, BOOL *output) noexcept;
 KrCall kr_foreign_property_value(ITfReadOnlyProperty *property, TfEditCookie cookie,
                                  ITfRange *range, VARIANT *output) noexcept;
