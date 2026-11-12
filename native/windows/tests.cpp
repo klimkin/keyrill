@@ -1753,6 +1753,37 @@ void Witness(Harness &h, KeyboardState &keyboard) {
               h.a.calls["RequestEditSession"] == requests,
           "preserved observer always declines without text access or an edit session");
 }
+void CommandReleaseFaultSchedules() {
+  int boundaries = 0;
+  for (int failing = 0; failing <= boundaries; ++failing) {
+    ProfileManager profile;
+    Harness h(&profile, ProofLayouts);
+    KeyboardState keyboard;
+    h.Type(L"ghbdtn");
+    Witness(h, keyboard);
+    keyboard.Set(VK_LCONTROL, 0x80);
+    Require(Preserved(h, 'K'), "release fault schedule starts after a verified witnessed command");
+    keyboard.Set(VK_LMENU, 0);
+    const int reads = h.a.reads, writes = h.a.writes, starts = h.a.starts, ends = h.a.ends;
+    int calls = 0;
+    h.a.release_hook = [&] {
+      if (++calls == failing)
+        throw 1;
+    };
+    const bool eaten = RetentionRelease(h);
+    h.a.release_hook = nullptr;
+    if (!failing) {
+      boundaries = calls;
+      Require(boundaries > 0 && eaten, "ordinary witnessed release exercises native retirement");
+    } else {
+      Require(calls >= failing && !eaten,
+              "every throwing native release declines modifier delivery");
+    }
+    Require(h.a.reads == reads && h.a.writes == writes && h.a.starts == starts && h.a.ends == ends,
+            "modifier retirement has no character inspection or document effects");
+    h.Oracle(L"\u043f\u0440\u0438\u0432\u0435\u0442", 13);
+  }
+}
 void CommandRetentionFocusGainSchedules() {
   bool consumed[2]{};
   for (int scenario = 0; scenario != 2; ++scenario) {
@@ -7723,6 +7754,7 @@ int wmain(int argc, wchar_t **argv) {
     return 0;
   }
   if (composition_only) {
+    CommandReleaseFaultSchedules();
     StaleTerminationException();
     CorrectionAndReversal();
     NativeWhitespaceBoundary();
@@ -7825,6 +7857,7 @@ int wmain(int argc, wchar_t **argv) {
   Keyboard();
   puts("RUN actual keydown command sequences");
   CommandKeySequences();
+  CommandReleaseFaultSchedules();
   OemCommandSequences();
   puts("RUN teardown and constructor exceptions");
   TeardownAndConstructorExceptions();
