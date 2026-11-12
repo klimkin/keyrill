@@ -222,3 +222,41 @@ const _: () = {
     assert!(std::mem::offset_of!(Dependencies, profiles) == 32);
     assert!(std::mem::offset_of!(Probe, reserved) == 16);
 };
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Snapshot {
+    pub activation: u32,
+    pub active: u32,
+    pub stopped: u32,
+    pub mode: u32,
+    pub saturated: u32,
+    pub request_present: u32,
+    pub request_result: u32,
+    pub session_present: u32,
+    pub session_result: u32,
+    pub counts: [u32; 12],
+    pub refusals: [u32; 26],
+    pub first: [u32; 4],
+    pub latest: [u32; 4],
+}
+#[windows_core::interface("f75f909b-293a-4a7b-a172-f5a061880352")]
+unsafe trait SnapshotReader: windows_core::IUnknown {
+    fn copy(&self, size: u32, version: u32, output: *mut Snapshot) -> HRESULT;
+}
+const _: () = {
+    assert!(size_of::<Snapshot>() == 220);
+    assert!(std::mem::offset_of!(Snapshot, counts) == 36);
+    assert!(std::mem::offset_of!(Snapshot, first) == 188);
+};
+pub fn snapshot(service: &windows::Win32::UI::TextServices::ITfTextInputProcessorEx) -> Snapshot {
+    use windows_core::Interface;
+    let reader = service.cast::<SnapshotReader>().unwrap();
+    let mut value = Snapshot::default();
+    unsafe {
+        assert_eq!(
+            reader.copy(size_of::<Snapshot>() as u32, 1, &mut value),
+            S_OK
+        );
+    }
+    value
+}

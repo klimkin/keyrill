@@ -279,3 +279,202 @@ fn finish_post_end_exclusion_stops_reads_and_continuation() {
         oracle::document(&c, "привет ", 14);
     }
 }
+#[test]
+fn finish_selection_failures_stop_without_replan_or_retry() {
+    use windows_core::Interface;
+    for case in 0..31 {
+        let c = corrected();
+        c.a.selection.set(Span {
+            start: 6,
+            length: 10,
+        });
+        c.a.style.set(TF_SELECTIONSTYLE {
+            ase: TF_AE_START,
+            fInterimChar: false.into(),
+        });
+        c.a.move_clones.set(true);
+        let before = crate::support::dll::snapshot(&c.service);
+        let writes = c.a.writes.get();
+        let ends = c.a.ends.get();
+        let starts = c.a.starts.get();
+        let reads = c.a.text_reads.borrow().len();
+        let selections =
+            c.a.operations
+                .borrow()
+                .iter()
+                .filter(|o| o.effect == Effect::Selection)
+                .count();
+        let attempted = !(case < 6 || (20..=25).contains(&case));
+        if attempted {
+            let d = Rc::clone(&c.a);
+            c.host.on("EndComposition.after", 0, move || {
+                d.selection.set(Span {
+                    start: 7,
+                    length: 0,
+                });
+                d.style.set(TF_SELECTIONSTYLE {
+                    ase: TF_AE_NONE,
+                    fInterimChar: false.into(),
+                });
+            });
+        }
+        let boundary = match case {
+            0..=5 => "Clone.after",
+            6 | 8 | 10 => "ShiftEnd",
+            7 | 9 | 11 => "ShiftStart",
+            20..=25 => "GetSelection",
+            26 => "ShiftEnd.after",
+            27 => "ShiftStart.after",
+            _ => "SetSelection.after",
+        };
+        let d = Rc::clone(&c.a);
+        let other = c.context_b.as_raw() as usize;
+        let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+        let composition_span = Rc::clone(&d.active.borrow().as_ref().unwrap().span);
+        let excluded = Rc::new(std::cell::Cell::new(None));
+        let excluded_in = Rc::clone(&excluded);
+        c.host.on(
+            boundary,
+            usize::from((20..=25).contains(&case)),
+            move || match case {
+                0 => {
+                    let mut value = d.selection.get();
+                    value.start += 1;
+                    d.selection.set(value);
+                }
+                1 => {
+                    let mut value = d.selection.get();
+                    value.length -= 1;
+                    d.selection.set(value);
+                }
+                2 | 13 => {
+                    let mut value = d.style.get();
+                    value.ase = TF_AE_END;
+                    d.style.set(value);
+                }
+                3 => {
+                    let last = d.clones.borrow().last().unwrap().upgrade().unwrap();
+                    let mut value = last.get();
+                    value.start = 5;
+                    last.set(value);
+                }
+                4 | 19 => {
+                    unsafe {
+                        assert_eq!(
+                            (sink.vtable().OnPushContext)(sink.as_raw(), other as *mut _),
+                            S_OK
+                        );
+                    }
+                    excluded_in.set(Some(d.reads.get()));
+                }
+                5 => d.range_context.set(other as *mut _),
+                6 => d.shift_end_limit.set(1),
+                7 => d.shift_start_limit.set(1),
+                8 | 10 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("ShiftEnd", if case == 8 { E_FAIL } else { S_FALSE });
+                }
+                9 | 11 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("ShiftStart", if case == 9 { E_FAIL } else { S_FALSE });
+                }
+                12 | 28 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("SetSelection", if case == 12 { E_FAIL } else { S_FALSE });
+                }
+                14 | 24 => {
+                    let mut value = d.style.get();
+                    value.fInterimChar = true.into();
+                    d.style.set(value);
+                }
+                15 => {
+                    let mut value = d.selection.get();
+                    value.start += 1;
+                    d.selection.set(value);
+                }
+                16 | 26 | 27 => d.foreign.set(true),
+                17 => {
+                    d.status.set(TF_SD_READONLY);
+                    excluded_in.set(Some(d.reads.get()));
+                }
+                18 => {
+                    d.scope.set(IS_PRIVATE);
+                    excluded_in.set(Some(d.reads.get()));
+                }
+                20 | 21 => {
+                    d.results
+                        .borrow_mut()
+                        .insert("GetSelection", if case == 20 { S_FALSE } else { E_FAIL });
+                }
+                22 => d.selection_fetched.set(2),
+                23 => d.nulls.borrow_mut().push("GetSelection"),
+                25 => {
+                    let mut value = d.style.get();
+                    value.ase = TfActiveSelEnd(99);
+                    d.style.set(value);
+                }
+                29 => {
+                    let mut value = composition_span.get();
+                    value.length += 1;
+                    composition_span.set(value);
+                }
+                30 => d.text.borrow_mut()[7] = b'!' as u16,
+                _ => unreachable!(),
+            },
+        );
+        assert!(!c.key(b'x' as u16, false), "case{case}");
+        assert!(stopped(&c), "case{case}");
+        assert_eq!(
+            c.a.writes.get(),
+            writes + u32::from(attempted),
+            "case{case}"
+        );
+        assert_eq!(c.a.ends.get(), ends + u32::from(attempted), "case{case}");
+        assert_eq!(c.a.starts.get(), starts);
+        assert_eq!(
+            c.a.operations
+                .borrow()
+                .iter()
+                .filter(|o| o.effect == Effect::Selection)
+                .count(),
+            selections + usize::from((12..20).contains(&case) || case >= 28),
+            "case{case}"
+        );
+        let after = crate::support::dll::snapshot(&c.service);
+        assert_eq!(after.counts[11], before.counts[11] + u32::from(attempted));
+        assert_eq!(after.counts[10], before.counts[10] + u32::from(!attempted));
+        if let Some(reads) = excluded.get() {
+            assert_eq!(c.a.reads.get(), reads);
+        }
+        assert_eq!(
+            *c.a.text.borrow(),
+            format!(
+                "prefix {}suffix",
+                if case == 30 {
+                    "!ривет "
+                } else {
+                    "привет "
+                }
+            )
+            .encode_utf16()
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            *c.b.text.borrow(),
+            "prefix suffix".encode_utf16().collect::<Vec<_>>()
+        );
+        assert!(c.a.text_reads.borrow()[reads..].iter().all(|r| *r
+            == Span {
+                start: 7,
+                length: 7
+            }));
+        let final_reads = c.a.reads.get();
+        assert!(!c.key(b'y' as u16, false));
+        assert_eq!(c.a.reads.get(), final_reads);
+        assert_eq!(c.a.writes.get(), writes + u32::from(attempted));
+        c.host.drained();
+    }
+}

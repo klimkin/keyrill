@@ -4,12 +4,15 @@ mod context;
 mod manager;
 mod profiles;
 mod range;
+mod source;
 use super::{com_slots::*, document::*, schedule::HostCapsule};
 use composition::*;
 use context::*;
 use manager::*;
 use profiles::*;
 use range::*;
+use source::*;
+pub use source::{DIAGNOSTIC_V1, DIAGNOSTIC_V2, Diagnostic, source_profile};
 use std::{
     cell::{Cell, RefCell},
     ffi::c_void,
@@ -30,6 +33,10 @@ pub struct Registration {
     pub key: TF_PRESERVEDKEY,
 }
 pub struct Profile {
+    pub language: Cell<u16>,
+    pub enabled: Cell<windows_core::BOOL>,
+    pub language_calls: Cell<u32>,
+    pub activation_calls: Cell<u32>,
     pub profile: Cell<TF_INPUTPROCESSORPROFILE>,
     pub substitute: Cell<HKL>,
     pub results: RefCell<std::collections::BTreeMap<&'static str, HRESULT>>,
@@ -38,6 +45,10 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
+            language: Cell::new(0x409),
+            enabled: Cell::new(true.into()),
+            language_calls: Cell::new(0),
+            activation_calls: Cell::new(0),
             profile: Cell::new(TF_INPUTPROCESSORPROFILE {
                 dwProfileType: TF_PROFILETYPE_INPUTPROCESSOR,
                 langid: 0x409,
@@ -56,6 +67,9 @@ impl Default for Profile {
 }
 pub struct Manager {
     pub disabled: Cell<bool>,
+    pub compartment_type: Cell<VARENUM>,
+    pub compartment_result: Cell<HRESULT>,
+    pub nulls: RefCell<Vec<&'static str>>,
     pub preserve_calls: RefCell<Vec<Registration>>,
     pub preserved_keys: RefCell<Vec<Registration>>,
     pub unpreserved_keys: RefCell<Vec<Registration>>,
@@ -75,6 +89,9 @@ impl Manager {
     pub fn new(host: Rc<HostCapsule>, top: *mut c_void) -> Rc<Self> {
         Rc::new(Self {
             disabled: Cell::new(false),
+            compartment_type: Cell::new(VT_I4),
+            compartment_result: Cell::new(S_OK),
+            nulls: RefCell::new(vec![]),
             preserve_calls: RefCell::new(vec![]),
             preserved_keys: RefCell::new(vec![]),
             unpreserved_keys: RefCell::new(vec![]),
@@ -98,6 +115,7 @@ pub enum Kind {
     Enumeration(Rc<Document>, Cell<u32>, bool),
     Manager(Rc<Manager>),
     Profiles(Rc<Profile>),
+    Diagnostic(Rc<Diagnostic>),
 }
 pub struct Provider {
     pub host: Rc<HostCapsule>,
@@ -105,6 +123,10 @@ pub struct Provider {
     pub kind: Kind,
     pub context_owner: Option<IUnknown>,
     pub ITfContext: Slot<ITfContext_Vtbl>,
+    pub ITfInputProcessorProfiles: Slot<ITfInputProcessorProfiles_Vtbl>,
+    pub ITfFunctionProvider: Slot<ITfFunctionProvider_Vtbl>,
+    pub diagnostic_v1: Slot<ReaderTable>,
+    pub diagnostic_v2: Slot<ReaderTable>,
     pub ITfContextComposition: Slot<ITfContextComposition_Vtbl>,
     pub ITfContextView: Slot<ITfContextView_Vtbl>,
     pub ITfProperty: Slot<ITfProperty_Vtbl>,
@@ -138,6 +160,10 @@ impl Provider {
             kind,
             context_owner,
             ITfContext: Slot::new(&ITFCONTEXT_TABLE),
+            ITfInputProcessorProfiles: Slot::new(&ITFINPUTPROCESSORPROFILES_TABLE),
+            ITfFunctionProvider: Slot::new(&ITFFUNCTIONPROVIDER_TABLE),
+            diagnostic_v1: Slot::new(&READER_V1),
+            diagnostic_v2: Slot::new(&READER_V2),
             ITfContextComposition: Slot::new(&ITFCONTEXTCOMPOSITION_TABLE),
             ITfContextView: Slot::new(&ITFCONTEXTVIEW_TABLE),
             ITfProperty: Slot::new(&ITFPROPERTY_TABLE),
@@ -160,6 +186,10 @@ impl Provider {
         });
         let address = &*p as *const Self;
         p.ITfContext.owner = address;
+        p.ITfInputProcessorProfiles.owner = address;
+        p.ITfFunctionProvider.owner = address;
+        p.diagnostic_v1.owner = address;
+        p.diagnostic_v2.owner = address;
         p.ITfContextComposition.owner = address;
         p.ITfContextView.owner = address;
         p.ITfProperty.owner = address;
@@ -209,8 +239,14 @@ impl Provider {
                 ITfCompartment::IID,
             ]
             .contains(&id),
+            Kind::Diagnostic(d) => {
+                id == ITfFunctionProvider::IID
+                    || id == DIAGNOSTIC_V1
+                    || (id == DIAGNOSTIC_V2 && !d.legacy_only.get())
+            }
             Kind::Profiles(_) => {
-                id == ITfInputProcessorProfileMgr::IID
+                id == ITfInputProcessorProfiles::IID
+                    || id == ITfInputProcessorProfileMgr::IID
                     || id == ITfInputProcessorProfileSubstituteLayout::IID
             }
         };
@@ -222,12 +258,34 @@ impl Provider {
                 Kind::Enumeration(_, _, _) => IEnumITfCompositionView::IID,
                 Kind::Manager(_) => ITfThreadMgr::IID,
                 Kind::Profiles(_) => ITfInputProcessorProfileMgr::IID,
+                Kind::Diagnostic(_) => ITfFunctionProvider::IID,
             }
         } else if allowed {
             id
         } else {
             return std::ptr::null_mut();
         };
+        if id == DIAGNOSTIC_V1 {
+            return (&self.diagnostic_v1 as *const Slot<ReaderTable>)
+                .cast_mut()
+                .cast();
+        }
+        if id == DIAGNOSTIC_V2 {
+            return (&self.diagnostic_v2 as *const Slot<ReaderTable>)
+                .cast_mut()
+                .cast();
+        }
+        if id == ITfFunctionProvider::IID {
+            return (&self.ITfFunctionProvider as *const Slot<ITfFunctionProvider_Vtbl>)
+                .cast_mut()
+                .cast();
+        }
+        if id == ITfInputProcessorProfiles::IID {
+            return (&self.ITfInputProcessorProfiles
+                as *const Slot<ITfInputProcessorProfiles_Vtbl>)
+                .cast_mut()
+                .cast();
+        }
         if id == ITfContext::IID {
             return (&self.ITfContext as *const Slot<ITfContext_Vtbl>)
                 .cast_mut()
@@ -347,6 +405,12 @@ impl Provider {
             _ => panic!("not a range"),
         }
     }
+    pub fn diagnostic(&self) -> &Diagnostic {
+        match &self.kind {
+            Kind::Diagnostic(d) => d,
+            _ => panic!("not diagnostic"),
+        }
+    }
     pub fn profile(&self) -> &Profile {
         match &self.kind {
             Kind::Profiles(p) => p,
@@ -361,12 +425,19 @@ impl Provider {
     }
     pub fn hit(&self, name: &'static str) {
         self.host.hit(name);
+        if name == "QI" && matches!(self.kind, Kind::Profiles(_)) {
+            self.host.hit("profiles.QI");
+        }
         let qualified = match (name, &self.kind) {
             ("QI", Kind::Document(_)) => Some("context.QI"),
             ("QI", Kind::Range(_, _)) => Some("range.QI"),
             ("QI", Kind::Composition(_, _)) => Some("composition.QI"),
             ("QI", Kind::Manager(_)) => Some("manager.QI"),
-            ("QI", Kind::Profiles(_)) => Some("profiles.QI"),
+            ("QI", Kind::Profiles(_)) => Some("native.identity"),
+            ("AddRef.before", Kind::Profiles(_)) => Some("native.addref"),
+            ("Release.before", Kind::Profiles(_)) => Some("native.release"),
+            ("AddRef.before", Kind::Diagnostic(_)) => Some("addref"),
+            ("Release.before", Kind::Diagnostic(_)) => Some("release"),
             ("Next", _) => Some("enumerator.Next"),
             ("GetFocus", _) => Some("manager.GetFocus"),
             _ => None,
@@ -377,6 +448,7 @@ impl Provider {
     }
     pub fn result(&self, name: &'static str) -> HRESULT {
         match &self.kind {
+            Kind::Diagnostic(_) => S_OK,
             Kind::Profiles(state) => state.results.borrow().get(name).copied().unwrap_or(S_OK),
             Kind::Manager(m) => m.results.borrow().get(name).copied().unwrap_or(S_OK),
             _ => self.document().result(name),
@@ -384,8 +456,9 @@ impl Provider {
     }
     pub fn null(&self, name: &'static str) -> bool {
         match &self.kind {
+            Kind::Diagnostic(_) => false,
             Kind::Profiles(state) => state.nulls.borrow().contains(&name),
-            Kind::Manager(_) => false,
+            Kind::Manager(m) => m.nulls.borrow().contains(&name),
             _ => self.document().null(name),
         }
     }
@@ -417,6 +490,24 @@ impl Drop for Provider {
     }
 }
 pub const BOUNDARIES: &[&str] = &[
+    "identity",
+    "interface",
+    "function",
+    "copy",
+    "addref",
+    "release",
+    "native.identity",
+    "native.addref",
+    "native.release",
+    "language.read",
+    "profile.read",
+    "target.read",
+    "enabled.read",
+    "language.change",
+    "profile.activate",
+    "GetCurrentLanguage",
+    "ChangeCurrentLanguage",
+    "IsEnabledLanguageProfile",
     "Layouts",
     "context.QI",
     "range.QI",

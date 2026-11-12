@@ -87,6 +87,49 @@ impl Client {
             }
         }
     }
+    pub fn notepad() -> Self {
+        let c = Self::new();
+        unsafe {
+            let process = GetCurrentProcessId();
+            let thread = GetCurrentThreadId();
+            let node = |handle: usize, class: &str| {
+                let mut w = FieldWindow {
+                    handle: HWND(handle as *mut _),
+                    process,
+                    thread,
+                    enabled: 1,
+                    complete: 1,
+                    ..Default::default()
+                };
+                for (to, from) in w.class_name.iter_mut().zip(class.encode_utf16()) {
+                    *to = from;
+                }
+                w
+            };
+            let mut field = node(101, "RichEditD2DPT");
+            field.style = 0x40000004;
+            c.host.field_facts.replace(Some(FieldFacts {
+                host: HostIdentity {
+                    process,
+                    thread,
+                    started: 1,
+                    kind: 2,
+                    version: [11, 2607, 14, 0],
+                },
+                process,
+                thread,
+                view: c.a.window,
+                focus: c.a.window,
+                foreground: HWND(3usize as *mut _),
+                root: HWND(3usize as *mut _),
+                field,
+                parent: node(2, "NotepadTextBox"),
+                grandparent: node(3, "Notepad"),
+                ..Default::default()
+            }));
+        }
+        c
+    }
     pub fn event(&self, event: Event) -> bool {
         let mut eaten = -1;
         unsafe {
@@ -275,7 +318,7 @@ unsafe extern "system" fn capture(
             value
         };
         let root = HWND(std::ptr::dangling_mut());
-        out.write(FieldFacts {
+        let facts = FieldFacts {
             host: *host,
             process,
             thread,
@@ -287,7 +330,15 @@ unsafe extern "system" fn capture(
             proof_root: window(root, "KeyrillProofEditor", 0),
             proof_process: 1,
             ..Default::default()
-        });
+        };
+        out.write(
+            owner
+                .field_facts
+                .borrow()
+                .as_ref()
+                .copied()
+                .unwrap_or(facts),
+        );
         S_OK
     })
 }

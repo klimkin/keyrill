@@ -9,6 +9,7 @@ pub struct Action {
     pub run: Rc<dyn Fn()>,
 }
 pub struct HostCapsule {
+    pub field_facts: RefCell<Option<super::dll::FieldFacts>>,
     pub layouts: RefCell<Vec<isize>>,
     pub layout_results: RefCell<Vec<i32>>,
     pub layout_calls: Cell<usize>,
@@ -76,6 +77,7 @@ impl HostCapsule {
 impl Default for HostCapsule {
     fn default() -> Self {
         Self {
+            field_facts: RefCell::new(None),
             layouts: RefCell::new(vec![0x04090409, 0x04190419]),
             layout_results: RefCell::new(vec![]),
             layout_calls: Cell::new(0),

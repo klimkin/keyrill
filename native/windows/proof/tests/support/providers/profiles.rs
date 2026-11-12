@@ -24,8 +24,14 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_ActivateProfile(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
-            p.hit("ActivateProfile");
-            E_NOTIMPL
+            source::fixed(a1, a2, a3, a4, a5, a6);
+            let state = p.profile();
+            assert_eq!(state.language.get(), 0x419);
+            assert_eq!(state.activation_calls.get(), 0);
+            state.activation_calls.set(1);
+            state.profile.set(source_profile(1));
+            p.hit("profile.activate");
+            p.result("ActivateProfile")
         })
     }
 }
@@ -58,8 +64,10 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_GetProfile(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
-            p.hit("GetProfile");
-            E_NOTIMPL
+            source::fixed(a1, a2, a3, a4, a5, 0);
+            p.hit("target.read");
+            a6.write(source_profile(1));
+            p.result("GetProfile")
         })
     }
 }
@@ -136,6 +144,7 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_GetActiveProfile(
     unsafe {
         boundary(this, |p| {
             p.hit("GetActiveProfile");
+            p.hit("profile.read");
             a2.write(p.profile().profile.get());
             p.result("GetActiveProfile")
         })

@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 use windows::Win32::Foundation::{E_NOINTERFACE, E_POINTER, E_UNEXPECTED, S_OK};
-use windows_core::{GUID, HRESULT, IUnknown_Vtbl};
+use windows_core::{GUID, HRESULT, IUnknown_Vtbl, Interface};
 #[repr(C)]
 pub struct Slot<V> {
     pub vtable: *const V,
@@ -54,11 +54,25 @@ unsafe extern "system" fn query(
             }
             out.write(std::ptr::null_mut());
             p.hit("QI");
-            let hr = p.result("QI");
+            if matches!(p.kind, super::providers::Kind::Diagnostic(_)) {
+                p.hit(if *id == windows_core::IUnknown::IID {
+                    "identity"
+                } else {
+                    "interface"
+                });
+            }
+            let key = if *id == windows::Win32::UI::TextServices::ITfCompartmentMgr::IID {
+                "compartment.QI"
+            } else if *id == windows::Win32::UI::TextServices::ITfInputScope::IID {
+                "scope.QI"
+            } else {
+                "QI"
+            };
+            let hr = p.result(key);
             if hr != S_OK {
                 return hr;
             }
-            if p.null("QI") {
+            if p.null(key) {
                 return S_OK;
             }
             let value = p.interface(*id);

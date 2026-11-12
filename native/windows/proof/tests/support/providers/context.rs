@@ -556,10 +556,19 @@ unsafe extern "system" fn ITfReadOnlyProperty_GetValue(
     unsafe {
         boundary(this, |p| {
             p.hit("scope.GetValue");
+            let d = p.document();
+            let span = owner(a2).span().get();
+            if d.excluded_scope.get() == Some(span) {
+                a3.write(VARIANT::default());
+                return E_ACCESSDENIED;
+            }
             let mut value = VARIANT::default();
-            (*value.Anonymous.Anonymous).vt = VT_UNKNOWN;
-            (*value.Anonymous.Anonymous).Anonymous.punkVal =
-                std::mem::ManuallyDrop::new(Some(IUnknown::from_raw(p.own(ITfInputScope::IID))));
+            (*value.Anonymous.Anonymous).vt = d.scope_type.get();
+            if d.scope_type.get() == VT_UNKNOWN && d.scope_value_present.get() {
+                (*value.Anonymous.Anonymous).Anonymous.punkVal = std::mem::ManuallyDrop::new(Some(
+                    IUnknown::from_raw(p.own(ITfInputScope::IID)),
+                ));
+            }
             a3.write(value);
             p.result("scope.GetValue")
         })
@@ -603,7 +612,11 @@ unsafe extern "system" fn ITfInputScope_GetInputScopes(
                         .cast::<InputScope>();
                 assert!(!ptr.is_null());
                 for n in 0..d.scope_count.get().max(1) {
-                    ptr.add(n as usize).write(d.scope.get());
+                    ptr.add(n as usize).write(if n == 0 {
+                        d.scope.get()
+                    } else {
+                        d.scope_second.get()
+                    });
                 }
                 a1.write(ptr);
             }
@@ -749,8 +762,29 @@ unsafe extern "system" fn ITfCompartment_GetValue(
                 Kind::Manager(m) => m.disabled.get(),
                 _ => false,
             };
-            a1.write(VARIANT::from(disabled as i32));
-            p.result("compartment.GetValue")
+            let (kind, result) = match &p.kind {
+                Kind::Document(d) => {
+                    let index = d.queried_empty.get() as usize;
+                    (
+                        d.compartment_types.get()[index],
+                        d.compartment_results.get()[index],
+                    )
+                }
+                Kind::Manager(m) => (m.compartment_type.get(), m.compartment_result.get()),
+                _ => unreachable!(),
+            };
+            let mut value = if kind == VT_I4 {
+                VARIANT::from(disabled as i32)
+            } else {
+                VARIANT::default()
+            };
+            (*value.Anonymous.Anonymous).vt = kind;
+            a1.write(value);
+            if result != S_OK {
+                result
+            } else {
+                p.result("compartment.GetValue")
+            }
         })
     }
 }
