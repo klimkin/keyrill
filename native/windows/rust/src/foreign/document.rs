@@ -294,13 +294,17 @@ pub(crate) struct Scopes {
     pub(crate) count: u32,
 }
 impl Scopes {
-    pub(crate) fn ordinary(&self) -> bool {
+    pub(crate) fn single(&self) -> Option<InputScope> {
         if self.count != 1 || self.pointer.is_null() {
-            return false;
+            return None;
         }
         // SAFETY: count one from the normally returned SDK allocation permits exactly one scalar read.
-        let scope = unsafe { *self.pointer };
-        scope == IS_DEFAULT || scope == IS_TEXT
+        Some(unsafe { *self.pointer })
+    }
+
+    pub(crate) fn ordinary(&self) -> bool {
+        self.single()
+            .is_some_and(|scope| scope == IS_DEFAULT || scope == IS_TEXT)
     }
 }
 impl Drop for Scopes {
