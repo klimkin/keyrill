@@ -106,6 +106,7 @@ pub struct Engine {
 
 /// Fixed-size event layout matching the C header.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct NativeEvent {
     role: u32,
     mode: u32,
@@ -127,10 +128,13 @@ pub struct NativePlan {
 }
 
 impl NativeEvent {
-    /// Copy a bounded event using the tags defined in `include/keyrill.h`.
+    /// Copy a bounded wire event using the tags defined in `include/keyrill.h`.
+    ///
+    /// The engine validates tags when planning. Native key translation may represent an unmapped
+    /// layout with mode zero, which the engine refuses.
     ///
     /// # Errors
-    /// Returns the C ABI bounds or bad-tag status when the event is invalid.
+    /// Returns the C ABI bounds status when the input exceeds eight UTF-16 units.
     ///
     /// ```
     /// let event = keyrill_ffi::NativeEvent::new(1, 1, 0, &[b'g' as u16]);
@@ -148,9 +152,36 @@ impl NativeEvent {
             units: [0; 8],
         };
         event.units[..units.len()].copy_from_slice(units);
-        decode_event(&event)?;
         Ok(event)
     }
+
+    /// Borrow wire fields with a bounded text buffer.
+    ///
+    /// # Errors
+    /// Returns the C ABI bounds status if a foreign caller supplied an oversized length.
+    pub fn view(&self) -> Result<NativeEventView<'_>, u32> {
+        if self.len > 8 {
+            return Err(BOUNDS);
+        }
+        Ok(NativeEventView {
+            role: self.role,
+            mode: self.mode,
+            context: self.context,
+            units: &self.units[..self.len as usize],
+        })
+    }
+}
+
+/// Read-only bounded wire event. The engine remains responsible for tag validation.
+pub struct NativeEventView<'a> {
+    /// Physical input role using the C ABI tags.
+    pub role: u32,
+    /// Observed input mode, including zero for an unmapped native layout.
+    pub mode: u32,
+    /// Native eligibility context using the C ABI tags.
+    pub context: u32,
+    /// Copied physical text in UTF-16 units.
+    pub units: &'a [u16],
 }
 
 /// Read-only view of a successfully initialized proposal.
@@ -630,10 +661,6 @@ mod tests {
     #[test]
     fn rust_adapter_event_construction_and_borrowed_plan_match_the_abi() {
         assert!(matches!(NativeEvent::new(1, 1, 0, &[0; 9]), Err(BOUNDS)));
-        assert!(matches!(NativeEvent::new(2, 1, 0, &[1]), Err(BAD_TAG)));
-        assert!(matches!(NativeEvent::new(7, 1, 0, &[]), Err(BAD_TAG)));
-        assert!(matches!(NativeEvent::new(1, 0, 0, &[]), Err(BAD_TAG)));
-        assert!(matches!(NativeEvent::new(1, 1, 2, &[]), Err(BAD_TAG)));
         for role in 2..=6 {
             assert!(NativeEvent::new(role, 2, 1, &[]).is_ok());
         }
@@ -646,6 +673,18 @@ mod tests {
         // SAFETY: distinct local objects provide valid ABI storage. The unique handle drains here.
         unsafe {
             assert_eq!(kr_engine_new(ABI, &mut engine), OK);
+            for event in [
+                NativeEvent::new(2, 1, 0, &[1]),
+                NativeEvent::new(7, 1, 0, &[]),
+                NativeEvent::new(1, 0, 0, &[]),
+                NativeEvent::new(1, 1, 2, &[]),
+            ] {
+                let invalid = event.unwrap();
+                assert_eq!(
+                    kr_plan_event(engine, &invalid, storage.as_mut_ptr()),
+                    BAD_TAG
+                );
+            }
             assert_eq!(kr_plan_event(engine, &event, storage.as_mut_ptr()), OK);
             let plan = storage.assume_init();
             let view = plan.view();

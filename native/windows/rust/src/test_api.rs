@@ -3,20 +3,24 @@
 use crate::com;
 use crate::edit::{Effect, Frame};
 use crate::foreign;
-use crate::service::{ObjectLease, Service};
+use crate::service::{OBJECTS, Service, WORKERS};
+use crate::{field, field_contract, keys};
 use keyrill_ffi::NativeEvent;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
-use windows::Win32::Foundation::{E_INVALIDARG, E_POINTER, E_UNEXPECTED, S_OK};
-use windows::Win32::UI::TextServices::ITfContext;
+use std::sync::atomic::Ordering;
+use windows::Win32::Foundation::{
+    E_INVALIDARG, E_POINTER, E_UNEXPECTED, HWND, LPARAM, S_OK, WPARAM,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
+use windows::Win32::UI::TextServices::{ITfContext, TF_INPUTPROCESSORPROFILE, TF_PRESERVEDKEY};
 use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 
 const VERSION: u32 = 2;
 
 struct Handle {
     service: Rc<Service>,
-    _object: ObjectLease,
 }
 
 #[repr(C)]
@@ -34,6 +38,202 @@ pub(crate) struct Probe {
 
 fn fence(call: impl FnOnce() -> HRESULT) -> HRESULT {
     catch_unwind(AssertUnwindSafe(call)).unwrap_or(E_UNEXPECTED)
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestCounts(objects: *mut i32, workers: *mut i32) -> HRESULT {
+    fence(|| {
+        if objects.is_null() || workers.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the caller supplies two distinct writable LONG slots.
+        unsafe {
+            objects.write(OBJECTS.load(Ordering::Acquire) as i32);
+            workers.write(WORKERS.load(Ordering::Acquire) as i32);
+        }
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestTranslate(
+    key: WPARAM,
+    flags: LPARAM,
+    layout: HKL,
+    state: *const u8,
+    output: *mut NativeEvent,
+    modifier_only: *mut BOOL,
+) -> HRESULT {
+    fence(|| {
+        if output.is_null() || modifier_only.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: callers provide complete distinct output objects.
+        unsafe {
+            output.write(NativeEvent::new(6, 0, 1, &[]).expect("empty wire event"));
+            modifier_only.write(BOOL(0));
+        }
+        if state.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK test transport supplies exactly 256 readable keyboard-state bytes.
+        let state = unsafe { &*state.cast::<[u8; 256]>() };
+        match keys::translate(key, flags, layout, state) {
+            keys::Key::Modifier => {
+                // SAFETY: the validated output remains writable.
+                unsafe { modifier_only.write(BOOL(1)) };
+            }
+            keys::Key::Event(event) => {
+                // SAFETY: the validated output remains writable.
+                unsafe { output.write(event) };
+            }
+        }
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestExactCommandModifiers(
+    state: *const u8,
+    output: *mut BOOL,
+) -> HRESULT {
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a writable BOOL.
+        unsafe { output.write(BOOL(0)) };
+        if state.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies 256 readable keyboard-state bytes and a distinct BOOL.
+        unsafe {
+            output.write(BOOL(
+                keys::exact_command_modifiers(&*state.cast::<[u8; 256]>()) as i32,
+            ))
+        };
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestBinding(
+    index: u32,
+    id: *mut windows_core::GUID,
+    key: *mut TF_PRESERVEDKEY,
+) -> HRESULT {
+    fence(|| {
+        if id.is_null() || key.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK caller supplies distinct GUID/key outputs.
+        unsafe {
+            id.write(windows_core::GUID::zeroed());
+            key.write(TF_PRESERVEDKEY::default());
+        }
+        let Some(binding) = keys::BINDINGS.get(index as usize) else {
+            return E_INVALIDARG;
+        };
+        // SAFETY: both validated outputs remain writable.
+        unsafe {
+            id.write(binding.id);
+            key.write(binding.key);
+        }
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestProfileLayout(
+    profile: *const TF_INPUTPROCESSORPROFILE,
+    mode: u32,
+    substitute: HKL,
+    output: *mut HKL,
+) -> HRESULT {
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a writable HKL.
+        unsafe { output.write(HKL::default()) };
+        if profile.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a readable SDK profile and a distinct writable output.
+        unsafe { output.write(keys::profile_layout(&*profile, mode, substitute)) };
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestCapture(
+    window: HWND,
+    host: *const field_contract::HostIdentity,
+    output: *mut field_contract::Facts,
+) -> HRESULT {
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a complete writable facts object.
+        unsafe { output.write(field_contract::Facts::default()) };
+        if host.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies readable host metadata and a distinct writable output.
+        unsafe { output.write(field::capture(window, *host)) };
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestKnownNotepad(
+    host: *const field_contract::HostIdentity,
+    output: *mut BOOL,
+) -> HRESULT {
+    fence(|| {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a writable BOOL output.
+        unsafe { output.write(BOOL(0)) };
+        if host.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies readable host metadata and a distinct writable output.
+        unsafe { output.write(BOOL(field::known_notepad(&*host) as i32)) };
+        S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestMatch(
+    facts: *const field_contract::Facts,
+    identity: *mut field::Identity,
+    matched: *mut BOOL,
+) -> HRESULT {
+    fence(|| {
+        if identity.is_null() || matched.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies complete, distinct writable output objects.
+        unsafe {
+            identity.write(field::Identity::default());
+            matched.write(BOOL(0));
+        }
+        if facts.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: caller supplies a complete readable facts object.
+        if let Some(found) = field::matches(unsafe { &*facts }) {
+            // SAFETY: the validated outputs remain distinct and writable.
+            unsafe {
+                identity.write(found);
+                matched.write(BOOL(1));
+            }
+        }
+        S_OK
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -77,10 +277,7 @@ unsafe extern "system" fn KeyrillTestCreate(
         };
         let service = Service::with_dependencies(dependencies);
         let object = com::create(Rc::clone(&service));
-        let owner = Box::new(Handle {
-            service,
-            _object: ObjectLease::new(),
-        });
+        let owner = Box::new(Handle { service });
         // SAFETY: outputs transfer one handle and one COM reference to the test caller.
         unsafe {
             handle.write(Box::into_raw(owner).cast());

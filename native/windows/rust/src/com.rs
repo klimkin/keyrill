@@ -19,7 +19,7 @@ use windows_core::{
     interface,
 };
 
-pub(crate) const SERVICE_ID: GUID = GUID::from_u128(0x1a746212_84db_4acf_88b3_caaa26352774);
+pub(crate) use crate::profiles::SERVICE_ID;
 
 // Raw mirrors retain the SDK's output-pointer checks and exact HRESULT semantics.
 #[interface("aa80e7f5-2021-11d2-93e0-0060b067b86e")]
@@ -115,15 +115,10 @@ assert_method!(
 )]
 struct ServiceCom {
     service: Rc<Service>,
-    _object: ObjectLease,
 }
 
 pub(crate) fn create(service: Rc<Service>) -> ITfTextInputProcessorEx {
-    ServiceCom {
-        service,
-        _object: ObjectLease::new(),
-    }
-    .into()
+    ServiceCom { service }.into()
 }
 
 impl ITfTextInputProcessor_Impl for ServiceCom_Impl {

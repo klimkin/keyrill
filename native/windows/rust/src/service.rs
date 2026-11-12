@@ -39,6 +39,7 @@ pub(crate) struct Service {
     #[cfg(feature = "test-api")]
     panic_at: Cell<u32>,
     _dependencies: Option<DependencyLease>,
+    _object: ObjectLease,
 }
 
 impl Service {
@@ -55,6 +56,7 @@ impl Service {
             #[cfg(feature = "test-api")]
             panic_at: Cell::new(0),
             _dependencies: dependencies,
+            _object: ObjectLease::new(),
         })
     }
 

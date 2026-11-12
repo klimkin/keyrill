@@ -38,6 +38,15 @@ struct KrWindowsFieldFacts {
   KrWindowsFieldWindow proof_root;
   uint32_t proof_process;
 };
+struct KrWindowsFieldIdentity {
+  uint32_t kind;
+  HWND field;
+  HWND parent;
+  HWND root;
+  uint32_t process;
+  uint32_t thread;
+  uint32_t root_thread;
+};
 struct KrWindowsDependencies {
   uint32_t size;
   uint32_t version;
@@ -55,6 +64,7 @@ static_assert(sizeof(KrWindowsHostIdentity) == 40);
 static_assert(sizeof(KrWindowsFieldWindow) == 168);
 static_assert(sizeof(KrWindowsFieldFacts) == 760);
 static_assert(sizeof(KrWindowsDependencies) == 56);
+static_assert(sizeof(KrWindowsFieldIdentity) == 48);
 struct KrWindowsProbe {
   uint32_t size;
   uint32_t version;
@@ -74,6 +84,16 @@ using KrTestStopped = HRESULT(WINAPI *)(void *, BOOL *);
 using KrTestProbe = HRESULT(WINAPI *)(void *, IUnknown *, uint32_t, uint32_t, KrWindowsProbe *);
 using KrTestEvent = HRESULT(WINAPI *)(void *, ITfContext *, const kr_event *, BOOL *);
 using KrTestMaintain = HRESULT(WINAPI *)(void *);
+using KrTestCounts = HRESULT(WINAPI *)(LONG *, LONG *);
+using KrTestTranslate = HRESULT(WINAPI *)(WPARAM, LPARAM, HKL, const BYTE *, kr_event *, BOOL *);
+using KrTestExactCommandModifiers = HRESULT(WINAPI *)(const BYTE *, BOOL *);
+using KrTestBinding = HRESULT(WINAPI *)(uint32_t, GUID *, TF_PRESERVEDKEY *);
+using KrTestProfileLayout = HRESULT(WINAPI *)(const TF_INPUTPROCESSORPROFILE *, uint32_t, HKL,
+                                              HKL *);
+using KrTestCapture = HRESULT(WINAPI *)(HWND, const KrWindowsHostIdentity *, KrWindowsFieldFacts *);
+using KrTestMatch = HRESULT(WINAPI *)(const KrWindowsFieldFacts *, KrWindowsFieldIdentity *,
+                                      BOOL *);
+using KrTestKnownNotepad = HRESULT(WINAPI *)(const KrWindowsHostIdentity *, BOOL *);
 
 // Probe 0 performs fenced canonical QI. Probe 1 requests the generated one-use edit-session shell.
 // Panic sites are 1 before effect recording, 2 after recording, and 3 in final Service destruction.

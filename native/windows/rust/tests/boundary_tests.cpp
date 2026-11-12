@@ -1,4 +1,5 @@
 #include "../test_api.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -221,11 +222,72 @@ void DependencyLifetime(Api &api) {
           "dependency context drains after last callback");
 }
 
+void PureNative(Api &api) {
+  const auto translate = api.Load<KrTestTranslate>("KeyrillTestTranslate");
+  const auto exact = api.Load<KrTestExactCommandModifiers>("KeyrillTestExactCommandModifiers");
+  const auto binding = api.Load<KrTestBinding>("KeyrillTestBinding");
+  const auto match = api.Load<KrTestMatch>("KeyrillTestMatch");
+  BYTE state[256]{};
+  kr_event event{};
+  BOOL modifier = TRUE;
+  const auto en = reinterpret_cast<HKL>(static_cast<uintptr_t>(0x04090409));
+  Require(translate('G', 0x220001, en, state, &event, &modifier) == S_OK && !modifier &&
+              event.role == KR_TEXT && event.mode == KR_EN && event.len == 1 &&
+              event.units[0] == L'g',
+          "Rust SDK key translation");
+  Require(translate('G', 1, nullptr, state, &event, &modifier) == S_OK &&
+              event.role == KR_FINISH_REQUEST && event.mode == 0,
+          "unmapped layout preserves inert finish event");
+  Require(translate(VK_LMENU, 1, en, state, &event, &modifier) == S_OK && modifier,
+          "modifier translation has no text event");
+  state[VK_LCONTROL] = state[VK_LMENU] = 0x80;
+  BOOL command = FALSE;
+  Require(exact(state, &command) == S_OK && command, "exact left command modifiers");
+  Require(translate('K', 1, en, state, &event, &modifier) == S_OK && event.role == KR_MANUAL,
+          "manual key role comes from Rust binding");
+  GUID id{};
+  TF_PRESERVEDKEY key{};
+  Require(binding(0, &id, &key) == S_OK && id.Data1 == 0xd7abce42 && key.uVKey == 'K' &&
+              key.uModifiers == (TF_MOD_LCONTROL | TF_MOD_LALT),
+          "preserved binding metadata matches SDK");
+  KrWindowsFieldFacts facts{};
+  facts.host = {17, 23, 1, 2, {11, 2607, 14, 0}};
+  facts.process = 17;
+  facts.thread = 23;
+  facts.view = facts.focus = reinterpret_cast<HWND>(1);
+  facts.root = facts.foreground = reinterpret_cast<HWND>(3);
+  const auto node = [](KrWindowsFieldWindow &window, HWND handle, const wchar_t *name) {
+    window.handle = handle;
+    window.process = 17;
+    window.thread = 23;
+    window.enabled = window.complete = 1;
+    std::copy_n(name, wcslen(name) + 1, window.class_name);
+  };
+  node(facts.field, facts.view, L"RichEditD2DPT");
+  facts.field.style = WS_CHILD | ES_MULTILINE;
+  node(facts.parent, reinterpret_cast<HWND>(2), L"NotepadTextBox");
+  node(facts.grandparent, facts.root, L"Notepad");
+  KrWindowsFieldIdentity identity{};
+  BOOL matched = FALSE;
+  Require(match(&facts, &identity, &matched) == S_OK && matched && identity.kind == 1 &&
+              identity.field == facts.view && identity.parent == facts.parent.handle &&
+              identity.root == facts.root,
+          "Rust exact admitted-version Notepad field facts");
+  facts.field.style |= ES_PASSWORD;
+  Require(match(&facts, &identity, &matched) == S_OK && !matched && !identity.field,
+          "secure field facts refuse with empty identity");
+}
+
 void Basic(Api &api) {
   Require(api.unload() == S_OK, "initially unloadable");
+  PureNative(api);
   DependencyLifetime(api);
   {
     Instance instance(api);
+    LONG objects = 0, workers = 0;
+    Require(api.Load<KrTestCounts>("KeyrillTestCounts")(&objects, &workers) == S_OK &&
+                objects == 1 && workers == 0,
+            "one shared service counts once across COM and test owners");
     Require(api.unload() == S_FALSE, "live object prevents unload");
     ITfKeyEventSink *keys = nullptr;
     ITfFunctionProvider *provider = nullptr;

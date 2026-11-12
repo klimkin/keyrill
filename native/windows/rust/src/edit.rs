@@ -1,5 +1,5 @@
 use crate::foreign::{self, Call, Lease};
-use crate::service::{ObjectLease, Service};
+use crate::service::Service;
 use std::cell::Cell;
 use std::rc::Rc;
 use windows::Win32::Foundation::{E_FAIL, S_OK};
@@ -55,7 +55,6 @@ impl Frame {
     pub(crate) fn request(self: &Rc<Self>, context: &Lease<ITfContext>, client: u32) -> Request {
         let session: ITfEditSession = EditSession {
             frame: Rc::clone(self),
-            _object: ObjectLease::new(),
         }
         .into();
         let (outer, callback) =
@@ -82,7 +81,6 @@ pub(crate) struct Request {
 #[implement(ITfEditSession, Agile = false)]
 struct EditSession {
     frame: Rc<Frame>,
-    _object: ObjectLease,
 }
 
 impl ITfEditSession_Impl for EditSession_Impl {

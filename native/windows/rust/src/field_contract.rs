@@ -25,8 +25,23 @@ pub(crate) struct Window {
     pub(crate) complete: u32,
 }
 
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            handle: HWND::default(),
+            process: 0,
+            thread: 0,
+            control: 0,
+            style: 0,
+            class_name: [0; 64],
+            enabled: 0,
+            complete: 0,
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Facts {
     pub(crate) host: HostIdentity,
     pub(crate) process: u32,

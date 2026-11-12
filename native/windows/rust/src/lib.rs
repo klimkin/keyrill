@@ -9,6 +9,12 @@ mod edit;
 #[cfg(windows)]
 #[allow(
     dead_code,
+    reason = "Native field admission is exercised through the test DLL while callers migrate."
+)]
+mod field;
+#[cfg(windows)]
+#[allow(
+    dead_code,
     reason = "Frozen native-field transport precedes admission implementation."
 )]
 mod field_contract;
@@ -18,6 +24,18 @@ mod field_contract;
     reason = "The test DLL exercises this foundation while native callers migrate."
 )]
 mod foreign;
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "Native key behavior is exercised through the test DLL while callers migrate."
+)]
+mod keys;
+#[cfg(windows)]
+#[allow(
+    dead_code,
+    reason = "Registration and activation consume the shared profile metadata during migration."
+)]
+mod profiles;
 #[cfg(windows)]
 mod service;
 #[cfg(all(windows, feature = "test-api"))]
