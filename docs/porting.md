@@ -6,12 +6,13 @@ first; its state table, safety invariants and rejected mechanisms apply to every
 Don't write a second inference engine, and don't build a cross-platform editing abstraction
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
-Windows has passed controlled-editor and bounded ordinary
-Notepad acceptance. Packaged x64 Notepad 11.2607.14.0 uses the same owned-composition executor,
-shared model, and vocabulary integration. Exact UIA checks cover both model directions,
-retained reversal, rapid continuation, native Undo, and vocabulary reloads. Physical command
-checks cover conversion and held reversal within one focus interval. Other versions remain
-metadata-only and pass input. Application coverage, settings, and packaging remain later work.
+The Windows C++ backend passed controlled-editor and bounded ordinary Notepad acceptance
+before the windows-rs migration. The current Rust backend still requires real-editor and
+Notepad validation. Packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
+executor, shared model, and vocabulary integration. Exact UIA checks covered both model
+directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
+Physical command checks covered conversion and held reversal within one focus interval.
+Other versions remain metadata-only and pass input. Application coverage, settings, and packaging remain later work.
 No Linux adapter exists. An explicit-PID inspector supplies independent field evidence and
 named public-document checks. The evidence limits are recorded with
 [Windows admission](windows.md#bounded-notepad-admission-and-observation).
@@ -122,15 +123,18 @@ These follow from the architecture and apply on every platform:
 
 ## Windows: Text Services Framework
 
-The SDK implementation is in `native/windows/`; its build, maintainer-only
+The windows-rs implementation is in `native/windows/rust/`. Its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
 termination on focus loss. The adapter admits proof controls and the tested version-bounded
 Notepad main document. Granted edit sessions, explicit contexts, and owned compositions satisfy
 the editing contract. [TSF design](adr/007-windows-tsf.md).
 
-Use [`windows-rs`](https://github.com/microsoft/windows-rs) where practical, or a thin
-native COM shim if it narrows lifetime risk.
+The [`windows-rs`](https://github.com/microsoft/windows-rs) adapter uses `windows` and
+`windows-core` 0.62.2 for generated COM identity and SDK types.
+Typed leases in `foreign.rs` own host COM references. C++ wrappers contain exceptions around
+foreign calls, including reference acquisition and release. The SDK fixtures and UIA
+diagnostics remain in C++.
 
 The Windows executor replaces the exact owned range once for each MARK or FINISH that reaches
 replacement. An unchanged FINISH has no expected end-caret requirement and does not force

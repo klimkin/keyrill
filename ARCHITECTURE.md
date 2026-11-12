@@ -9,7 +9,7 @@ and reversal data. A Rust plan is a proposal, never editing authority.
 ```mermaid
 flowchart LR
     K[Physical input and host lifecycle] --> M[macOS IMK, Objective-C++]
-    K --> W[Windows / Linux adapter]
+    K --> W[Windows TSF, Rust / Linux adapter]
     M -->|bounded UTF-16 facts| F[C ABI, keyrill-ffi]
     W -->|bounded UTF-16 facts| F
     F --> R[Rust session and policy, keyrill-core]
@@ -27,6 +27,8 @@ flowchart LR
 | `crates/keyrill-ffi` | C ABI over the core, panic containment, macOS dictionary-file acquisition |
 | `include/keyrill.h` | The ABI contract: layouts, ownership, versioning, every status code |
 | `native/macos` | InputMethodKit server, controller, settings window, compatibility backend, tests |
+| `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, foreign-call exception containment |
+| `native/windows` | Windows SDK fixtures, UIA inspectors, controlled COM schedules, build orchestration |
 | `assets/model.bin` | Frozen EN/RU model, generated from `model/` by `tools/pack-model.py` |
 | `model/` | Hash-pinned model source, generator, evaluator and evaluation corpora |
 | `tools/inference-probe` | Stdin probe the evaluator drives; not part of any build product |

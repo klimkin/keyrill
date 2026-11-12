@@ -1,10 +1,14 @@
 # Windows TSF proof
 
 This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
-correction. It links the
-existing Rust engine through [the C ABI](../include/keyrill.h). It has no replacement backend,
+correction. The `keyrill-windows` package in `native/windows/rust/` implements the service and
+registrar with `windows` and `windows-core` 0.62.2. It links the existing portable Rust engine
+through [the C ABI](../include/keyrill.h). It has no replacement backend,
 hooks, input injection, clipboard transport, or runtime network access. Admission covers the
 proof editor and the tested version-bounded Notepad main document described below.
+
+The desktop acceptance results below describe the C++ backend before the windows-rs migration.
+The current Rust service still requires real-editor and Notepad validation.
 
 The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
 maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
@@ -35,7 +39,8 @@ by the bounded shutdown assertion.
 ## Build and check without installation
 
 Use Windows x64 with Visual Studio 2022 Build Tools, its C++ workload and Windows SDK, CMake,
-and the repository's pinned Rust toolchain. No package is downloaded or installed by the build.
+Python 3, and the repository's pinned Rust toolchain. Populate the locked Cargo dependency cache
+before building. The Windows build uses `--locked --offline`.
 The Visual Studio CMake generator discovers MSVC without a developer shell. The build queries
 `cargo rustc --print native-static-libs` and uses the returned libraries with the DLL C runtime.
 
@@ -47,21 +52,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1 -Mo
 From Git Bash, `./tools/verify` runs the portable checks and dispatches the Windows build,
 controlled schedules, C11 ABI smoke, and registration-free COM smoke tests to MSVC.
 `./tools/verify sanitize` dispatches the native AddressSanitizer configuration. This instruments
-the C++ service and controlled tests, not the Rust static library. MSVC does not supply UBSan.
+the C++ foreign-call wrappers and controlled tests. Rust code and UIA inspectors are outside
+instrumentation. MSVC does not supply UBSan.
 It is not the macOS ASan/UBSan gate and does not replace physical application testing.
 
 The build produces these separate artifacts in `target/windows-check/Release`.
 
 | Artifact | Purpose |
 |---|---|
-| `KeyrillTsf.dll` | In-process STA COM text service |
-| `KeyrillRegister.exe` | Explicit maintainer registration, status, and enablement commands |
+| `KeyrillTsf.dll` | Production Rust in-process STA COM text service |
+| `KeyrillTsfTest.dll` | Rust service with the controlled `test-api` feature |
+| `KeyrillRegister.exe` | Rust registrar with explicit maintainer registration, status, and enablement commands |
 | `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
 | `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
 | `KeyrillHostInspect.exe` | Explicit-PID field metadata, optional service observation, and named public-document UIA checks |
 | `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
 | `keyrill_activation_smoke.exe` | `CoCreateInstance` with the proof manifest and an adjacent-DLL identity check |
 | `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
+
+CMake builds the production and `test-api` Rust artifacts in separate `cargo-production` and
+`cargo-test-api` directories within `target/windows-check`. The shared
+`build_fingerprint.py` hashes normalized source inputs and the feature set. Production and
+`test-api` artifacts have distinct fingerprints, which the SDK diagnostic readers also use.
 
 `KeyrillProofEditor.exe` and `keyrill_activation_smoke.exe` embed the same
 `proof_activation.manifest`. Its COM mapping binds the existing service CLSID to the adjacent
@@ -75,8 +87,9 @@ existing registered profile and the source selected by the maintainer. This does
 register, enable, or select a source, and does not prove activation in general applications.
 
 The controlled COM test executable has the same fixture executable name in the separate
-`target/windows-check/tests/Release` directory. It supplies fake TSF interfaces to the exact
-`Service::HandleEvent` and `ITfEditSession::DoEditSession` implementation used by the DLL.
+`target/windows-check/tests/Release` directory. Its C++ `TestService` adapter supplies fake TSF
+interfaces through `KeyrillTsfTest.dll` to the Rust service and `ITfEditSession::DoEditSession`
+implementation. The SDK fixtures and UIA inspectors remain C++.
 Its client ID and cookie belong only to those doubles. They never establish live routing.
 
 ## Bounded Notepad admission and observation

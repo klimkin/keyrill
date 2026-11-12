@@ -2,8 +2,10 @@
 
 Rust is pinned to 1.99.1 in `rust-toolchain.toml`, edition 2024, resolver 3. `Cargo.lock` is
 committed and every check runs with `--locked`; nothing refreshes dependencies silently. The
-core uses only std; `keyrill-ffi` adds `libc` on macOS for file-open constants. Proptest and
-serde_json are test-only. Don't add an async runtime, a UI framework or a second engine.
+core uses only std. `keyrill-ffi` adds `libc` on macOS for file-open constants. The Windows
+adapter package `keyrill-windows` uses `windows` and `windows-core` 0.62.2 and builds its C++
+foreign-call wrappers with `cc`. Proptest and serde_json are test-only. Don't add an async
+runtime, a UI framework or a second engine.
 
 On macOS you also need Command Line Tools and clang-format 23.1.3 (`pip install
 clang-format==23.1.3` in a virtual environment). Xcode is not required. Run the checks as an
@@ -23,13 +25,14 @@ formatting, lints the plists, runs Clang static analysis with findings as errors
 and tools, and runs the controlled native tests.
 
 On Windows x64, the default check builds the C11 ABI smoke test with MSVC, checks native
-formatting, builds the TSF proof tools, and runs the controlled COM and registration-free DLL
-tests. See [Windows TSF proof](windows.md) for prerequisites and the separate desktop gate.
+formatting, builds the Rust TSF service and registrar with the SDK proof tools, and runs the
+controlled COM and registration-free DLL tests. See [Windows TSF proof](windows.md) for
+prerequisites and the separate desktop gate.
 
 | Mode | Requires | What it does |
 |---|---|---|
 | `sanitize` | macOS | Native tests under ASan/UBSan; the Rust library is not instrumented |
-| `sanitize` | Windows x64 and MSVC | Native service tests under AddressSanitizer; the Rust library and UIA inspector are not instrumented |
+| `sanitize` | Windows x64 and MSVC | C++ foreign-call wrappers and controlled tests under AddressSanitizer. Rust code and UIA inspectors are outside instrumentation |
 | `browser-fixture` | Node 18+ | Deterministic JavaScript checks of the browser fixture |
 | `audit` | cargo-deny 0.20.2 | Advisories, sources, licenses and bans for the app and fuzz graphs |
 | `coverage` | cargo-llvm-cov 0.6.21, `llvm-tools-preview` | Rust line and region coverage, 95% floor |
