@@ -3,7 +3,8 @@
 use crate::com;
 use crate::edit::{Effect, Frame};
 use crate::foreign;
-use crate::service::Service;
+use crate::service::{ObjectLease, Service};
+use keyrill_ffi::NativeEvent;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -11,10 +12,11 @@ use windows::Win32::Foundation::{E_INVALIDARG, E_POINTER, E_UNEXPECTED, S_OK};
 use windows::Win32::UI::TextServices::ITfContext;
 use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 struct Handle {
     service: Rc<Service>,
+    _object: ObjectLease,
 }
 
 #[repr(C)]
@@ -37,6 +39,7 @@ fn fence(call: impl FnOnce() -> HRESULT) -> HRESULT {
 #[unsafe(no_mangle)]
 unsafe extern "system" fn KeyrillTestCreate(
     version: u32,
+    dependencies: *const foreign::Dependencies,
     handle: *mut *mut c_void,
     output: *mut *mut c_void,
 ) -> HRESULT {
@@ -52,15 +55,71 @@ unsafe extern "system" fn KeyrillTestCreate(
         if version != VERSION {
             return E_INVALIDARG;
         }
-        let service = Service::new();
+        let dependencies = if dependencies.is_null() {
+            None
+        } else {
+            // SAFETY: the test API requires a readable size/version prefix before table validation.
+            let size = unsafe { std::ptr::addr_of!((*dependencies).size).read() };
+            // SAFETY: version is the second u32 in the required readable prefix.
+            let version = unsafe { std::ptr::addr_of!((*dependencies).version).read() };
+            if version != VERSION || size as usize != size_of::<foreign::Dependencies>() {
+                return E_INVALIDARG;
+            }
+            // SAFETY: the validated size now requires a complete readable dependency table.
+            let table = unsafe { *dependencies };
+            if table.retain.is_some() != table.release.is_some() {
+                return E_INVALIDARG;
+            }
+            match foreign::DependencyLease::new(table) {
+                Ok(owner) => Some(owner),
+                Err(call) => return call.result,
+            }
+        };
+        let service = Service::with_dependencies(dependencies);
         let object = com::create(Rc::clone(&service));
-        let owner = Box::new(Handle { service });
+        let owner = Box::new(Handle {
+            service,
+            _object: ObjectLease::new(),
+        });
         // SAFETY: outputs transfer one handle and one COM reference to the test caller.
         unsafe {
             handle.write(Box::into_raw(owner).cast());
             output.write(object.into_raw());
         }
         S_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestEvent(
+    handle: *mut c_void,
+    context: *mut c_void,
+    event: *const NativeEvent,
+    eaten: *mut BOOL,
+) -> HRESULT {
+    fence(|| {
+        if eaten.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the test transport supplies a writable BOOL output slot.
+        unsafe { eaten.write(BOOL(0)) };
+        if handle.is_null() || context.is_null() || event.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the test caller retains its live handle for this synchronous entry.
+        let handle = unsafe { &*handle.cast::<Handle>() };
+        handle.service.checked(|| S_OK)
+    })
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestMaintain(handle: *mut c_void) -> HRESULT {
+    fence(|| {
+        if handle.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the test caller retains its live handle for this synchronous entry.
+        unsafe { &*handle.cast::<Handle>() }.service.maintain()
     })
 }
 

@@ -41,3 +41,7 @@ pub(crate) struct Facts {
     pub(crate) proof_root: Window,
     pub(crate) proof_process: u32,
 }
+
+const _: () = assert!(size_of::<HostIdentity>() == 40);
+const _: () = assert!(size_of::<Window>() == 168);
+const _: () = assert!(size_of::<Facts>() == 760);

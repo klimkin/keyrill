@@ -58,6 +58,8 @@ pub(crate) struct Dependencies {
     >,
 }
 
+const _: () = assert!(size_of::<Dependencies>() == 56);
+
 pub(crate) struct DependencyLease {
     pub(crate) table: Dependencies,
 }
@@ -94,7 +96,7 @@ pub(crate) fn uncertain() -> bool {
     UNCERTAIN.load(Ordering::Acquire)
 }
 
-fn quarantine() {
+pub(crate) fn quarantine() {
     UNCERTAIN.store(true, Ordering::Release);
     let mut module = HMODULE::default();
     // SAFETY: FROM_ADDRESS interprets this address as module code, never as UTF-16 text.

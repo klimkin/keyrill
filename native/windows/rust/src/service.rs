@@ -1,3 +1,4 @@
+use crate::foreign::DependencyLease;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -37,10 +38,15 @@ pub(crate) struct Service {
     state: RefCell<State>,
     #[cfg(feature = "test-api")]
     panic_at: Cell<u32>,
+    _dependencies: Option<DependencyLease>,
 }
 
 impl Service {
     pub(crate) fn new() -> Rc<Self> {
+        Self::with_dependencies(None)
+    }
+
+    pub(crate) fn with_dependencies(dependencies: Option<DependencyLease>) -> Rc<Self> {
         Rc::new(Self {
             // SAFETY: GetCurrentThreadId has no pointer or lifetime preconditions.
             owner_thread: unsafe { GetCurrentThreadId() },
@@ -48,7 +54,13 @@ impl Service {
             state: RefCell::new(State::default()),
             #[cfg(feature = "test-api")]
             panic_at: Cell::new(0),
+            _dependencies: dependencies,
         })
+    }
+
+    #[cfg(feature = "test-api")]
+    pub(crate) fn maintain(&self) -> HRESULT {
+        self.checked(|| S_OK)
     }
 
     pub(crate) fn owner_thread(&self) -> bool {

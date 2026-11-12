@@ -113,6 +113,8 @@ struct Api {
   KrTestPanic panic;
   KrTestStopped stopped;
   KrTestProbe probe;
+  KrTestEvent event;
+  KrTestMaintain maintain;
 
   explicit Api(const wchar_t *path) : module(LoadLibraryW(path)) {
     Require(module != nullptr, "load Rust test DLL");
@@ -122,6 +124,8 @@ struct Api {
     panic = Load<KrTestPanic>("KeyrillTestPanic");
     stopped = Load<KrTestStopped>("KeyrillTestStopped");
     probe = Load<KrTestProbe>("KeyrillTestProbe");
+    event = Load<KrTestEvent>("KeyrillTestEvent");
+    maintain = Load<KrTestMaintain>("KeyrillTestMaintain");
   }
   template <typename T> T Load(const char *name) {
     const auto function = reinterpret_cast<T>(GetProcAddress(module, name));
@@ -134,9 +138,9 @@ struct Instance {
   Api &api;
   void *handle = nullptr;
   ITfTextInputProcessorEx *service = nullptr;
-  explicit Instance(Api &value) : api(value) {
-    Require(api.create(KR_WINDOWS_TEST_VERSION, &handle, reinterpret_cast<void **>(&service)) ==
-                S_OK,
+  explicit Instance(Api &value, const KrWindowsDependencies *dependencies = nullptr) : api(value) {
+    Require(api.create(KR_WINDOWS_TEST_VERSION, dependencies, &handle,
+                       reinterpret_cast<void **>(&service)) == S_OK,
             "versioned test creation");
   }
   ~Instance() {
@@ -155,8 +159,71 @@ struct Instance {
   }
 };
 
+struct DependencyOwner {
+  uint32_t references = 1;
+  uint32_t retained = 0, released = 0;
+  static void WINAPI Retain(void *context) {
+    auto &owner = *static_cast<DependencyOwner *>(context);
+    ++owner.references;
+    ++owner.retained;
+  }
+  static void WINAPI Release(void *context) {
+    auto &owner = *static_cast<DependencyOwner *>(context);
+    --owner.references;
+    ++owner.released;
+  }
+  KrWindowsDependencies Table() {
+    KrWindowsDependencies result{};
+    result.size = sizeof(result);
+    result.version = KR_WINDOWS_TEST_VERSION;
+    result.context = this;
+    result.retain = Retain;
+    result.release = Release;
+    return result;
+  }
+};
+
+void DependencyLifetime(Api &api) {
+  DependencyOwner owner;
+  auto dependencies = owner.Table();
+  void *invalid_handle = reinterpret_cast<void *>(1);
+  void *invalid_object = reinterpret_cast<void *>(1);
+  dependencies.size = 8;
+  Require(api.create(KR_WINDOWS_TEST_VERSION, &dependencies, &invalid_handle, &invalid_object) ==
+                  E_INVALIDARG &&
+              !invalid_handle && !invalid_object && owner.references == 1,
+          "invalid dependency table refuses before retention and clears outputs");
+  dependencies = owner.Table();
+  {
+    Instance instance(api, &dependencies);
+    Require(owner.references == 2 && owner.retained == 1, "dependency table retained once");
+    Host host;
+    kr_event event{KR_TEXT, KR_EN, KR_CTX_BOUNDARY, 1, {L'g'}};
+    BOOL eaten = TRUE;
+    Require(api.event(instance.handle, &host, &event, &eaten) == S_OK && !eaten && !host.queries &&
+                !host.requests,
+            "inactive direct-event transport refuses without host inspection");
+    Require(api.maintain(instance.handle) == S_OK, "maintenance enters shared service");
+    const auto result = instance.Probe(host, 1);
+    Require(result.entered && owner.references == 2, "frame retains dependency lifetime");
+    instance.service->Release();
+    instance.service = nullptr;
+    Require(api.unload() == S_FALSE, "test handle and retained callback prevent unload");
+    Require(api.release(instance.handle) == S_OK, "release transport owner before late callback");
+    instance.handle = nullptr;
+    Require(owner.references == 2 && api.unload() == S_FALSE,
+            "captured frame retains service and dependency after external owners drain");
+    Require(host.retained->DoEditSession(123) == E_FAIL, "expired retained callback stays refused");
+    host.retained->Release();
+    host.retained = nullptr;
+  }
+  Require(owner.references == 1 && owner.released == 1 && api.unload() == S_OK,
+          "dependency context drains after last callback");
+}
+
 void Basic(Api &api) {
   Require(api.unload() == S_OK, "initially unloadable");
+  DependencyLifetime(api);
   {
     Instance instance(api);
     Require(api.unload() == S_FALSE, "live object prevents unload");
