@@ -96,14 +96,15 @@ unsafe extern "system" fn KeyrillTestTranslate(
         // SAFETY: the SDK test transport supplies exactly 256 readable keyboard-state bytes.
         let state = unsafe { &*state.cast::<[u8; 256]>() };
         match keys::translate(key, flags, layout, state) {
-            keys::Key::Modifier => {
+            Ok(keys::Key::Modifier) => {
                 // SAFETY: the validated output remains writable.
                 unsafe { modifier_only.write(BOOL(1)) };
             }
-            keys::Key::Event(event) => {
+            Ok(keys::Key::Event(event)) => {
                 // SAFETY: the validated output remains writable.
                 unsafe { output.write(event) };
             }
+            Err(_) => return E_INVALIDARG,
         }
         S_OK
     })

@@ -84,7 +84,15 @@ fn main() {
         .flag("/EHsc")
         .warnings_into_errors(true);
     if std::env::var("KEYRILL_ASAN").as_deref() == Ok("ON") {
-        native.flag("/fsanitize=address").flag("/Zi");
+        let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
+        native
+            .flag("/fsanitize=address")
+            .flag("/Zi")
+            .flag("/FS")
+            .flag(format!(
+                "/Fd{}",
+                output.join("keyrill-native.pdb").display()
+            ));
         println!("cargo:rustc-link-arg=/DEBUG");
     }
     native.compile("keyrill_foreign_calls");

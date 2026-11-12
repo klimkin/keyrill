@@ -84,12 +84,16 @@ fn printable(text: &[u16]) -> bool {
     true
 }
 
-fn event(role: u32, mode: u32, units: &[u16]) -> Key {
-    // All callers use either an empty slice or a native buffer already checked against capacity.
-    Key::Event(NativeEvent::new(role, mode, 1, units).expect("bounded native key text"))
+fn event(role: u32, mode: u32, units: &[u16]) -> Result<Key, u32> {
+    NativeEvent::new(role, mode, 1, units).map(Key::Event)
 }
 
-pub(crate) fn translate(key: WPARAM, flags: LPARAM, layout: HKL, state: &[u8; 256]) -> Key {
+pub(crate) fn translate(
+    key: WPARAM,
+    flags: LPARAM,
+    layout: HKL,
+    state: &[u8; 256],
+) -> Result<Key, u32> {
     if [
         VK_SHIFT,
         VK_LSHIFT,
@@ -106,7 +110,7 @@ pub(crate) fn translate(key: WPARAM, flags: LPARAM, layout: HKL, state: &[u8; 25
     .iter()
     .any(|modifier| key.0 == modifier.0 as usize)
     {
-        return Key::Modifier;
+        return Ok(Key::Modifier);
     }
     let layout_id = layout.0 as usize;
     let mode = PROFILES
