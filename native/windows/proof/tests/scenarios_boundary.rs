@@ -627,6 +627,23 @@ fn boundary_pure_native_keyboard_and_binding_exports() {
     }
 }
 #[test]
+fn boundary_known_notepad_versions_are_exact() {
+    let api = Api::load();
+    let known: unsafe extern "system" fn(*const HostIdentity, *mut i32) -> HRESULT =
+        unsafe { api.export(b"KeyrillTestKnownNotepad\0") };
+    for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
+        let host = HostIdentity {
+            kind: 2,
+            version,
+            ..Default::default()
+        };
+        let mut output = -1;
+        assert_eq!(unsafe { known(&host, &mut output) }, S_OK);
+        assert_eq!(output, 1, "exact approved version {version:?}");
+    }
+}
+
+#[test]
 fn boundary_pure_native_field_match_and_secure_refusal() {
     let api = Api::load();
     unsafe {
