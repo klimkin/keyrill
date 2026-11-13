@@ -8,10 +8,11 @@ through [the C ABI](../include/keyrill.h). It has no replacement backend,
 hooks, input injection, clipboard transport, or runtime network access. Admission covers the
 proof editor and the tested version-bounded Notepad main document described below.
 
-The historical desktop acceptance results below describe the C++ backend. The automated Rust
-editor checks have a separate record in the next section. Full Rust native execution and the
-complete experimental Rust sanitizer suite have passed. Physical controlled-editor and Notepad
-acceptance remain pending. The Rust model checker has passed byte-for-byte
+The historical desktop acceptance results below describe the C++ backend. Automated Rust
+editor and current Notepad checks have separate records below. Full Rust native execution and the
+complete experimental Rust sanitizer suite have passed. Physical Notepad boundary correction
+and reversal passed the isolated sequence below. The broader physical matrix and Rust
+model-policy desktop checks remain pending. The Rust model checker has passed byte-for-byte
 regeneration of the unchanged model, including gzip grammar, micro-frequency data, provenance,
 and notices.
 
@@ -60,8 +61,42 @@ checked complete public A and B documents and their required caret positions.
 | Owned shutdown | A verified owned word passed `shutdown-ready`, then native Close returned exit code 0; the empty-window negative control returned `NoOwnedMark` (16) |
 
 Password contents were not queried. The observed service snapshots contained zero unknown
-effects. These runs used generated keys and clicks. Physical rapid typing, physical command
-checks, the live EN-to-RU transition, and fresh Rust Notepad acceptance remain pending.
+effects. These runs used generated keys and clicks. Renewed physical proof-editor checks and
+the live EN-to-RU transition remain pending. Current Rust Notepad results appear below.
+
+## Rust Notepad verification
+
+The Rust service passed generated-key checks in packaged x64 Notepad 11.2609.11.0 after the
+maintainer registered the candidate and selected the EN profile. The loaded production identity
+was `22221d8da8de645c17251ff7be941b1c60eba0160f53082dd6b1a365aa0aa9bf`.
+The independent Rust UIA inspector checked complete public documents and collapsed end carets.
+The service observer required that same build identity and observed actual key callbacks.
+
+| Check | Observed result |
+|---|---|
+| Boundary correction | `ghbdtn` and Space became `привет ` in an owned composition |
+| Manual reversal | Left Ctrl + left Alt + Z restored `ghbdtn ` |
+| Manual conversion | Left Ctrl + left Alt + K converted owned `ghbdtn` to `привет` |
+| Continuation and native Undo | `x` produced `привет x`, then Ctrl+Z restored `привет ` and ended ownership |
+| Find exclusion | Find accepted public `x` while service write counters stayed unchanged and ownership stayed empty |
+| Focus round trip | `ghb`, Find, then document `dtn` and Space left the exact document `ghbdtn ` |
+
+The observer reported zero unknown effects. Find's native field failed binding admission before
+character access. After returning to the document, the main RichEdit field again passed the
+native and independent UIA binding checks. These runs used generated keys and clicks.
+
+An isolated physical run then passed boundary correction and left Ctrl + left Alt + Z reversal
+within one focus interval. The maintainer typed `ghbdtn` and Space, observed `привет `, and
+pressed the command before leaving Notepad. UIA matched the complete final `ghbdtn ` document
+and end caret. The journal recorded Reverse dispatch and verified `ManualMark` completion on
+the same owned serial, followed by a matched consumed Alt release. Unknown effects stayed zero.
+The earlier combined native Undo and reversal procedure had an incorrect expected result.
+Native Undo ended ownership, and its later command was reserved without a write. Earlier
+reports of unchanged text add no passing physical coverage.
+
+Physical rapid typing, held commands, model-policy behavior, vocabulary reloads, and the RU
+source still require renewed desktop checks for this Rust build. The historical C++ results
+below retain their original scope.
 
 ## Build and check without installation
 
@@ -166,7 +201,8 @@ A live pre-change run on 11.2609.11.0 confirmed the expected native hierarchy, w
 binding, and missing input-scope result `E_FAIL`. The full public word passed through unchanged,
 with zero ACP access or write attempts. The updated exact-version rule has independent
 classifier, native-field, scope, refusal, and expired-callback tests for both versions.
-Current-DLL editing acceptance on 11.2609.11.0 remains pending.
+The current Rust DLL passed the fixture-policy document checks recorded in
+[Rust Notepad verification](#rust-notepad-verification).
 
 Package identity alone grants no editing authority. Before selection ACP or character access,
 the edit session validates the canonical TSF top context, active view, exact current-thread

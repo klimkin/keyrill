@@ -10,7 +10,9 @@ The Windows C++ backend passed controlled-editor and bounded ordinary Notepad ac
 before the windows-rs migration. The full Rust runtime and proof tools passed complete native
 and experimental sanitizer suites. Fresh automated Rust editor checks passed correction,
 reversal, continuation, native Undo, focus preservation, exclusions, native lock denial, and
-bounded owned shutdown. Physical real-editor acceptance and Notepad validation remain pending. Historical
+bounded owned shutdown. Current Rust Notepad 11.2609.11.0 checks passed fixture correction,
+manual commands, continuation, native Undo, Find exclusion, and a focus round trip.
+Renewed physical and model-policy desktop acceptance remain pending. Historical
 packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
@@ -137,7 +139,8 @@ Notepad main document. Granted edit sessions, explicit contexts, and owned compo
 the editing contract. [TSF design](adr/007-windows-tsf.md).
 
 Exact version recognition includes 11.2607.14.0 and 11.2609.11.0. The updated version has matching
-live native-field and unavailable-scope evidence; current-DLL editing acceptance remains pending.
+live native-field and unavailable-scope evidence. The current Rust DLL passed the
+[fixture-policy Notepad checks](windows.md#rust-notepad-verification).
 
 The [`windows-rs`](https://github.com/microsoft/windows-rs) adapter uses `windows` and
 `windows-core` 0.62.2 for generated COM identity and SDK types.
