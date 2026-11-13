@@ -106,7 +106,7 @@ pub(crate) fn capture(view: HWND, host: HostIdentity) -> Facts {
 }
 
 pub(crate) fn known_notepad(host: &HostIdentity) -> bool {
-    host.kind == 2 && host.version == [11, 2607, 14, 0]
+    host.kind == 2 && matches!(host.version, [11, 2607, 14, 0] | [11, 2609, 11, 0])
 }
 
 fn node(window: &Window, process: u32, class: &str) -> bool {
