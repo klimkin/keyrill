@@ -198,7 +198,7 @@ mod safe_digest {
     pub type Call = unsafe extern "system" fn(u32, *mut u32) -> windows_core::HRESULT;
 }
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FieldIdentity {
     pub kind: u32,
     pub field: HWND,

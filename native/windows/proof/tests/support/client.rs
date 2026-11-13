@@ -113,6 +113,9 @@ impl Client {
         facts
     }
     pub fn notepad() -> Self {
+        Self::notepad_version([11, 2607, 14, 0])
+    }
+    pub fn notepad_version(version: [u32; 4]) -> Self {
         let c = Self::new();
         unsafe {
             let process = GetCurrentProcessId();
@@ -139,7 +142,7 @@ impl Client {
                     thread,
                     started: 1,
                     kind: 2,
-                    version: [11, 2607, 14, 0],
+                    version,
                 },
                 process,
                 thread,

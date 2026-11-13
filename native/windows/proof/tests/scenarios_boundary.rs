@@ -644,6 +644,61 @@ fn boundary_known_notepad_versions_are_exact() {
 }
 
 #[test]
+fn boundary_unknown_notepad_versions_and_kinds_are_rejected() {
+    let api = Api::load();
+    let known: unsafe extern "system" fn(*const HostIdentity, *mut i32) -> HRESULT =
+        unsafe { api.export(b"KeyrillTestKnownNotepad\0") };
+    let mut rejected = vec![
+        [0; 4],
+        [11, 2609, 10, 0],
+        [11, 2609, 12, 0],
+        [11, 2609, 11, 1],
+    ];
+    for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
+        for component in 0..4 {
+            let mut neighbor = version;
+            neighbor[component] += 1;
+            rejected.push(neighbor);
+            if version[component] > 0 {
+                neighbor[component] = version[component] - 1;
+                rejected.push(neighbor);
+            }
+        }
+        for kind in [0, 1, 3, u32::MAX] {
+            let host = HostIdentity {
+                kind,
+                version,
+                ..Default::default()
+            };
+            let mut output = -1;
+            assert_eq!(unsafe { known(&host, &mut output) }, S_OK);
+            assert_eq!(output, 0, "kind {kind}, version {version:?}");
+        }
+    }
+    for version in rejected {
+        let host = HostIdentity {
+            kind: 2,
+            version,
+            ..Default::default()
+        };
+        let mut output = -1;
+        assert_eq!(unsafe { known(&host, &mut output) }, S_OK);
+        assert_eq!(output, 0, "unapproved version {version:?}");
+    }
+    let mut output = -1;
+    assert_eq!(unsafe { known(std::ptr::null(), &mut output) }, E_POINTER);
+    assert_eq!(output, 0);
+    assert_eq!(
+        unsafe { known(&HostIdentity::default(), std::ptr::null_mut()) },
+        E_POINTER
+    );
+    assert_eq!(
+        unsafe { known(std::ptr::null(), std::ptr::null_mut()) },
+        E_POINTER
+    );
+}
+
+#[test]
 fn boundary_pure_native_field_match_and_secure_refusal() {
     let api = Api::load();
     unsafe {
@@ -686,17 +741,69 @@ fn boundary_pure_native_field_match_and_secure_refusal() {
         facts.field.style = 0x40000004;
         facts.parent = node(HWND(2usize as *mut _), "NotepadTextBox");
         facts.grandparent = node(facts.root, "Notepad");
-        let mut identity = FieldIdentity::default();
-        let mut matched = 0;
-        assert_eq!(matches(&facts, &mut identity, &mut matched), S_OK);
-        assert_eq!(matched, 1);
-        assert_eq!(identity.kind, 1);
-        assert_eq!(identity.field, facts.view);
-        assert_eq!(identity.parent, facts.parent.handle);
-        assert_eq!(identity.root, facts.root);
-        facts.field.style |= 0x20;
-        assert_eq!(matches(&facts, &mut identity, &mut matched), S_OK);
+        let sentinel = FieldIdentity {
+            kind: u32::MAX,
+            field: HWND(5usize as *mut _),
+            parent: HWND(6usize as *mut _),
+            root: HWND(7usize as *mut _),
+            process: u32::MAX,
+            thread: u32::MAX,
+            root_thread: u32::MAX,
+        };
+        let expected = FieldIdentity {
+            kind: 1,
+            field: facts.view,
+            parent: facts.parent.handle,
+            root: facts.root,
+            process: 17,
+            thread: 23,
+            root_thread: 23,
+        };
+        for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
+            facts.host.version = version;
+            let mut identity = sentinel;
+            let mut matched = -1;
+            assert_eq!(matches(&facts, &mut identity, &mut matched), S_OK);
+            assert_eq!(matched, 1, "version {version:?}");
+            assert_eq!(identity, expected);
+            for case in 0..7 {
+                let mut invalid = facts;
+                match case {
+                    0 => invalid.field.style |= 0x20,
+                    1 => invalid.field.style |= 0x800,
+                    2 => invalid.focus = HWND::default(),
+                    3 => invalid.parent.class_name[0] = b'!' as u16,
+                    4 => invalid.grandparent.enabled = 0,
+                    5 => invalid.host.version[2] += 1,
+                    6 => invalid.host.kind = 1,
+                    _ => unreachable!(),
+                }
+                identity = sentinel;
+                matched = -1;
+                assert_eq!(matches(&invalid, &mut identity, &mut matched), S_OK);
+                assert_eq!(matched, 0, "version {version:?}, case {case}");
+                assert_eq!(identity, FieldIdentity::default());
+            }
+        }
+        let mut identity = sentinel;
+        let mut matched = -1;
+        assert_eq!(
+            matches(std::ptr::null(), &mut identity, &mut matched),
+            E_POINTER
+        );
+        assert_eq!(identity, FieldIdentity::default());
         assert_eq!(matched, 0);
-        assert!(identity.field.0.is_null());
+        identity = sentinel;
+        matched = -1;
+        assert_eq!(
+            matches(&facts, std::ptr::null_mut(), &mut matched),
+            E_POINTER
+        );
+        assert_eq!(matched, -1);
+        assert_eq!(
+            matches(&facts, &mut identity, std::ptr::null_mut()),
+            E_POINTER
+        );
+        assert_eq!(identity, sentinel);
     }
 }
