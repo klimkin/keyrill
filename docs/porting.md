@@ -11,8 +11,9 @@ before the windows-rs migration. The full Rust runtime and proof tools passed co
 and experimental sanitizer suites. Fresh automated Rust editor checks passed correction,
 reversal, continuation, native Undo, focus preservation, exclusions, native lock denial, and
 bounded owned shutdown. Current Rust Notepad 11.2609.11.0 checks passed fixture correction,
-manual commands, continuation, native Undo, Find exclusion, and a focus round trip.
-Renewed physical and model-policy desktop acceptance remain pending. Historical
+manual commands, continuation, native Undo, Find exclusion, a focus round trip, both model
+directions, and vocabulary reload. Isolated physical boundary correction and reversal also
+passed. The broader physical acceptance matrix remains pending. Historical
 packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.

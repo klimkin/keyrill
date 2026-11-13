@@ -10,9 +10,10 @@ proof editor and the tested version-bounded Notepad main document described belo
 
 The historical desktop acceptance results below describe the C++ backend. Automated Rust
 editor and current Notepad checks have separate records below. Full Rust native execution and the
-complete experimental Rust sanitizer suite have passed. Physical Notepad boundary correction
-and reversal passed the isolated sequence below. The broader physical matrix and Rust
-model-policy desktop checks remain pending. The Rust model checker has passed byte-for-byte
+complete experimental Rust sanitizer suite have passed. Current Rust Notepad checks passed
+fixture behavior, both model directions, and vocabulary reload. Physical Notepad boundary
+correction and reversal passed the isolated sequence below. The broader physical matrix
+remains pending. The Rust model checker has passed byte-for-byte
 regeneration of the unchanged model, including gzip grammar, micro-frequency data, provenance,
 and notices.
 
@@ -94,9 +95,23 @@ The earlier combined native Undo and reversal procedure had an incorrect expecte
 Native Undo ended ownership, and its later command was reserved without a write. Earlier
 reports of unchanged text add no passing physical coverage.
 
-Physical rapid typing, held commands, model-policy behavior, vocabulary reloads, and the RU
-source still require renewed desktop checks for this Rust build. The historical C++ results
-below retain their original scope.
+A fresh Notepad process with the same DLL also passed generated-key EN model checks. The
+service reported requested and effective model policy, a prepared model, both synthetic
+dictionary sources ready, and zero source errors. The complete-document and end-caret oracle
+matched `список ` after typing `cgbcjr` and Space.
+
+Reloading the public synthetic EN vocabulary preserved the mark and reversal receipt.
+Reversal returned the complete document to `cgbcjr ` on the same owned serial with one
+verified write. A newly typed `cgbcjr` and Space then stayed literal under that vocabulary.
+Unknown effects stayed zero. The synthetic EN file was restored to empty afterward.
+
+After maintainer selection of the RU profile, generated keys produced `цщкдв` and Space.
+UIA matched the complete corrected `world ` document and end caret. Escape then restored
+`цщкдв ` and ended ownership. The service confirmed RU mode, effective model policy, both
+sources ready, and zero unknown effects.
+
+Physical rapid typing, held commands, and an owned EN-to-RU transition still require renewed
+desktop checks for this Rust build. The historical C++ results below retain their original scope.
 
 ## Build and check without installation
 

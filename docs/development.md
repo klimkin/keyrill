@@ -46,8 +46,9 @@ The full Rust Windows native suite and complete experimental sanitizer suite hav
 Fresh automated Rust editor checks passed correction, reversal, continuation, native Undo,
 focus preservation, exclusions, native lock denial, and bounded owned shutdown.
 Current Rust Notepad checks passed fixture correction, manual commands, continuation, native
-Undo, Find exclusion, and a focus round trip. Renewed physical and model-policy desktop
-acceptance remain pending. The sanitizer canary detected its heap-use-after-free. The Rust model checker has
+Undo, Find exclusion, a focus round trip, both model directions, and vocabulary reload.
+Isolated physical boundary correction and reversal passed. The broader physical acceptance
+matrix remains pending. The sanitizer canary detected its heap-use-after-free. The Rust model checker has
 passed byte-for-byte regeneration of the unchanged model assets. Historical C++ desktop results
 are recorded separately in [Windows TSF proof](windows.md).
 
