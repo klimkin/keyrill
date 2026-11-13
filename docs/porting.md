@@ -7,8 +7,9 @@ Don't write a second inference engine, and don't build a cross-platform editing 
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
 The Windows C++ backend passed controlled-editor and bounded ordinary Notepad acceptance
-before the windows-rs migration. The current Rust backend still requires real-editor and
-Notepad validation. Packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
+before the windows-rs migration. The full Rust runtime and proof tools still require complete
+native-suite execution, physical real-editor acceptance, and Notepad validation. Historical
+packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
 Physical command checks covered conversion and held reversal within one focus interval.
@@ -55,9 +56,10 @@ libraries `--print native-static-libs` reports. Windows has an independent Rust 
 `crates/keyrill-ffi/tests/windows_abi.rs`. It declares the published C structs and signatures,
 checks their literal layouts, and runs all nine original smoke scenarios against the ABI.
 
-Wire the adapter into `tools/verify` the way macOS is: a `uname -s` branch in the default mode
-runs its format check, build and controlled tests, and a separate mode covers anything that needs
-sanitizers or a desktop session. Platform setup goes in the Toolchain step of
+Wire the adapter into `tools/verify` through the host branch in the default mode. Windows
+dispatches to `cargo xtask windows check`, while its separate `sanitize` mode dispatches to
+`cargo xtask windows sanitize`. Desktop acceptance remains a separate gate. Platform setup goes
+in the Toolchain step of
 `.github/workflows/verify.yml`. Clippy and rustdoc run on every lane, so shared docs can't link to
 an item that exists on one OS only ([development](development.md#style)).
 
@@ -127,15 +129,25 @@ These follow from the architecture and apply on every platform:
 The windows-rs implementation is in `native/windows/rust/`. Its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
-termination on focus loss. The adapter admits proof controls and the tested version-bounded
+termination on focus loss in the historical C++ backend. The Rust migration awaits renewed
+physical acceptance. The adapter admits proof controls and the tested version-bounded
 Notepad main document. Granted edit sessions, explicit contexts, and owned compositions satisfy
 the editing contract. [TSF design](adr/007-windows-tsf.md).
 
 The [`windows-rs`](https://github.com/microsoft/windows-rs) adapter uses `windows` and
 `windows-core` 0.62.2 for generated COM identity and SDK types.
-Typed leases in `foreign.rs` own host COM references. C++ wrappers contain exceptions around
-foreign calls, including reference acquisition and release. The SDK fixtures and UIA
-diagnostics remain in C++.
+Typed leases in `foreign.rs` own host COM references. Raw SDK vtables preserve exact HRESULTs.
+The service contains Rust panics at callbacks and requires foreign COM implementations to obey
+the standard HRESULT and no-throw contract. The C++ exception-recovery layer is retired.
+The proof editor, independent raw COM providers, and UIA diagnostics are Rust in
+`native/windows/proof`. `native/windows/build-support` owns source and artifact identities, and
+`tools/xtask` owns the Windows Cargo build and verification commands. Public COM diagnostic and
+wire versions retain their contracts. The private test API is version 3.
+The scenario inventory maps all 25 former CTest entries and 111 families to Rust tests
+or explicit retirement reasons. Full native execution and the complete experimental Rust ASan
+suite remain pending. The ASan memory-error canary and byte-for-byte Rust model regeneration
+have passed. UIA supplies test and diagnostic observations. Unsupported, secure, excluded, and
+uncertain controls pass input. A hook or SendInput backend requires a separate decision.
 
 The Windows executor replaces the exact owned range once for each MARK or FINISH that reaches
 replacement. An unchanged FINISH has no expected end-caret requirement and does not force
@@ -146,8 +158,8 @@ then verifies and, if needed, restores that complete selection after replacement
 end. Restoration uses a metadata-only range clone and at most one `SetSelection`; failed checks
 stop without retry or another character write. Controlled doubles cover selection movement by
 either native effect, clone gravity, exact selection styles, and fresh policy refusal.
-Actual Notepad checks cover rapid continuation, native Undo, caret movement, and whole-document
-selection. The complete selection-style matrix has controlled coverage.
+Historical C++ Notepad checks cover rapid continuation, native Undo, caret movement, and
+whole-document selection. The complete selection-style matrix has controlled coverage.
 
 The Windows branch uses bounded `PreserveKey` delivery for manual conversion
 and reversal. Two exact left Ctrl + left Alt commands and one declined Alt-press observer belong
@@ -156,8 +168,8 @@ stack owner accounts for late successful registrations before rollback, and reac
 for the whole activation call and all captured releases. Unknown mandatory acquisition or cleanup
 effects fault the instance. Ordinary and preserved callbacks share native admission and the
 existing executor. A command GUID supplies no modifier, repeat, or document-authority facts.
-Physical Notepad runs observed command delivery and retained ownership through modifier release,
-as described in
+Historical C++ physical Notepad runs observed command delivery and retained ownership through
+modifier release, as described in
 [the command contract](windows.md#manual-conversion-and-reversal).
 The Windows host probe uses a separate protocol-3 command and modifier-release observation
 window. Callback-local tickets preserve command identity through reentry. Lifecycle anchors
@@ -166,7 +178,7 @@ entry. Separate completion records distinguish verified manual MARK, no-write re
 refusal and unknown effects. The observer witnesses an Alt cycle before a verified command can
 grant one release permission on its owned composition. Release validation performs metadata
 queries only. Missing original release plus missing later observer is an excluded indistinguishable
-host schedule. Actual Notepad checks observed delivery and retention, with separate generated
+host schedule. Historical C++ Notepad checks observed delivery and retention, with separate generated
 bare-Alt checks and the physical coverage limits recorded in
 [Notepad acceptance](windows.md#notepad-behavior-acceptance).
 

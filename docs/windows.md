@@ -2,15 +2,20 @@
 
 This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
 correction. The `keyrill-windows` package in `native/windows/rust/` implements the service and
-registrar with `windows` and `windows-core` 0.62.2. It links the existing portable Rust engine
+registrar with `windows` and `windows-core` 0.62.2. The proof editor, UIA inspectors,
+controlled COM providers, and build tools are also Rust. The service links the portable engine
 through [the C ABI](../include/keyrill.h). It has no replacement backend,
 hooks, input injection, clipboard transport, or runtime network access. Admission covers the
 proof editor and the tested version-bounded Notepad main document described below.
 
-The desktop acceptance results below describe the C++ backend before the windows-rs migration.
-The current Rust service still requires real-editor and Notepad validation.
+The desktop acceptance results throughout this document are historical C++ backend evidence.
+They precede the full Rust migration and do not validate the current Rust service, proof editor,
+or inspectors. Full Rust native execution, the complete sanitizer suite, physical controlled-editor
+acceptance, and Notepad acceptance remain pending. The Rust model checker has passed byte-for-byte
+regeneration of the unchanged model, including gzip grammar, micro-frequency data, provenance,
+and notices.
 
-The first controlled-editor proof has passed on Windows x64 with the fixture policy. The
+The historical first controlled-editor proof passed on Windows x64 with the fixture policy. The
 maintainer registered and enabled both proof profiles. Physical runs passed correction, rapid
 continuation, native Undo, focus preservation, excluded-control checks, native lock denial,
 and bounded owned-shutdown and empty-close assertions. Automated real-editor runs separately
@@ -38,25 +43,35 @@ by the bounded shutdown assertion.
 
 ## Build and check without installation
 
-Use Windows x64 with Visual Studio 2022 Build Tools, its C++ workload and Windows SDK, CMake,
-Python 3, and the repository's pinned Rust toolchain. Populate the locked Cargo dependency cache
-before building. The Windows build uses `--locked --offline`.
-The Visual Studio CMake generator discovers MSVC without a developer shell. The build queries
-`cargo rustc --print native-static-libs` and uses the returned libraries with the DLL C runtime.
+Use Windows x64 with Visual Studio 2022 Build Tools, its MSVC linker and Windows SDK, and
+the repository's pinned Rust 1.99.1 toolchain. The sanitizer mode also needs the installed x64
+AddressSanitizer runtime. Populate the locked Cargo dependency cache before building.
+Artifact builds use `--locked --offline`.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1 -Mode sanitize
+cargo xtask windows build
+cargo xtask windows check
+cargo xtask windows sanitize
 ```
 
-From Git Bash, `./tools/verify` runs the portable checks and dispatches the Windows build,
-controlled schedules, C11 ABI smoke, and registration-free COM smoke tests to MSVC.
-`./tools/verify sanitize` dispatches the native AddressSanitizer configuration. This instruments
-the C++ foreign-call wrappers and controlled tests. Rust code and UIA inspectors are outside
-instrumentation. MSVC does not supply UBSan.
-It is not the macOS ASan/UBSan gate and does not replace physical application testing.
+From Git Bash, `./tools/verify` dispatches to `cargo xtask windows check`.
+The check rejects superseded executable sources in `native/windows`, regenerates and compares
+the model with the Rust checker, and runs rustfmt, Clippy, workspace tests, rustdoc, and release
+builds. It builds the independent proof tools and both service variants, runs controlled COM,
+ABI, worker, diagnostic, and registration-free smoke tests, and checks scenario coverage.
+`cargo xtask windows controlled` builds and runs the independent controlled DLL suite alone.
+`cargo xtask windows model-check` runs the model comparison alone.
 
-The build produces these separate artifacts in `target/windows-check/Release`.
+`./tools/verify sanitize` dispatches to `cargo xtask windows sanitize`. This is a separate,
+experimental Rust AddressSanitizer mode using the pinned compiler with child-local
+`RUSTC_BOOTSTRAP=1` and `-Zsanitizer=address`. Before building the instrumented artifacts, the
+runner requires a real heap-use-after-free canary to fail with the expected ASan diagnostic.
+The canary has been detected. The complete instrumented suite remains pending. The prebuilt
+standard library and Windows code remain uninstrumented. Sanitizer checks and physical
+application acceptance are separate gates.
+
+The build stages these artifacts directly in `target/windows-rust-check`.
+Sanitizer artifacts use the separate `target/windows-rust-sanitize` directory.
 
 | Artifact | Purpose |
 |---|---|
@@ -66,31 +81,48 @@ The build produces these separate artifacts in `target/windows-check/Release`.
 | `KeyrillProofEditor.exe` | Stock `RICHEDIT50W` editor with writable A and B, excluded controls, and separate host and service status |
 | `KeyrillProofInspect.exe` | Read-only UIA fixture assertions and bounded host and service snapshots |
 | `KeyrillHostInspect.exe` | Explicit-PID field metadata, optional service observation, and named public-document UIA checks |
-| `keyrill_dll_smoke.exe` | Registration-free DLL factory and Rust-link check, not TSF activation |
-| `keyrill_activation_smoke.exe` | `CoCreateInstance` with the proof manifest and an adjacent-DLL identity check |
-| `keyrill_abi_smoke.exe` | Existing C ABI behavior against its controlled document |
+| `KeyrillDllSmoke.exe` | Direct DLL factory, registration-free activation, and missing-adjacent-DLL checks |
+| `KeyrillWorkerSmoke.exe` | Actual DLL worker and vocabulary lifetime checks |
+| `KeyrillDiagnosticDecoder.exe` | Independent diagnostic decoding for production and test identities |
 
-CMake builds the production and `test-api` Rust artifacts in separate `cargo-production` and
-`cargo-test-api` directories within `target/windows-check`. The shared
-`build_fingerprint.py` hashes normalized source inputs and the feature set. Production and
-`test-api` artifacts have distinct fingerprints, which the SDK diagnostic readers also use.
+Four packages own the Windows implementation. `keyrill-windows` in `native/windows/rust`
+owns the runtime and registrar. `keyrill-windows-proof` in `native/windows/proof` owns the editor,
+inspectors, and independent raw COM providers. `keyrill-windows-build` in
+`native/windows/build-support` computes source and artifact identities. `keyrill-xtask` in
+`tools/xtask` builds and verifies the port. These packages use Cargo and Rust build scripts.
+The shared macOS and portable model-packing workflows retain their Python tools.
 
-`KeyrillProofEditor.exe` and `keyrill_activation_smoke.exe` embed the same
-`proof_activation.manifest`. Its COM mapping binds the existing service CLSID to the adjacent
-`KeyrillTsf.dll` through the process activation context. The smoke checks that the manifest maps
-the CLSID from `profiles.h` and that the returned interface belongs to that adjacent DLL. A second
-test runs the same executable without an adjacent DLL and requires COM activation to fail.
-The direct DLL factory smoke remains a separate check.
+Production and `test-api` artifacts use separate `cargo-production` and `cargo-test-api`
+directories. Proof artifacts use `cargo-proof`. The Rust build-support package hashes normalized
+source inputs and configuration, including the feature set and instrumentation. The runner
+rejects source changes during a build, checks the DLL export boundary, and writes identities and
+artifact hashes to `artifacts.json`. The independent readers use the expected production identity.
+`cargo xtask windows inventory` lists the inputs. `cargo xtask windows fingerprint production`
+and `cargo xtask windows fingerprint test-api` print the respective ordinary release identities.
 
-The manifest changes only activation inside the proof host. Live TSF testing still uses the
-existing registered profile and the source selected by the maintainer. This does not install,
-register, enable, or select a source, and does not prove activation in general applications.
+`KeyrillProofEditor.exe` and `KeyrillDllSmoke.exe` embed the same
+`native/windows/proof_activation.manifest`. Its COM mapping binds the service CLSID from
+`native/windows/rust/src/profiles.rs` to the adjacent `KeyrillTsf.dll` through the process
+activation context. The smoke checks the adjacent DLL identity and requires activation to fail
+when the DLL is absent. The direct factory check runs separately.
 
-The controlled COM test executable has the same fixture executable name in the separate
-`target/windows-check/tests/Release` directory. Its C++ `TestService` adapter supplies fake TSF
-interfaces through `KeyrillTsfTest.dll` to the Rust service and `ITfEditSession::DoEditSession`
-implementation. The SDK fixtures and UIA inspectors remain C++.
-Its client ID and cookie belong only to those doubles. They never establish live routing.
+The manifest changes activation inside the proof host. Live TSF testing uses the registered
+profile and the source selected by the maintainer. Build and controlled checks leave registration,
+enablement, and source selection to the maintainer.
+
+The controlled test executable is `target/windows-rust-check/tests/KeyrillProofEditor.exe`.
+Its independent Rust raw COM providers drive `KeyrillTsfTest.dll` through the private test API
+version 3 and the actual `ITfEditSession::DoEditSession` implementation. Complete literal UTF-16
+documents, caret, ownership, and disposition supply the oracles. Client IDs and cookies belong
+to the doubles. `native/windows/proof/scenarios.json` maps all 25 former CTest entries and 111
+scenario families to Rust tests or an explicit retirement reason. The runner checks the mapping
+against the tests it actually executes. Execution of the full native suite remains pending.
+
+The runtime uses raw SDK COM vtables and exact HRESULT checks, with typed leases owning each
+retained host reference. Rust panics are contained at callbacks. Foreign COM implementations
+must obey the standard HRESULT and no-throw contract. The former C++ exception-recovery layer
+and its throw-injection schedules are retired. Public COM diagnostic and wire versions retain
+their contracts. The private test API is version 3. UIA remains limited to tests and diagnostics.
 
 ## Bounded Notepad admission and observation
 
@@ -314,8 +346,8 @@ the status codecs retain their existing contracts.
 
 Each observation row contains sequence, lifecycle cursor, owned-present, owned serial, event
 kind, command route, command intent, command arrival ID, modifier knowledge or release class,
-and release delivery. Unused rows are ten zero words. The codec in `host_probe.cpp` owns all
-numeric tags. Command kinds 1 through 6 mean arrival, admission refusal, exact-modifier
+and release delivery. Unused rows are ten zero words. The codec in
+`native/windows/rust/src/observation.rs` owns all numeric tags. Command kinds 1 through 6 mean arrival, admission refusal, exact-modifier
 refusal, stale-dispatch refusal, executor dispatch, and callback exception. Kind 7 means
 release. Route 1 means ordinary and 2 means preserved. Intent 1 means convert and 2 means
 reverse. Command rows have zero release delivery. Release rows have zero route, intent, and
@@ -609,7 +641,7 @@ verified correction, or physical acceptance.
 
 Both fixture window procedures attempt `IS_DEFAULT` for every existing known field during parent
 `WM_DESTROY`, while the children still exist on their owning thread. Partial setup failure uses
-the same teardown. A failed or throwing reset does not prevent later children from being attempted.
+the same teardown. A failed reset does not prevent later children from being attempted.
 The helper returns the first non-success result and does not retry after destruction. This is an
 attempt to remove metadata under the
 [`SetInputScope` lifecycle contract](https://learn.microsoft.com/en-us/windows/win32/api/inputscope/nf-inputscope-setinputscope),
@@ -687,8 +719,8 @@ run does not isolate termination caused by the source-change callback.
 
 ## Maintainer registration and selection
 
-Do not register this draft as a daily input method. The controlled-editor proof has passed;
-general application reliability is not established. Installation, enablement, source selection,
+The full Rust service awaits physical controlled-editor and Notepad acceptance.
+General application reliability remains open. Installation, enablement, source selection,
 and permission changes belong to the maintainer. The default build and controlled tests never
 perform them. The maintainer-launched native source experiment below explicitly selects RU.
 
@@ -698,7 +730,7 @@ An enumeration or description API error reports unavailable, rather than absent.
 enumeration without a match establishes absence. Registry inspection errors also report unavailable.
 
 ```powershell
-$bin = Resolve-Path target/windows-check/Release
+$bin = (Resolve-Path "target/windows-rust-check").Path
 & "$bin/KeyrillRegister.exe" status
 & "$bin/KeyrillRegister.exe" check
 ```
@@ -1170,19 +1202,19 @@ activation continuity, and failed or reentrant registration cleanup. These are c
 observations. Live evidence comes from the registered proof profiles and the separately observed
 physical and automated fixture cases. Controlled schedules do not replace those cases.
 
-| Schedule | Controlled evidence | Live fixture evidence and limits |
+| Schedule | Historical C++ controlled evidence | Historical C++ live fixture evidence and limits |
 |---|---|---|
 | `ghbdtn` plus Space and Escape | Exact whole documents, caret, owned identity, and disposition pass | Physical correction passed; automated correction and Escape reversal passed exact document/caret oracles after the caret fix |
 | Rapid next letter and moved caret | Bounded finish/replan, exact prefix/suffix preservation pass | Physical rapid continuation and automated continuation passed; adversarial caret drift remains controlled evidence |
 | Denied request, failed session result, missing callback, late callback, null composition | Same-service zero-write and pass-through schedules pass | Physical native lock-denial passed with literal text, exact caret, and zero consumption or writes; injected late and null outcomes remain controlled evidence |
 | Range, text, caret, active-membership drift; extra foreign composition | Refusal before write passes | Live owned identity and focus notifications were observed; injected drift and foreign-composition cases remain controlled evidence |
-| Reentry at exercised COM boundaries and exceptions | No new write after invalidation, outcome-derived consumption, and no retry pass | Live focus, source, and teardown callbacks were observed; adversarial reentry and exceptions remain controlled evidence |
+| Reentry at exercised COM boundaries and historical C++ exceptions | No new write after invalidation, outcome-derived consumption, and no retry pass | Live focus, source, and teardown callbacks were observed; adversarial reentry and exceptions remain controlled evidence |
 | Unknown MARK and FINISH, reserved Escape | Stop without replay or repair passes | Unknown-effect hosts remain unadmitted |
 | Focus A to B to A, late old termination | Old authority never revives in doubles | Physical focus preservation passed; automated runs recorded exact termination before focus invalidation and passed the final document/caret oracle; late old callbacks remain controlled evidence |
 | Password, read-only, sensitive scope, disabled compartments, secure activation | Zero text reads and writes pass | Physical password/read-only attempts preserved A and B without additional service handling; excluded contents were not queried; other exclusion paths remain controlled evidence |
 | Native Undo after correction and continuation | Not modeled as a TSF guarantee | Physical and automated Undo cases preserved the corrected word while removing the continuation; no general Undo-grouping guarantee |
 | EN/RU profile and source changes, teardown | Profile-table checks, invalidation, and host-only source-probe schedules pass | Ordinary source UI flow, native EN-to-RU selection from a fresh owned mark, and bounded physical owned-shutdown/empty-close cases passed |
 
-Only x64 MSVC build and controlled-editor evidence exists. ARM64, generic editors,
-ordinary-user registration scope, and general application reliability remain open.
+The table records historical C++ x64 MSVC and desktop evidence. Full Rust acceptance remains
+pending. ARM64, generic editors, ordinary-user registration scope, and general application reliability remain open.
 [ADR 007](adr/007-windows-tsf.md) remains proposed.

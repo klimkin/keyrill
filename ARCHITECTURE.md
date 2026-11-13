@@ -27,8 +27,10 @@ flowchart LR
 | `crates/keyrill-ffi` | C ABI over the core, panic containment, macOS dictionary-file acquisition |
 | `include/keyrill.h` | The ABI contract: layouts, ownership, versioning, every status code |
 | `native/macos` | InputMethodKit server, controller, settings window, compatibility backend, tests |
-| `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, foreign-call exception containment |
-| `native/windows` | Windows SDK fixtures, UIA inspectors, controlled COM schedules, build orchestration |
+| `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, raw COM HRESULT calls and typed reference leases |
+| `native/windows/proof` | Rust proof editor, UIA inspectors, independent raw COM providers and controlled schedules |
+| `native/windows/build-support` | Rust source and artifact identities shared by runtime and proof tools |
+| `tools/xtask` | Rust Windows build, model checker, scenario coverage and sanitizer runner |
 | `assets/model.bin` | Frozen EN/RU model, generated from `model/` by `tools/pack-model.py` |
 | `model/` | Hash-pinned model source, generator, evaluator and evaluation corpora |
 | `tools/inference-probe` | Stdin probe the evaluator drives; not part of any build product |
@@ -145,6 +147,7 @@ No telemetry, remote configuration, automatic update or privileged helper.
 
 Quit stops new operations, finishes only a valid owned mark, detaches native sinks and releases
 handles after callbacks drain. An engine is never freed while a callback can still reach it.
-Rust panics are contained at the ABI and poison the handle; native exceptions are contained on
-the native side; neither unwinds through the other. A caught panic does not recover allocation
-aborts or a partially mutated host.
+Rust panics are contained at the ABI and poison the handle. Windows callbacks also contain Rust
+panics. Windows foreign COM implementations must obey the HRESULT and no-throw contract.
+The macOS adapter contains native exceptions on its side of the ABI. A caught panic does not
+recover allocation aborts or a partially mutated host.
