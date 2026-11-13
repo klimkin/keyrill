@@ -138,9 +138,14 @@ version 3 and the actual `ITfEditSession::DoEditSession` implementation. Complet
 documents, caret, ownership, and disposition supply the oracles. Client IDs and cookies belong
 to the doubles. `native/windows/proof/scenarios.json` maps all 25 former CTest entries and 111
 scenario families to Rust tests or an explicit retirement reason. The runner checks the mapping
-against the tests it actually executes. Normal and instrumented runs passed all 168 controlled
-tests, 30 production runtime tests, 31 test-API runtime tests, 40 proof-library tests, three ABI
+against the tests it actually executes. Normal and instrumented runs passed all 169 controlled
+tests, 31 production runtime tests, 32 test-API runtime tests, 40 proof-library tests, three ABI
 tests, and three actual-DLL smoke checks. All required baseline successors executed.
+
+The first maintainer-run Rust registration exposed unterminated description storage, producing
+extra characters in the persisted profile names. Commit `2e5fafb` restores terminated UTF-16
+storage with the original logical count. Safe owned-buffer and independent counted COM callback
+regressions pass. Fresh-process profile readback after maintainer re-registration remains pending.
 
 The runtime uses raw SDK COM vtables and exact HRESULT checks, with typed leases owning each
 retained host reference. Rust panics are contained at callbacks. Foreign COM implementations
