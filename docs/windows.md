@@ -110,8 +110,14 @@ UIA matched the complete corrected `world ` document and end caret. Escape then 
 `цщкдв ` and ended ownership. The service confirmed RU mode, effective model policy, both
 sources ready, and zero unknown effects.
 
-Physical rapid typing, held commands, and an owned EN-to-RU transition still require renewed
-desktop checks for this Rust build. The historical C++ results below retain their original scope.
+The maintainer also completed a physical RU quick burst using W, O, R, L, D, Space, and X,
+followed immediately by native Ctrl+Z within one focus interval. Before the maintainer returned
+to chat, UIA matched the final `world ` document and end caret. The observer reported ended
+ownership and zero unknown effects. UIA coverage for this physical sequence is its final
+document and caret. The generated-key continuation check above covers the intermediate result.
+
+Held commands and an owned EN-to-RU transition still require renewed desktop checks for this
+Rust build. The historical C++ results below retain their original scope.
 
 ## Build and check without installation
 

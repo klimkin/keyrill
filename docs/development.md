@@ -47,9 +47,10 @@ Fresh automated Rust editor checks passed correction, reversal, continuation, na
 focus preservation, exclusions, native lock denial, and bounded owned shutdown.
 Current Rust Notepad checks passed fixture correction, manual commands, continuation, native
 Undo, Find exclusion, a focus round trip, both model directions, and vocabulary reload.
-Isolated physical boundary correction and reversal passed. The broader physical acceptance
-matrix remains pending. The sanitizer canary detected its heap-use-after-free. The Rust model checker has
-passed byte-for-byte regeneration of the unchanged model assets. Historical C++ desktop results
+Physical boundary correction, reversal, and a rapid-typing and native Undo sequence passed.
+The broader physical acceptance matrix remains pending. The sanitizer canary detected its
+heap-use-after-free. The Rust model checker passed byte-for-byte regeneration of the unchanged
+model assets. Historical C++ desktop results
 are recorded separately in [Windows TSF proof](windows.md).
 
 Fuzzing prints a temporary directory with logs, evolved corpora and crash artifacts; replay a

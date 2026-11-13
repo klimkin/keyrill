@@ -12,9 +12,9 @@ and experimental sanitizer suites. Fresh automated Rust editor checks passed cor
 reversal, continuation, native Undo, focus preservation, exclusions, native lock denial, and
 bounded owned shutdown. Current Rust Notepad 11.2609.11.0 checks passed fixture correction,
 manual commands, continuation, native Undo, Find exclusion, a focus round trip, both model
-directions, and vocabulary reload. Isolated physical boundary correction and reversal also
-passed. The broader physical acceptance matrix remains pending. Historical
-packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
+directions, and vocabulary reload. Physical boundary correction, reversal, and a rapid-typing
+and native Undo sequence also passed. The broader physical acceptance matrix remains pending.
+Historical packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
 Physical command checks covered conversion and held reversal within one focus interval.
