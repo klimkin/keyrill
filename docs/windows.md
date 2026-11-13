@@ -8,10 +8,10 @@ through [the C ABI](../include/keyrill.h). It has no replacement backend,
 hooks, input injection, clipboard transport, or runtime network access. Admission covers the
 proof editor and the tested version-bounded Notepad main document described below.
 
-The desktop acceptance results throughout this document are historical C++ backend evidence.
-They precede the full Rust migration and do not validate the current Rust service, proof editor,
-or inspectors. Full Rust native execution and the complete experimental Rust sanitizer suite have
-passed. Physical controlled-editor and Notepad acceptance remain pending. The Rust model checker has passed byte-for-byte
+The historical desktop acceptance results below describe the C++ backend. The automated Rust
+editor checks have a separate record in the next section. Full Rust native execution and the
+complete experimental Rust sanitizer suite have passed. Physical controlled-editor and Notepad
+acceptance remain pending. The Rust model checker has passed byte-for-byte
 regeneration of the unchanged model, including gzip grammar, micro-frequency data, provenance,
 and notices.
 
@@ -40,6 +40,28 @@ automated real-editor acceptance as described below. Ordinary Notepad acceptance
 the bounded admission section. Further application coverage, settings, and packaging remain later
 work. Unretained final destruction and complete callback drainage are not established
 by the bounded shutdown assertion.
+
+## Automated Rust editor verification
+
+Commit `f16fc87` passed fresh generated-key checks in the Rust RichEdit proof editor with its
+adjacent Rust production DLL. The frozen production identity was
+`07358901ea4ec515bc4f5534e20ebb26b5c629ee3449ad635b5231e10dc5383b`.
+EN mode and the fixture policy were confirmed before input. The independent Rust UIA inspector
+checked complete public A and B documents and their required caret positions.
+
+| Check | Observed result |
+|---|---|
+| Boundary correction | `ghbdtn` followed by Space became `привет ` in one owned composition |
+| Escape reversal | The exact document returned to `ghbdtn ` with its end caret |
+| Continuation and native Undo | Typing `x` produced `привет x`; Ctrl+Z restored `привет ` and ended ownership |
+| A-to-B-to-A focus | Splitting `ghb` and `dtn ` across a focus change left A as `привет ghbdtn ` and B as `x` |
+| Excluded controls | The read-only field stayed empty; the password fixture accepted masked public test input; service edit counters stayed unchanged |
+| Native lock denial | All seven keys passed through as `ghbdtn `; the session result was `0x80040208`, with zero session entries and write attempts |
+| Owned shutdown | A verified owned word passed `shutdown-ready`, then native Close returned exit code 0; the empty-window negative control returned `NoOwnedMark` (16) |
+
+Password contents were not queried. The observed service snapshots contained zero unknown
+effects. These runs used generated keys and clicks. Physical rapid typing, physical command
+checks, the live EN-to-RU transition, and fresh Rust Notepad acceptance remain pending.
 
 ## Build and check without installation
 
