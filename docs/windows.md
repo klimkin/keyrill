@@ -138,7 +138,7 @@ version 3 and the actual `ITfEditSession::DoEditSession` implementation. Complet
 documents, caret, ownership, and disposition supply the oracles. Client IDs and cookies belong
 to the doubles. `native/windows/proof/scenarios.json` maps all 25 former CTest entries and 111
 scenario families to Rust tests or an explicit retirement reason. The runner checks the mapping
-against the tests it actually executes. Normal and instrumented runs passed all 169 controlled
+against the tests it actually executes. Normal and instrumented runs passed all 172 controlled
 tests, 31 production runtime tests, 32 test-API runtime tests, 40 proof-library tests, three ABI
 tests, and three actual-DLL smoke checks. All required baseline successors executed.
 
