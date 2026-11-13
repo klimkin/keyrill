@@ -564,7 +564,7 @@ pub fn run() -> i32 {
 #[unsafe(no_mangle)]
 unsafe extern "system" fn KeyrillTestRegistration(manager: *mut c_void, operation: u32) -> HRESULT {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if operation > 2 {
+        if operation > 3 {
             return windows::Win32::Foundation::E_INVALIDARG;
         }
         // SAFETY: the SDK test caller retains a live ITfInputProcessorProfiles for this call.
@@ -575,7 +575,17 @@ unsafe extern "system" fn KeyrillTestRegistration(manager: *mut c_void, operatio
         match operation {
             0 => preflight(&manager),
             1 => enable_profiles(&manager, true),
-            _ => enable_profiles(&manager, false),
+            2 => enable_profiles(&manager, false),
+            _ => {
+                let dll = wide(OsStr::new("KeyrillTsf.dll"));
+                for profile in &PROFILES {
+                    let call = native::add(&manager, profile, &dll);
+                    if let Err(result) = exact(call.result) {
+                        return result;
+                    }
+                }
+                S_OK
+            }
         }
     }))
     .unwrap_or(E_UNEXPECTED)

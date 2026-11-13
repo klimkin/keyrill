@@ -32,6 +32,7 @@ struct Scenario {
     enabled: Cell<bool>,
     probes: [Cell<u32>; 2],
     writes: Cell<u32>,
+    profile_adds: Cell<u32>,
     failed: Cell<bool>,
     allocations: Cell<u32>,
     frees: Cell<u32>,
@@ -55,6 +56,7 @@ impl Default for Scenario {
             enabled: Cell::new(false),
             probes: [Cell::new(0), Cell::new(0)],
             writes: Cell::new(0),
+            profile_adds: Cell::new(0),
             failed: Cell::new(false),
             allocations: Cell::new(0),
             frees: Cell::new(0),
@@ -313,19 +315,41 @@ unsafe extern "system" fn enabled(
 macro_rules! stub {($name:ident($($arg:ident:$ty:ty),* $(,)?))=>{unsafe extern "system" fn $name($($arg:$ty),*)->HRESULT {$(let _=$arg;)* E_NOTIMPL}};}
 stub!(guid_stub(this: *mut c_void, id: *const GUID));
 stub!(profile_stub(this: *mut c_void, id: *const GUID, lang: u16, profile: *const GUID));
-stub!(
-    add_profile_stub(
-        this: *mut c_void,
-        id: *const GUID,
-        lang: u16,
-        profile: *const GUID,
-        description: PCWSTR,
-        length: u32,
-        icon: PCWSTR,
-        icon_length: u32,
-        index: u32,
-    )
-);
+unsafe extern "system" fn add_profile(
+    this: *mut c_void,
+    id: *const GUID,
+    lang: u16,
+    profile: *const GUID,
+    description: PCWSTR,
+    length: u32,
+    icon: PCWSTR,
+    icon_length: u32,
+    index: u32,
+) -> HRESULT {
+    fence(this, E_UNEXPECTED, |object| {
+        let position = object.state.profile_adds.get() as usize;
+        assert_eq!(unsafe { *id }, SERVICE);
+        assert_eq!(lang, LANGUAGES[position]);
+        assert_eq!(unsafe { *profile }, PROFILES[position]);
+        let expected: Vec<u16> = DESCRIPTIONS[position].encode_utf16().collect();
+        assert_eq!(length as usize, expected.len());
+        // SAFETY: AddLanguageProfile supplies the declared readable counted buffers.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(description.0, length as usize) },
+            expected
+        );
+        let expected_icon: Vec<u16> = "KeyrillTsf.dll".encode_utf16().collect();
+        assert_eq!(icon_length as usize, expected_icon.len());
+        // SAFETY: the counted icon path is retained through this callback.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(icon.0, icon_length as usize) },
+            expected_icon
+        );
+        assert_eq!(index, 0);
+        object.state.profile_adds.set(position as u32 + 1);
+        S_OK
+    })
+}
 stub!(default_stub(this: *mut c_void, lang: u16, id: *const GUID, profile: *const GUID));
 stub!(change_stub(this: *mut c_void, lang: u16));
 stub!(
@@ -410,7 +434,7 @@ static MANAGER: ITfInputProcessorProfiles_Vtbl = ITfInputProcessorProfiles_Vtbl 
     base__: BASE,
     Register: guid_stub,
     Unregister: guid_stub,
-    AddLanguageProfile: add_profile_stub,
+    AddLanguageProfile: add_profile,
     RemoveLanguageProfile: profile_stub,
     EnumInputProcessorInfo: enum_stub,
     GetDefaultLanguageProfile: get_default_stub,
@@ -452,6 +476,26 @@ fn run(api: &Api, scenario: Scenario, operations: &[(u32, HRESULT, u32)], prefli
         state.adds.get() + state.allocations.get()
     );
 }
+#[test]
+fn registrar_add_sends_exact_counted_profile_descriptions() {
+    let api = Api::load();
+    let call: Registration = unsafe { api.export(b"KeyrillTestRegistration\0") };
+    let state = Rc::new(Scenario::default());
+    let manager = unsafe {
+        ITfInputProcessorProfiles::from_raw(Provider::create(Rc::clone(&state), Kind::Manager))
+    };
+    assert_eq!(unsafe { call(manager.as_raw(), 3) }, S_OK);
+    assert_eq!(state.profile_adds.get(), 2);
+    assert_eq!(state.writes.get(), 0);
+    assert!(!state.failed.get());
+    drop(manager);
+    assert_eq!(state.allocations.get(), state.frees.get());
+    assert_eq!(
+        state.releases.get(),
+        state.adds.get() + state.allocations.get()
+    );
+}
+
 #[test]
 fn registrar_presence_preflight_and_acknowledgement_axes() {
     let api = Api::load();

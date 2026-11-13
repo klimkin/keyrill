@@ -164,12 +164,16 @@ pub(crate) fn service(manager: &Lease<ITfInputProcessorProfiles>, install: bool)
     }
 }
 
+fn description_buffer(value: &str) -> Vec<u16> {
+    value.encode_utf16().collect()
+}
+
 pub(crate) fn add(
     manager: &Lease<ITfInputProcessorProfiles>,
     profile: &Profile,
     dll: &[u16],
 ) -> Call {
-    let description: Vec<u16> = profile.description.encode_utf16().collect();
+    let description = description_buffer(profile.description);
     // SAFETY: buffers/GUIDs are live, and lengths fit u32 because CLI paths are capped at 32768 units.
     Call {
         result: unsafe {
@@ -228,5 +232,26 @@ pub(crate) fn category(manager: &Lease<ITfCategoryMgr>, install: bool) -> Call {
                 )
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::description_buffer;
+    use crate::profiles::PROFILES;
+
+    #[test]
+    fn profile_description_storage_has_a_trailing_nul() {
+        for (profile, expected) in PROFILES
+            .iter()
+            .zip(["Keyrill proof EN\0", "Keyrill proof RU\0"])
+        {
+            assert_eq!(
+                description_buffer(profile.description),
+                expected.encode_utf16().collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(description_buffer(""), [0]);
+        assert_eq!(description_buffer("Я🔑"), [0x42f, 0xd83d, 0xdd11, 0]);
     }
 }
