@@ -145,7 +145,8 @@ tests, and three actual-DLL smoke checks. All required baseline successors execu
 The first maintainer-run Rust registration exposed unterminated description storage, producing
 extra characters in the persisted profile names. Commit `2e5fafb` restores terminated UTF-16
 storage with the original logical count. Safe owned-buffer and independent counted COM callback
-regressions pass. Fresh-process profile readback after maintainer re-registration remains pending.
+regressions pass. Maintainer re-registration passed fresh-process EN/RU profile-name and
+enablement readback.
 
 The runtime uses raw SDK COM vtables and exact HRESULT checks, with typed leases owning each
 retained host reference. Rust panics are contained at callbacks. Foreign COM implementations
@@ -155,11 +156,17 @@ their contracts. The private test API is version 3. UIA remains limited to tests
 
 ## Bounded Notepad admission and observation
 
-The runtime admits the tested main document of packaged x64 Notepad **11.2607.14.0**
-through the existing owned-composition executor. Its package family
+The runtime recognizes packaged x64 Notepad **11.2607.14.0** and **11.2609.11.0**
+for the bounded main-document path through the owned-composition executor. Its package family
 `Microsoft.WindowsNotepad_8wekyb3d8bbwe`, package name `Microsoft.WindowsNotepad`, architecture,
 executable basename and exact version are captured at service activation. Other Notepad versions
-retain metadata observation and pass every key. Rust, the C ABI and macOS do not change.
+retain metadata observation and pass every key.
+
+A live pre-change run on 11.2609.11.0 confirmed the expected native hierarchy, writable UIA
+binding, and missing input-scope result `E_FAIL`. The full public word passed through unchanged,
+with zero ACP access or write attempts. The updated exact-version rule has independent
+classifier, native-field, scope, refusal, and expired-callback tests for both versions.
+Current-DLL editing acceptance on 11.2609.11.0 remains pending.
 
 Package identity alone grants no editing authority. Before selection ACP or character access,
 the edit session validates the canonical TSF top context, active view, exact current-thread

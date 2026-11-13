@@ -136,6 +136,9 @@ physical acceptance. The adapter admits proof controls and the tested version-bo
 Notepad main document. Granted edit sessions, explicit contexts, and owned compositions satisfy
 the editing contract. [TSF design](adr/007-windows-tsf.md).
 
+Exact version recognition includes 11.2607.14.0 and 11.2609.11.0. The updated version has matching
+live native-field and unavailable-scope evidence; current-DLL editing acceptance remains pending.
+
 The [`windows-rs`](https://github.com/microsoft/windows-rs) adapter uses `windows` and
 `windows-core` 0.62.2 for generated COM identity and SDK types.
 Typed leases in `foreign.rs` own host COM references. Raw SDK vtables preserve exact HRESULTs.
