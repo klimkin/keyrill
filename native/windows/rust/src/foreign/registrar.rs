@@ -165,7 +165,7 @@ pub(crate) fn service(manager: &Lease<ITfInputProcessorProfiles>, install: bool)
 }
 
 fn description_buffer(value: &str) -> Vec<u16> {
-    value.encode_utf16().collect()
+    value.encode_utf16().chain(Some(0)).collect()
 }
 
 pub(crate) fn add(
@@ -183,7 +183,7 @@ pub(crate) fn add(
                 profile.language,
                 &profile.id,
                 windows_core::PCWSTR(description.as_ptr()),
-                description.len() as u32,
+                (description.len() - 1) as u32,
                 windows_core::PCWSTR(dll.as_ptr()),
                 (dll.len() - 1) as u32,
                 0,
