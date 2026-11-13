@@ -12,7 +12,8 @@ pub(super) const ITFINPUTPROCESSORPROFILEMGR_TABLE: ITfInputProcessorProfileMgr_
         UnregisterProfile: ITfInputProcessorProfileMgr_UnregisterProfile,
         GetActiveProfile: ITfInputProcessorProfileMgr_GetActiveProfile,
     };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_ActivateProfile(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -35,7 +36,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_ActivateProfile(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_DeactivateProfile(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -52,7 +54,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_DeactivateProfile(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_GetProfile(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -71,7 +74,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_GetProfile(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_EnumProfiles(
     this: *mut core::ffi::c_void,
     a1: u16,
@@ -84,7 +88,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_EnumProfiles(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_ReleaseInputProcessor(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -97,7 +102,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_ReleaseInputProcessor(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_RegisterProfile(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -120,7 +126,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_RegisterProfile(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_UnregisterProfile(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -135,7 +142,8 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_UnregisterProfile(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileMgr_GetActiveProfile(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -156,7 +164,8 @@ pub(super) const ITFINPUTPROCESSORPROFILESUBSTITUTELAYOUT_TABLE:
     GetSubstituteKeyboardLayout:
         ITfInputProcessorProfileSubstituteLayout_GetSubstituteKeyboardLayout,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputProcessorProfileSubstituteLayout_GetSubstituteKeyboardLayout(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,

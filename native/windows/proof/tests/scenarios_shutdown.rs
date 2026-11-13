@@ -275,7 +275,6 @@ fn shutdown_probe_capture_finish_and_provider_failures() {
                 .result
                 .set(keyrill_windows_proof::diagnostics::E_PENDING),
             8 => state.result.set(RPC_E_WRONG_THREAD),
-            // The former foreign throw is now an explicit failed HRESULT.
             9 => state.result.set(E_FAIL),
             10 => state.snapshot.borrow_mut()[59..61].fill(0),
             11 => {

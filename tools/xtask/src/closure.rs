@@ -1,5 +1,3 @@
-//! Reject superseded executable sources from the Windows implementation tree.
-
 use std::fs;
 use std::io;
 use std::path::Path;

@@ -7,8 +7,8 @@ Don't write a second inference engine, and don't build a cross-platform editing 
 before two adapters have shown the same real contract ([ADR 001](adr/001-rust-core-native-adapters.md)).
 
 The Windows C++ backend passed controlled-editor and bounded ordinary Notepad acceptance
-before the windows-rs migration. The full Rust runtime and proof tools still require complete
-native-suite execution, physical real-editor acceptance, and Notepad validation. Historical
+before the windows-rs migration. The full Rust runtime and proof tools passed complete native
+and experimental sanitizer suites. Physical real-editor acceptance and Notepad validation remain pending. Historical
 packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-composition
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
@@ -145,7 +145,7 @@ The proof editor, independent raw COM providers, and UIA diagnostics are Rust in
 wire versions retain their contracts. The private test API is version 3.
 The scenario inventory maps all 25 former CTest entries and 111 families to Rust tests
 or explicit retirement reasons. Full native execution and the complete experimental Rust ASan
-suite remain pending. The ASan memory-error canary and byte-for-byte Rust model regeneration
+suite have passed. The ASan memory-error canary and byte-for-byte Rust model regeneration
 have passed. UIA supplies test and diagnostic observations. Unsupported, secure, excluded, and
 uncertain controls pass input. A hook or SendInput backend requires a separate decision.
 

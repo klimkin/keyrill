@@ -1,5 +1,3 @@
-//! Read PE export names independently of a platform SDK or external executable.
-
 use std::collections::BTreeSet;
 use std::io::{self, ErrorKind};
 

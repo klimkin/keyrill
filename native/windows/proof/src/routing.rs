@@ -12,14 +12,14 @@ pub const LABELS: [&str; 7] = [
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The observed result of the test and optional dispatch callbacks.
 pub enum DownRoute {
-    /// Test rejected evidence or outcome.
+    /// The test failed or reported no interest, so no key was dispatched.
     TestRejected {
         /// Exact native test HRESULT.
         result: i32,
         /// Interest reported by the native test callback.
         interest: bool,
     },
-    /// Dispatched evidence or outcome.
+    /// The test succeeded and reported interest, so the key was dispatched.
     Dispatched {
         /// Exact native dispatch HRESULT.
         result: i32,
@@ -89,7 +89,7 @@ impl Snapshot {
             self.first_error = failure;
         }
     }
-    /// Report exhausted publication or lifecycle counters.
+    /// Report whether the publication or a routing counter is saturated.
     pub fn saturated(&self) -> bool {
         self.publication == u32::MAX || self.counts.contains(&u32::MAX)
     }

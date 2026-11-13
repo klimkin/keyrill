@@ -18,7 +18,8 @@ pub(super) const ITFCONTEXT_TABLE: ITfContext_Vtbl = ITfContext_Vtbl {
     GetDocumentMgr: ITfContext_GetDocumentMgr,
     CreateRangeBackup: ITfContext_CreateRangeBackup,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_RequestEditSession(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -54,7 +55,8 @@ unsafe extern "system" fn ITfContext_RequestEditSession(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_InWriteSession(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -67,7 +69,8 @@ unsafe extern "system" fn ITfContext_InWriteSession(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetSelection(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -98,7 +101,8 @@ unsafe extern "system" fn ITfContext_GetSelection(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_SetSelection(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -138,7 +142,8 @@ unsafe extern "system" fn ITfContext_SetSelection(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetStart(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -151,7 +156,8 @@ unsafe extern "system" fn ITfContext_GetStart(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetEnd(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -164,7 +170,8 @@ unsafe extern "system" fn ITfContext_GetEnd(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetActiveView(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -181,7 +188,8 @@ unsafe extern "system" fn ITfContext_GetActiveView(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_EnumViews(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -193,7 +201,8 @@ unsafe extern "system" fn ITfContext_EnumViews(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetStatus(
     this: *mut core::ffi::c_void,
     a1: *mut TS_STATUS,
@@ -209,7 +218,8 @@ unsafe extern "system" fn ITfContext_GetStatus(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetProperty(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -223,7 +233,8 @@ unsafe extern "system" fn ITfContext_GetProperty(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetAppProperty(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -241,7 +252,8 @@ unsafe extern "system" fn ITfContext_GetAppProperty(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_TrackProperties(
     this: *mut core::ffi::c_void,
     a1: *const *const windows_core::GUID,
@@ -257,7 +269,8 @@ unsafe extern "system" fn ITfContext_TrackProperties(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_EnumProperties(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -269,7 +282,8 @@ unsafe extern "system" fn ITfContext_EnumProperties(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_GetDocumentMgr(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -281,7 +295,8 @@ unsafe extern "system" fn ITfContext_GetDocumentMgr(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContext_CreateRangeBackup(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -303,7 +318,8 @@ pub(super) const ITFCONTEXTCOMPOSITION_TABLE: ITfContextComposition_Vtbl =
         FindComposition: ITfContextComposition_FindComposition,
         TakeOwnership: ITfContextComposition_TakeOwnership,
     };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextComposition_StartComposition(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -337,7 +353,8 @@ unsafe extern "system" fn ITfContextComposition_StartComposition(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextComposition_EnumCompositions(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -354,7 +371,8 @@ unsafe extern "system" fn ITfContextComposition_EnumCompositions(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextComposition_FindComposition(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -373,7 +391,8 @@ unsafe extern "system" fn ITfContextComposition_FindComposition(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextComposition_TakeOwnership(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -395,7 +414,8 @@ pub(super) const ITFCONTEXTVIEW_TABLE: ITfContextView_Vtbl = ITfContextView_Vtbl
     GetScreenExt: ITfContextView_GetScreenExt,
     GetWnd: ITfContextView_GetWnd,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextView_GetRangeFromPoint(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -410,7 +430,8 @@ unsafe extern "system" fn ITfContextView_GetRangeFromPoint(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextView_GetTextExt(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -425,7 +446,8 @@ unsafe extern "system" fn ITfContextView_GetTextExt(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextView_GetScreenExt(
     this: *mut core::ffi::c_void,
     a1: *mut windows::Win32::Foundation::RECT,
@@ -437,7 +459,8 @@ unsafe extern "system" fn ITfContextView_GetScreenExt(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfContextView_GetWnd(
     this: *mut core::ffi::c_void,
     a1: *mut windows::Win32::Foundation::HWND,
@@ -457,7 +480,8 @@ pub(super) const ITFPROPERTY_TABLE: ITfProperty_Vtbl = ITfProperty_Vtbl {
     SetValue: ITfProperty_SetValue,
     Clear: ITfProperty_Clear,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfProperty_FindRange(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -472,7 +496,8 @@ unsafe extern "system" fn ITfProperty_FindRange(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfProperty_SetValueStore(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -486,7 +511,8 @@ unsafe extern "system" fn ITfProperty_SetValueStore(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfProperty_SetValue(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -500,7 +526,8 @@ unsafe extern "system" fn ITfProperty_SetValue(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfProperty_Clear(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -520,7 +547,8 @@ pub(super) const ITFREADONLYPROPERTY_TABLE: ITfReadOnlyProperty_Vtbl = ITfReadOn
     GetValue: ITfReadOnlyProperty_GetValue,
     GetContext: ITfReadOnlyProperty_GetContext,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfReadOnlyProperty_GetType(
     this: *mut core::ffi::c_void,
     a1: *mut windows_core::GUID,
@@ -532,7 +560,8 @@ unsafe extern "system" fn ITfReadOnlyProperty_GetType(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfReadOnlyProperty_EnumRanges(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -546,7 +575,8 @@ unsafe extern "system" fn ITfReadOnlyProperty_EnumRanges(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfReadOnlyProperty_GetValue(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -574,7 +604,8 @@ unsafe extern "system" fn ITfReadOnlyProperty_GetValue(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfReadOnlyProperty_GetContext(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -594,7 +625,8 @@ pub(super) const ITFINPUTSCOPE_TABLE: ITfInputScope_Vtbl = ITfInputScope_Vtbl {
     GetSRGS: ITfInputScope_GetSRGS,
     GetXML: ITfInputScope_GetXML,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputScope_GetInputScopes(
     this: *mut core::ffi::c_void,
     a1: *mut *mut InputScope,
@@ -624,7 +656,8 @@ unsafe extern "system" fn ITfInputScope_GetInputScopes(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputScope_GetPhrase(
     this: *mut core::ffi::c_void,
     a1: *mut *mut *mut core::ffi::c_void,
@@ -637,7 +670,8 @@ unsafe extern "system" fn ITfInputScope_GetPhrase(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputScope_GetRegularExpression(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -649,7 +683,8 @@ unsafe extern "system" fn ITfInputScope_GetRegularExpression(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputScope_GetSRGS(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -661,7 +696,8 @@ unsafe extern "system" fn ITfInputScope_GetSRGS(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfInputScope_GetXML(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -679,7 +715,8 @@ pub(super) const ITFCOMPARTMENTMGR_TABLE: ITfCompartmentMgr_Vtbl = ITfCompartmen
     ClearCompartment: ITfCompartmentMgr_ClearCompartment,
     EnumCompartments: ITfCompartmentMgr_EnumCompartments,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompartmentMgr_GetCompartment(
     this: *mut core::ffi::c_void,
     a1: *const windows_core::GUID,
@@ -700,7 +737,8 @@ unsafe extern "system" fn ITfCompartmentMgr_GetCompartment(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompartmentMgr_ClearCompartment(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -713,7 +751,8 @@ unsafe extern "system" fn ITfCompartmentMgr_ClearCompartment(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompartmentMgr_EnumCompartments(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -730,7 +769,8 @@ pub(super) const ITFCOMPARTMENT_TABLE: ITfCompartment_Vtbl = ITfCompartment_Vtbl
     SetValue: ITfCompartment_SetValue,
     GetValue: ITfCompartment_GetValue,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompartment_SetValue(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -743,7 +783,8 @@ unsafe extern "system" fn ITfCompartment_SetValue(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompartment_GetValue(
     this: *mut core::ffi::c_void,
     a1: *mut windows::Win32::System::Variant::VARIANT,

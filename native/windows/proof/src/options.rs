@@ -34,15 +34,15 @@ impl FixtureMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// An explicit host-inspector operation.
 pub enum Command {
-    /// Build evidence or outcome.
+    /// Inspect the target build identity.
     Build,
-    /// Host evidence or outcome.
+    /// Inspect host publication evidence.
     Host,
-    /// Service evidence or outcome.
+    /// Inspect service publication evidence.
     Service,
-    /// Field evidence or outcome.
+    /// Inspect focused field evidence.
     Field,
-    /// Public case evidence or outcome.
+    /// Check the document and caret against the named public case.
     PublicCase(PublicCase),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]

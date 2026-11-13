@@ -790,7 +790,7 @@ fn drain(file: &mut Handle, pending: &mut Option<Box<ReadOperation>>, hooks: Hoo
     let mut count = 0;
     let completion = hooks.completion(file.0, operation, &mut count, true);
     if completion.value == 0 && completion.error == ERROR_IO_INCOMPLETE.0 {
-        crate::foreign::retain_module();
+        crate::foreign::pin_current_module_for_process_lifetime();
         // Completion is uncertain. Kernel references may still target this storage and file.
         std::mem::forget(pending.take());
         std::mem::forget(std::mem::take(file));
@@ -860,7 +860,7 @@ fn read(file: &mut Handle, stop: HANDLE, length: usize, hooks: Hooks) -> Result<
             result
         };
         if result.value == 0 && result.error == ERROR_IO_INCOMPLETE.0 {
-            crate::foreign::retain_module();
+            crate::foreign::pin_current_module_for_process_lifetime();
             drain(file, &mut pending, hooks);
             return Err(Error::Startup);
         }

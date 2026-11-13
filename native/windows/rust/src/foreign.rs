@@ -14,7 +14,6 @@ use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, S_OK};
 use windows::Win32::UI::TextServices::{ITfContext, ITfEditSession};
 use windows_core::{HRESULT, IUnknown, Interface};
 
-/// Read the SDK vtable of an interface retained by the caller.
 unsafe fn vtable<'a, T: Interface>(pointer: *mut c_void) -> &'a T::Vtable {
     // SAFETY: the caller supplies a live T whose first pointer is its SDK vtable.
     unsafe { &**pointer.cast::<*const T::Vtable>() }
@@ -127,8 +126,7 @@ impl Drop for DependencyLease {
     }
 }
 
-/// Keep callback code mapped when a native object or I/O operation cannot retire yet.
-pub(crate) fn retain_module() {
+pub(crate) fn pin_current_module_for_process_lifetime() {
     use windows::Win32::Foundation::HMODULE;
     use windows::Win32::System::LibraryLoader::{
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
@@ -138,7 +136,9 @@ pub(crate) fn retain_module() {
     let _ = unsafe {
         GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-            windows_core::PCWSTR(retain_module as *const () as *const u16),
+            windows_core::PCWSTR(
+                pin_current_module_for_process_lifetime as *const () as *const u16,
+            ),
             &mut module,
         )
     };

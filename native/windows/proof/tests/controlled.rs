@@ -1,16 +1,24 @@
+//! Independent document and native schedule tests against explicit DLL artifacts.
 #![cfg(windows)]
 mod scenarios_admission;
+mod scenarios_advised_sink;
 mod scenarios_boundary;
 mod scenarios_commands;
-mod scenarios_sources;
 mod scenarios_diagnostics;
 mod scenarios_editing;
 mod scenarios_finish;
 mod scenarios_keyboard;
 mod scenarios_lifecycle;
 mod scenarios_metadata;
+mod scenarios_protocol;
+mod scenarios_registration;
+mod scenarios_runtime_status;
 mod scenarios_service_publication;
+mod scenarios_shutdown;
+mod scenarios_sources;
+mod scenarios_workers;
 mod support;
+mod worker_support;
 use support::{client::Client, oracle};
 use windows::Win32::{Foundation::*, UI::TextServices::*};
 use windows_core::Interface;

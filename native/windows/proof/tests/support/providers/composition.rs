@@ -7,7 +7,8 @@ pub(super) const ITFCOMPOSITION_TABLE: ITfComposition_Vtbl = ITfComposition_Vtbl
     ShiftEnd: ITfComposition_ShiftEnd,
     EndComposition: ITfComposition_EndComposition,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfComposition_GetRange(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -20,7 +21,8 @@ unsafe extern "system" fn ITfComposition_GetRange(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfComposition_ShiftStart(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -33,7 +35,8 @@ unsafe extern "system" fn ITfComposition_ShiftStart(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfComposition_ShiftEnd(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -46,7 +49,8 @@ unsafe extern "system" fn ITfComposition_ShiftEnd(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfComposition_EndComposition(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -70,7 +74,8 @@ pub(super) const ITFCOMPOSITIONVIEW_TABLE: ITfCompositionView_Vtbl = ITfComposit
     GetOwnerClsid: ITfCompositionView_GetOwnerClsid,
     GetRange: ITfCompositionView_GetRange,
 };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompositionView_GetOwnerClsid(
     this: *mut core::ffi::c_void,
     a1: *mut windows_core::GUID,
@@ -83,7 +88,8 @@ unsafe extern "system" fn ITfCompositionView_GetOwnerClsid(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn ITfCompositionView_GetRange(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -104,7 +110,8 @@ pub(super) const IENUMITFCOMPOSITIONVIEW_TABLE: IEnumITfCompositionView_Vtbl =
         Reset: IEnumITfCompositionView_Reset,
         Skip: IEnumITfCompositionView_Skip,
     };
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn IEnumITfCompositionView_Clone(
     this: *mut core::ffi::c_void,
     a1: *mut *mut core::ffi::c_void,
@@ -116,7 +123,8 @@ unsafe extern "system" fn IEnumITfCompositionView_Clone(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn IEnumITfCompositionView_Next(
     this: *mut core::ffi::c_void,
     a1: u32,
@@ -152,7 +160,8 @@ unsafe extern "system" fn IEnumITfCompositionView_Next(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn IEnumITfCompositionView_Reset(
     this: *mut core::ffi::c_void,
 ) -> windows_core::HRESULT {
@@ -163,7 +172,8 @@ unsafe extern "system" fn IEnumITfCompositionView_Reset(
         })
     }
 }
-// SAFETY: TSF supplies the declared SDK arguments; all host state is owned by this slot.
+// SAFETY: Controlled callers retain live SDK inputs and writable outputs for this call.
+// The live COM reference keeps this provider and its host state allocated.
 unsafe extern "system" fn IEnumITfCompositionView_Skip(
     this: *mut core::ffi::c_void,
     a1: u32,

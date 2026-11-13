@@ -916,10 +916,19 @@ fn source_reentry_running_close_and_preparation_matrix() {
             if close && boundary != "release" && boundary != "native.release" {
                 assert_eq!(status.0[1], Failure::Closed as u32);
             }
-            // Cancellation before activation makes that completion callback unreachable.
-            f.c.host.actions.borrow_mut().retain(|action| {
-                action.boundary != "profile.activate" && action.boundary != "ActivateProfile"
-            });
+            let pending = std::mem::take(&mut *f.c.host.actions.borrow_mut());
+            let cancelled_activation =
+                close && !matches!(boundary, "profile.activate" | "release" | "native.release");
+            assert_eq!(
+                pending.len(),
+                usize::from(cancelled_activation),
+                "{boundary}/{close}"
+            );
+            for action in &pending {
+                assert_eq!(action.boundary, "profile.activate");
+            }
+            drop(pending);
+            f.c.host.drained();
             oracle::document(&f.c, "", 7);
             oracle::no_effects(&f.c);
         }

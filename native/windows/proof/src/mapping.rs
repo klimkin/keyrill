@@ -401,6 +401,7 @@ mod tests {
         assert_eq!(armed.read().0, Availability::Missing);
         let first = Publisher::attach(&id);
         assert_ne!(first.instance, 0);
+        assert_eq!(armed.read().0, Availability::Missing);
         let collision = Publisher::attach(&id);
         assert_eq!(collision.instance, 0);
         first.publish(&payload(&id, first.instance, 37));

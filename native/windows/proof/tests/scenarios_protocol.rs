@@ -500,6 +500,11 @@ fn command_observation_modifier_refusals() {
 
 #[test]
 fn command_observation_admission_dispatch_and_reentry() {
+    const RELEASE_REENTRY: usize = 4;
+    const OBSERVATION_STAGE: usize = 4;
+    const ADMISSION_REFUSED: u32 = 2;
+    const COUNTS_OFFSET: usize = 9;
+    const HANDLE_ENTERED: usize = 4;
     let page = armed();
     for scenario in 0..6 {
         let c = Rc::new(Client::new());
@@ -524,10 +529,10 @@ fn command_observation_admission_dispatch_and_reentry() {
                 .borrow_mut()
                 .insert("RequestEditSession", E_ACCESSDENIED);
         }
-        if scenario >= 4 {
+        if scenario >= RELEASE_REENTRY {
             let weak = Rc::downgrade(&c);
             c.host.on(
-                if scenario == 4 {
+                if scenario == RELEASE_REENTRY {
                     "native.release"
                 } else {
                     "GetActiveProfile"
@@ -535,7 +540,7 @@ fn command_observation_admission_dispatch_and_reentry() {
                 0,
                 move || {
                     let c = weak.upgrade().unwrap();
-                    if scenario == 4 {
+                    if scenario == RELEASE_REENTRY {
                         let sink = c.service.cast::<ITfKeyEventSink>().unwrap();
                         unsafe {
                             assert_eq!((sink.vtable().OnSetFocus)(sink.as_raw(), BOOL(0)), S_OK);
@@ -570,19 +575,23 @@ fn command_observation_admission_dispatch_and_reentry() {
         let last = recorded[recorded.len() - if scenario == 3 { 2 } else { 1 }];
         match scenario {
             0..=2 => {
-                assert_eq!(last[4], 2);
+                assert_eq!(last[OBSERVATION_STAGE], ADMISSION_REFUSED);
                 assert_eq!(last[8] != 0, scenario != 0);
             }
             3 => {
                 assert_eq!(last[4], 5);
-                assert_eq!(value.service[13], old.counts[4] + 1);
+                assert_eq!(
+                    value.service[COUNTS_OFFSET + HANDLE_ENTERED],
+                    old.counts[HANDLE_ENTERED] + 1
+                );
                 assert_eq!(value.service[54], E_ACCESSDENIED.0 as u32);
             }
-            // Rust drops the queried interface before its final admission check,
-            // so release reentry is rejected at admission rather than dispatch.
-            4 => {
-                assert_eq!(last[4], 2);
-                assert_eq!(value.service[13], old.counts[4]);
+            RELEASE_REENTRY => {
+                assert_eq!(last[OBSERVATION_STAGE], ADMISSION_REFUSED);
+                assert_eq!(
+                    value.service[COUNTS_OFFSET + HANDLE_ENTERED],
+                    old.counts[HANDLE_ENTERED]
+                );
             }
             5 => {
                 assert_eq!(recorded.len(), 4);

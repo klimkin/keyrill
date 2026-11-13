@@ -16,29 +16,29 @@ pub const MODE_STATUS: &str = "Keyrill owned shutdown v1; mode=ProveOwnedShutdow
 pub enum Verdict {
     /// All required proof predicates were observed.
     Verified = 0,
-    /// Not captured evidence or outcome.
+    /// No watched owned mark was captured before shutdown.
     NotCaptured = 10,
     /// The requested native object or publication is absent.
     Missing = 11,
     /// The native operation or publication remains in flight.
     Busy = 12,
-    /// Invalid evidence evidence or outcome.
+    /// The snapshot or lifecycle evidence failed validation.
     InvalidEvidence = 13,
-    /// Provider changed evidence or outcome.
+    /// The active diagnostic provider changed.
     ProviderChanged = 14,
-    /// Activation changed evidence or outcome.
+    /// The active service activation changed.
     ActivationChanged = 15,
-    /// No owned mark evidence or outcome.
+    /// The snapshot did not establish a current owned mark.
     NoOwnedMark = 16,
-    /// History lost evidence or outcome.
+    /// The retained lifecycle history did not cover the interval.
     HistoryLost = 17,
-    /// Unknown effect evidence or outcome.
+    /// The service reported an unknown editing effect.
     UnknownEffect = 18,
-    /// No terminal event evidence or outcome.
+    /// The required terminal event before deactivation was not observed.
     NoTerminalEvent = 19,
-    /// Detached evidence or outcome.
+    /// The lifecycle history reported detachment.
     Detached = 20,
-    /// Deactivation failed evidence or outcome.
+    /// Thread-manager deactivation did not return `S_OK`.
     DeactivationFailed = 21,
 }
 /// Check active service evidence and reject unknown editing effects.

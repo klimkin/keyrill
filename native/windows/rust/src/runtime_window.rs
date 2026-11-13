@@ -144,7 +144,7 @@ impl Window {
                         let _ = KillTimer(Some(window), TIMER);
                         if DestroyWindow(window).is_err() && IsWindow(Some(window)).as_bool() {
                             // A surviving HWND can still dispatch our module's procedure.
-                            crate::foreign::retain_module();
+                            crate::foreign::pin_current_module_for_process_lifetime();
                         }
                     }
                 }

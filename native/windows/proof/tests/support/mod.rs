@@ -1,4 +1,3 @@
-// Each integration case uses a subset of the shared independent provider surface.
 #![allow(dead_code)]
 pub mod client;
 pub mod com_slots;

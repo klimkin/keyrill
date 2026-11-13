@@ -1,5 +1,3 @@
-//! Cargo artifact discovery and explicit child-process results.
-
 use serde_json::Value;
 use std::error::Error;
 use std::io;
@@ -68,6 +66,7 @@ pub(crate) fn artifacts(
         .current_dir(root)
         .args(arguments)
         .args(["--locked", "--offline", "--message-format=json"])
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .envs(environment.iter().copied())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())

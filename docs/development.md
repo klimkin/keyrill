@@ -37,13 +37,13 @@ See [Windows TSF proof](windows.md) for prerequisites and the separate desktop g
 | `sanitize` | Windows x64, MSVC ASan runtime, pinned Rust | Experimental Rust AddressSanitizer with child-local `RUSTC_BOOTSTRAP` and a required detected memory-error canary. Prebuilt std and Windows code remain uninstrumented |
 | `browser-fixture` | Node 18+ | Deterministic JavaScript checks of the browser fixture |
 | `audit` | cargo-deny 0.20.2 | Advisories, sources, licenses and bans for the app and fuzz graphs |
-| `coverage` | cargo-llvm-cov 0.6.21, `llvm-tools-preview` | Rust line and region coverage, 95% floor |
+| `coverage` | cargo-llvm-cov 0.6.21, `llvm-tools-preview` | Portable core and FFI line and region coverage, 95% floor |
 | `evaluate` | Python 3 | Offline model evaluation, see [engine](engine.md#evaluation) |
 | `fuzz` | cargo-fuzz 0.13.2, nightly-2026-10-26 | 10,000 text/parser/state and 200 model-asset cases, seed 126283 |
 | `miri` | Miri and rust-src for nightly-2026-10-26 | FFI pointer and protocol tests |
 
-The full Rust Windows native suite, complete sanitizer suite, and physical acceptance remain
-pending. The sanitizer canary has detected its heap-use-after-free. The Rust model checker has
+The full Rust Windows native suite and complete experimental sanitizer suite have passed.
+Physical acceptance remains pending. The sanitizer canary detected its heap-use-after-free. The Rust model checker has
 passed byte-for-byte regeneration of the unchanged model assets. Historical C++ desktop results
 are recorded separately in [Windows TSF proof](windows.md).
 

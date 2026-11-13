@@ -3,6 +3,11 @@ set -eu
 cd "$(dirname "$0")/.."
 case "${1:-check}" in
   check)
+    case "$(uname -s)" in
+      MINGW* | MSYS* | CYGWIN*)
+        exec cargo xtask windows check
+        ;;
+    esac
     python3 tools/pack-model.py --check
     cargo fmt --all -- --check
     cargo fmt --manifest-path fuzz/Cargo.toml -- --check
@@ -10,12 +15,6 @@ case "${1:-check}" in
     cargo test --locked --workspace
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
     cargo build --locked --workspace --release
-    case "$(uname -s)" in
-      MINGW* | MSYS* | CYGWIN*)
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1 -Mode check
-        exit
-        ;;
-    esac
     clang -std=c11 -Wall -Wextra -Werror -fsyntax-only -x c include/keyrill.h
     # The C smoke test links the staticlib with the system libraries rustc reports for it
     libs=$(cargo rustc --locked --release -p keyrill-ffi --crate-type staticlib -- --print native-static-libs 2>&1 |
@@ -30,7 +29,7 @@ case "${1:-check}" in
     ;;
   sanitize)
     case "$(uname -s)" in
-      MINGW* | MSYS* | CYGWIN*) powershell.exe -NoProfile -ExecutionPolicy Bypass -File native/windows/build.ps1 -Mode sanitize ;;
+      MINGW* | MSYS* | CYGWIN*) exec cargo xtask windows sanitize ;;
       *) native/macos/build.sh sanitize ;;
     esac
     ;;
@@ -42,14 +41,14 @@ case "${1:-check}" in
     ;;
   coverage)
     test "$(cargo llvm-cov --version)" = "cargo-llvm-cov 0.6.21"
-    cargo llvm-cov --locked --workspace --exclude inference-probe --html
+    cargo llvm-cov --locked -p keyrill-core -p keyrill-ffi --html
     # Without an output directory llvm-cov writes the HTML report as one self-contained page;
     # cargo-llvm-cov has no option for that, so its own show command is reused
-    show=$(cargo llvm-cov report -v --text --output-path target/llvm-cov/coverage.txt 2>&1 |
+    show=$(cargo llvm-cov report -p keyrill-core -p keyrill-ffi -v --text --output-path target/llvm-cov/coverage.txt 2>&1 |
       sed -n 's/^ *Running `\(.*llvm-cov show\) -format=text -use-color=0\(.*\)`$/\1 -format=html\2/p')
     test -n "$show"
     eval "$show" >target/llvm-cov/keyrill-coverage.html
-    cargo llvm-cov report --fail-under-lines 95 --fail-under-regions 95 >target/llvm-cov/summary.txt
+    cargo llvm-cov report -p keyrill-core -p keyrill-ffi --fail-under-lines 95 --fail-under-regions 95 >target/llvm-cov/summary.txt
     ;;
   evaluate)
     cargo build --locked --release -p inference-probe

@@ -1,5 +1,3 @@
-//! Require explicit baseline reconciliation and actually executed Rust successors.
-
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -17,11 +15,29 @@ fn validate(ledger: &Value, executed: &BTreeSet<String>) -> Result<()> {
     let families = ledger["families"]
         .as_array()
         .ok_or("baseline family inventory missing")?;
-    if families.is_empty() || executed.is_empty() {
+    if families.len() != 111 || executed.is_empty() {
         return Err("baseline coverage requires inventory and executed Rust tests".into());
     }
+    validate_records(families, executed)?;
+    let suites = ledger["suites"]
+        .as_array()
+        .ok_or("baseline suite inventory missing")?;
+    let coverage = ledger["suiteCoverage"]
+        .as_array()
+        .ok_or("baseline suite successors missing")?;
+    let expected: Option<BTreeSet<_>> = suites.iter().map(Value::as_str).collect();
+    let actual: Option<BTreeSet<_>> = coverage.iter().map(|row| row["id"].as_str()).collect();
+    let expected = expected.ok_or("baseline suite identity invalid")?;
+    let actual = actual.ok_or("baseline suite successor identity invalid")?;
+    if suites.len() != 25 || coverage.len() != 25 || expected.len() != 25 || actual != expected {
+        return Err("baseline suite inventory and successor set differ".into());
+    }
+    validate_records(coverage, executed)
+}
+
+fn validate_records(records: &[Value], executed: &BTreeSet<String>) -> Result<()> {
     let mut seen = BTreeSet::new();
-    for family in families {
+    for family in records {
         let id = family["id"]
             .as_str()
             .ok_or("baseline family identity missing")?;
@@ -71,7 +87,14 @@ mod tests {
     use serde_json::json;
 
     fn ledger() -> Value {
-        json!({"schema": 1, "baselineCommit": "03e58ca542445855943eb6ac74e10a52c4ab5633", "families": [{"id": "original.schedule", "disposition": "ported", "rustTests": ["controlled::complete_document"], "reconciliations": []}]})
+        let record = |id: String| json!({"id": id, "disposition": "ported", "rustTests": ["controlled::complete_document"], "reconciliations": []});
+        json!({
+            "schema": 1,
+            "baselineCommit": "03e58ca542445855943eb6ac74e10a52c4ab5633",
+            "families": (0..111).map(|index| record(format!("original.schedule.{index}"))).collect::<Vec<_>>(),
+            "suites": (0..25).map(|index| format!("original.suite.{index}")).collect::<Vec<_>>(),
+            "suiteCoverage": (0..25).map(|index| record(format!("original.suite.{index}"))).collect::<Vec<_>>(),
+        })
     }
 
     #[test]
@@ -84,7 +107,7 @@ mod tests {
         unclassified["families"][0]["disposition"] = json!("unclassified");
         assert_eq!(
             validate(&unclassified, &executed).unwrap_err().to_string(),
-            "baseline family remains unclassified original.schedule"
+            "baseline family remains unclassified original.schedule.0"
         );
     }
 
@@ -112,7 +135,27 @@ mod tests {
         assert!(validate(&empty, &executed).is_err());
         let mut duplicate = ledger();
         let row = duplicate["families"][0].clone();
-        duplicate["families"].as_array_mut().unwrap().push(row);
-        assert!(validate(&duplicate, &executed).is_err());
+        duplicate["families"][1] = row;
+        assert_eq!(
+            validate(&duplicate, &executed).unwrap_err().to_string(),
+            "duplicate baseline family identity"
+        );
+    }
+
+    #[test]
+    fn main_only_suites_require_the_complete_matching_successor_set() {
+        let executed = BTreeSet::from(["controlled::complete_document".to_owned()]);
+        let mut missing = ledger();
+        missing["suiteCoverage"].as_array_mut().unwrap().pop();
+        assert_eq!(
+            validate(&missing, &executed).unwrap_err().to_string(),
+            "baseline suite inventory and successor set differ"
+        );
+        let mut wrong = ledger();
+        wrong["suiteCoverage"][0]["id"] = json!("unknown.suite");
+        assert!(validate(&wrong, &executed).is_err());
+        let mut unexecuted = ledger();
+        unexecuted["suiteCoverage"][0]["rustTests"] = json!(["not.executed"]);
+        assert!(validate(&unexecuted, &executed).is_err());
     }
 }

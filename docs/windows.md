@@ -10,8 +10,8 @@ proof editor and the tested version-bounded Notepad main document described belo
 
 The desktop acceptance results throughout this document are historical C++ backend evidence.
 They precede the full Rust migration and do not validate the current Rust service, proof editor,
-or inspectors. Full Rust native execution, the complete sanitizer suite, physical controlled-editor
-acceptance, and Notepad acceptance remain pending. The Rust model checker has passed byte-for-byte
+or inspectors. Full Rust native execution and the complete experimental Rust sanitizer suite have
+passed. Physical controlled-editor and Notepad acceptance remain pending. The Rust model checker has passed byte-for-byte
 regeneration of the unchanged model, including gzip grammar, micro-frequency data, provenance,
 and notices.
 
@@ -66,7 +66,7 @@ ABI, worker, diagnostic, and registration-free smoke tests, and checks scenario 
 experimental Rust AddressSanitizer mode using the pinned compiler with child-local
 `RUSTC_BOOTSTRAP=1` and `-Zsanitizer=address`. Before building the instrumented artifacts, the
 runner requires a real heap-use-after-free canary to fail with the expected ASan diagnostic.
-The canary has been detected. The complete instrumented suite remains pending. The prebuilt
+The canary and complete instrumented suite have passed. The prebuilt
 standard library and Windows code remain uninstrumented. Sanitizer checks and physical
 application acceptance are separate gates.
 
@@ -116,7 +116,9 @@ version 3 and the actual `ITfEditSession::DoEditSession` implementation. Complet
 documents, caret, ownership, and disposition supply the oracles. Client IDs and cookies belong
 to the doubles. `native/windows/proof/scenarios.json` maps all 25 former CTest entries and 111
 scenario families to Rust tests or an explicit retirement reason. The runner checks the mapping
-against the tests it actually executes. Execution of the full native suite remains pending.
+against the tests it actually executes. Normal and instrumented runs passed all 168 controlled
+tests, 30 production runtime tests, 31 test-API runtime tests, 40 proof-library tests, three ABI
+tests, and three actual-DLL smoke checks. All required baseline successors executed.
 
 The runtime uses raw SDK COM vtables and exact HRESULT checks, with typed leases owning each
 retained host reference. Rust panics are contained at callbacks. Foreign COM implementations
@@ -1215,6 +1217,6 @@ physical and automated fixture cases. Controlled schedules do not replace those 
 | Native Undo after correction and continuation | Not modeled as a TSF guarantee | Physical and automated Undo cases preserved the corrected word while removing the continuation; no general Undo-grouping guarantee |
 | EN/RU profile and source changes, teardown | Profile-table checks, invalidation, and host-only source-probe schedules pass | Ordinary source UI flow, native EN-to-RU selection from a fresh owned mark, and bounded physical owned-shutdown/empty-close cases passed |
 
-The table records historical C++ x64 MSVC and desktop evidence. Full Rust acceptance remains
+The table records historical C++ x64 MSVC and desktop evidence. Full Rust physical acceptance remains
 pending. ARM64, generic editors, ordinary-user registration scope, and general application reliability remain open.
 [ADR 007](adr/007-windows-tsf.md) remains proposed.

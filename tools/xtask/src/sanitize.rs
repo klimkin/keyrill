@@ -1,5 +1,3 @@
-//! Test-only experimental Rust AddressSanitizer setup and a required memory-error canary.
-
 use std::ffi::OsString;
 use std::fs;
 use std::io;

@@ -67,19 +67,19 @@ pub struct ProbeSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The wire section that failed independent schema validation.
 pub enum DecodeError {
-    /// Identity evidence or outcome.
+    /// The publisher or candidate identity is invalid.
     Identity,
-    /// Metadata evidence or outcome.
+    /// The host-admission metadata is invalid.
     Metadata,
-    /// Service evidence or outcome.
+    /// The service diagnostic section is invalid.
     Service,
-    /// Lifecycle evidence or outcome.
+    /// The lifecycle history section is invalid.
     Lifecycle,
-    /// Runtime evidence or outcome.
+    /// The runtime status section is invalid.
     Runtime,
-    /// Observation evidence or outcome.
+    /// The command-observation section is invalid.
     Observation,
-    /// Reserved evidence or outcome.
+    /// A reserved payload word is nonzero.
     Reserved,
 }
 

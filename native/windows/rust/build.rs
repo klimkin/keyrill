@@ -1,70 +1,42 @@
-//! Build mechanical native-call fences and the shared artifact identity.
+//! Emit the shared Rust artifact identity and COM export directives.
 
+use keyrill_windows_build::{
+    BuildConfig, Instrumentation, Variant, identity, source_inputs, write_rust_identity,
+};
 use std::path::PathBuf;
-use std::process::Command;
-
-fn identity() {
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest"));
-    let root = manifest.ancestors().nth(3).expect("workspace root");
-    let script = root.join("native/windows/build_fingerprint.py");
-    let python = std::env::var_os("PYTHON").unwrap_or_else(|| {
-        if cfg!(windows) {
-            "python".into()
-        } else {
-            "python3".into()
-        }
-    });
-    println!("cargo:rerun-if-env-changed=PYTHON");
-    for directory in ["include", "crates", "native/windows"] {
-        println!("cargo:rerun-if-changed={}", root.join(directory).display());
-    }
-    let listed = Command::new(&python)
-        .arg(&script)
-        .arg("--list")
-        .output()
-        .expect("fingerprint input list");
-    assert!(
-        listed.status.success(),
-        "fingerprint input enumeration failed"
-    );
-    let paths = String::from_utf8(listed.stdout).expect("UTF-8 fingerprint paths");
-    for path in paths.lines() {
-        println!("cargo:rerun-if-changed={}", root.join(path).display());
-    }
-    let feature = if std::env::var_os("CARGO_FEATURE_TEST_API").is_some() {
-        "test-api"
-    } else {
-        "production"
-    };
-    let calculated = Command::new(&python)
-        .arg(&script)
-        .args(["--feature", feature])
-        .output()
-        .expect("artifact fingerprint");
-    assert!(calculated.status.success(), "artifact fingerprint failed");
-    let digest = String::from_utf8(calculated.stdout).expect("ASCII artifact fingerprint");
-    let digest = digest.trim();
-    assert!(
-        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "invalid artifact fingerprint"
-    );
-    let words: Vec<_> = (0..64)
-        .step_by(8)
-        .map(|offset| format!("0x{}", &digest[offset..offset + 8]))
-        .collect();
-    let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
-    std::fs::write(
-        output.join("build_identity.rs"),
-        format!(
-            "pub(crate) const BUILD_DIGEST: [u32; 8] = [{}];\n",
-            words.join(", ")
-        ),
-    )
-    .expect("write artifact fingerprint");
-}
 
 fn main() {
-    identity();
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest"));
+    let root = manifest.ancestors().nth(3).expect("workspace root");
+    for directory in ["include", "crates", "native/windows", "tools/xtask"] {
+        println!("cargo:rerun-if-changed={}", root.join(directory).display());
+    }
+    for path in source_inputs(root).expect("build identity source enumeration") {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    println!("cargo:rerun-if-env-changed=KEYRILL_INSTRUMENTATION");
+    let instrumentation = match std::env::var("KEYRILL_INSTRUMENTATION").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("none") => Instrumentation::None,
+        Ok("address") => Instrumentation::Address,
+        _ => panic!("unknown build instrumentation"),
+    };
+    let target = std::env::var("TARGET").expect("Cargo target");
+    let profile = std::env::var("PROFILE").expect("Cargo profile");
+    let config = BuildConfig {
+        target: &target,
+        profile: &profile,
+        instrumentation,
+    };
+    let variant = if std::env::var_os("CARGO_FEATURE_TEST_API").is_some() {
+        Variant::TestApi
+    } else {
+        Variant::Production
+    };
+    let digest = identity(root, config)
+        .expect("build identity")
+        .variant(variant);
+    let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
+    write_rust_identity(&output.join("build_identity.rs"), digest).expect("write build identity");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllGetClassObject,PRIVATE");
         println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllCanUnloadNow,PRIVATE");

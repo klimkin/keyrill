@@ -63,55 +63,55 @@ pub const FAILURES: [&str; 27] = [
 pub enum Failure {
     /// The fixture closed during the proof.
     Closed = 1,
-    /// Setup unavailable evidence or outcome.
+    /// Required fixture controls or native profile capabilities were unavailable.
     SetupUnavailable,
-    /// Wrong thread evidence or outcome.
+    /// The proof ran outside the fixture window thread.
     WrongThread,
-    /// Provider missing evidence or outcome.
+    /// The diagnostic function provider was unavailable.
     ProviderMissing,
-    /// Provider changed evidence or outcome.
+    /// The diagnostic provider identity changed.
     ProviderChanged,
-    /// Activation changed evidence or outcome.
+    /// The service activation changed during the proof.
     ActivationChanged,
     /// The native operation or publication remains in flight.
     Busy,
-    /// Invalid evidence evidence or outcome.
+    /// A required diagnostic or lifecycle predicate failed.
     InvalidEvidence,
-    /// Saturated evidence or outcome.
+    /// A diagnostic publication or lifecycle counter saturated.
     Saturated,
-    /// Wrong source evidence or outcome.
+    /// The active language or profile was not the expected source.
     WrongSource,
-    /// Target unavailable evidence or outcome.
+    /// The requested target profile could not be found or queried.
     TargetUnavailable,
-    /// Focus changed evidence or outcome.
+    /// The expected fixture field no longer had focus.
     FocusChanged,
-    /// Word changed evidence or outcome.
+    /// The public fixture word no longer matched the expected text.
     WordChanged,
-    /// Ownership lost evidence or outcome.
+    /// The expected owned composition was not retained.
     OwnershipLost,
-    /// History lost evidence or outcome.
+    /// The retained lifecycle history did not cover the interval.
     HistoryLost,
-    /// Unknown effect evidence or outcome.
+    /// The service reported an unknown editing effect.
     UnknownEffect,
-    /// Native language failed evidence or outcome.
+    /// The native language-change operation failed.
     NativeLanguageFailed,
-    /// Language not changed evidence or outcome.
+    /// The native language did not change as requested.
     LanguageNotChanged,
-    /// Native activation failed evidence or outcome.
+    /// The native profile-activation operation failed.
     NativeActivationFailed,
-    /// Target not active evidence or outcome.
+    /// The target profile was not active after activation.
     TargetNotActive,
-    /// Service not ru evidence or outcome.
+    /// The service did not report the Russian profile.
     ServiceNotRu,
-    /// No terminal evidence or outcome.
+    /// No verified terminal event was found for the owned mark.
     NoTerminal,
-    /// Detached evidence or outcome.
+    /// The lifecycle history reported detachment.
     Detached,
-    /// Unresolved termination evidence or outcome.
+    /// The lifecycle history reported an unresolved termination.
     UnresolvedTermination,
-    /// Input interference evidence or outcome.
+    /// Input-admission counters changed during the proof.
     InputInterference,
-    /// Late evidence or outcome.
+    /// The proof exceeded its bounded deadline.
     Late,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

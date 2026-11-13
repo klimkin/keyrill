@@ -1,4 +1,3 @@
-// The controlled runner and isolated child use different subsets of this shared transport.
 #![allow(dead_code)]
 use std::{
     ffi::{OsStr, OsString, c_void},

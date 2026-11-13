@@ -3,39 +3,39 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Compiled public document cases accepted by the inspector.
 pub enum PublicCase {
-    /// Empty evidence or outcome.
+    /// Expected document is empty.
     Empty,
-    /// Probe g evidence or outcome.
+    /// Expected document is `g`.
     ProbeG,
-    /// Fixture en boundary evidence or outcome.
+    /// Expected document is `ghbdtn `, including its trailing space.
     FixtureEnBoundary,
-    /// Fixture en corrected evidence or outcome.
+    /// Expected document is `привет `, including its trailing space.
     FixtureEnCorrected,
-    /// Fixture en word evidence or outcome.
+    /// Expected document is `ghbdtn`.
     FixtureEnWord,
-    /// Fixture ru word evidence or outcome.
+    /// Expected document is `привет`.
     FixtureRuWord,
-    /// Fixture continuation evidence or outcome.
+    /// Expected document is `привет x`.
     FixtureContinuation,
-    /// Fixture two words evidence or outcome.
+    /// Expected document is `привет привет `, including its trailing space.
     FixtureTwoWords,
-    /// Manual provisional evidence or outcome.
+    /// Expected document is `хорошо`.
     ManualProvisional,
-    /// Manual provisional literal evidence or outcome.
+    /// Expected document is `[jhjij`.
     ManualProvisionalLiteral,
-    /// Manual pc evidence or outcome.
+    /// Expected document is `ёлка`.
     ManualPc,
-    /// Manual pc literal evidence or outcome.
+    /// Expected document is `` `krf ``, including its trailing space.
     ManualPcLiteral,
-    /// Model en evidence or outcome.
+    /// Expected document is `список `, including its trailing space.
     ModelEn,
-    /// Model en literal evidence or outcome.
+    /// Expected document is `cgbcjr `, including its trailing space.
     ModelEnLiteral,
-    /// Model ru evidence or outcome.
+    /// Expected document is `world `, including its trailing space.
     ModelRu,
-    /// Model ru literal evidence or outcome.
+    /// Expected document is `цщкдв `, including its trailing space.
     ModelRuLiteral,
-    /// Prefix suffix evidence or outcome.
+    /// Expected document is `left привет right`.
     PrefixSuffix,
 }
 impl PublicCase {
@@ -132,21 +132,21 @@ pub enum Refusal {
     /// No refusal or failure has been observed.
     None,
     #[default]
-    /// Target evidence or outcome.
+    /// The retained target process is no longer current.
     Target,
-    /// Native focus evidence or outcome.
+    /// Native foreground or focused-window evidence could not be captured.
     NativeFocus,
-    /// Native facts evidence or outcome.
+    /// Required native window facts or ancestor evidence are incomplete.
     NativeFacts,
-    /// Native excluded evidence or outcome.
+    /// A native window is disabled or has an excluded style.
     NativeExcluded,
     /// Captured lifetime, native focus, or provider facts changed.
     Stale,
-    /// Provider evidence or outcome.
+    /// A required UI Automation operation or provider was unavailable.
     Provider,
-    /// Binding evidence or outcome.
+    /// Provider identity did not match the captured native focus.
     Binding,
-    /// Control type evidence or outcome.
+    /// The provider did not report the required edit control type.
     ControlType,
     /// The control is password-protected.
     Password,
@@ -156,13 +156,13 @@ pub enum Refusal {
     ReadOnly,
     /// The document exposes a mixed attribute value.
     Mixed,
-    /// Writability evidence or outcome.
+    /// Provider evidence did not establish writable content.
     Writability,
-    /// Text unavailable evidence or outcome.
+    /// Document text was unavailable, unsuccessful, or exceeded its bound.
     TextUnavailable,
-    /// Text mismatch evidence or outcome.
+    /// The document text did not match the selected public case.
     TextMismatch,
-    /// Selection evidence or outcome.
+    /// The required end-of-document caret could not be established.
     Selection,
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -413,9 +413,6 @@ pub fn eligible(value: &Metadata) -> Refusal {
 /// Boundary used by the independent whole-document and caret checker.
 pub trait Provider {
     /// Capture provider metadata without reading document characters.
-    ///
-    /// # Errors
-    /// Returns the first failed native operation or evidence predicate.
     fn metadata(&mut self) -> Metadata;
     /// Read at most the explicit public-case UTF-16 bound.
     ///

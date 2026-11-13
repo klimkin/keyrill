@@ -1,5 +1,3 @@
-//! Windowless child-process checks of the adjacent production COM DLL.
-
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use windows::Win32::{

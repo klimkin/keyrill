@@ -165,19 +165,19 @@ pub enum ThreadState {
     Exited,
     /// The requested native object or publication is absent.
     Missing,
-    /// Open failed evidence or outcome.
+    /// Opening the thread failed.
     OpenFailed,
-    /// Owner failed evidence or outcome.
+    /// Querying the thread owner failed.
     OwnerFailed,
-    /// Wrong owner evidence or outcome.
+    /// The thread owner did not match the target process.
     WrongOwner,
-    /// Wait failed evidence or outcome.
+    /// Waiting on the thread returned an unexpected result.
     WaitFailed,
-    /// Process stale evidence or outcome.
+    /// The retained process has exited.
     ProcessStale,
-    /// Process failed evidence or outcome.
+    /// Querying or waiting on the retained process failed.
     ProcessFailed,
-    /// Wrong process evidence or outcome.
+    /// The retained process ID did not match the target.
     WrongProcess,
 }
 /// Thread capture facts and its retained native handle.

@@ -891,8 +891,6 @@ fn command_retention_reentrant_cancellation_matrix() {
 
 #[test]
 fn command_release_balanced_reference_reentry_matrix() {
-    // IUnknown::Release cannot report HRESULT failure. The foreign-throw assertions
-    // are retired; both accounting boundaries instead exercise lifecycle invalidation.
     for boundary in ["Release.before", "Release.after"] {
         let baseline = Rc::new(Client::new());
         let mut keyboard = Keyboard::new();
