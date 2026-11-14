@@ -648,6 +648,35 @@ sessions still needs deployment validation. The store API is ready for settings 
 publication integration. The activation environment described below remains the current runtime
 configuration entry point.
 
+## Public Terminal child
+
+`KeyrillTerminalProbe.exe` compares a bounded public input line with fixed UTF-8 bytes,
+including its final CRLF. It prints the scenario, byte count, and comparison result. Observed
+input remains in memory. The ordinary console modes set and verify the input code page and
+line/echo flags, then restore and verify the original settings before reporting completion.
+
+In a maintainer-launched Windows Terminal, run one selected public case.
+
+```powershell
+& "$bin\KeyrillTerminalProbe.exe" console converted-en
+```
+
+With the input source selected by the maintainer, physically type `ghbdtn`, one Space, and
+Enter. `converted-en` expects `привет ` followed by CRLF. `converted-ru` expects `world `.
+`original-en` and `original-ru` expect `ghbdtn ` and `цщкдв ` respectively, for reversal or
+literal-input checks. `continuation` expects `привет x` followed by CRLF.
+
+For the public no-echo exclusion case, use `no-echo original-en` or `no-echo original-ru` and
+type only that public original line. The native observer must independently establish zero
+character reads, composition starts, and character writes. The child's mode observation cannot
+grant editing authority to the input method.
+
+`verify-pipe` exercises the byte comparator with explicitly supplied synthetic standard input.
+Automated positive and negative pipe checks cover all five expected lines, extra characters,
+wrong conversion, and wrong line endings. These checks leave Terminal application acceptance
+pending. Actual Terminal source activation, composition, byte ordering, concurrent output,
+shortcuts, cancellation, and no-echo isolation still require the dedicated physical run.
+
 ## Shared model and personal vocabulary
 
 Windows captures a complete configuration at activation. `KEYRILL_WINDOWS_POLICY` accepts

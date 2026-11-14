@@ -34,4 +34,6 @@ pub mod shutdown;
 #[cfg(windows)]
 pub mod source;
 #[cfg(windows)]
+pub mod terminal_probe;
+#[cfg(windows)]
 pub mod uia;

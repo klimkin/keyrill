@@ -224,6 +224,7 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
         "KeyrillDllSmoke",
         "KeyrillWorkerSmoke",
         "KeyrillDiagnosticDecoder",
+        "KeyrillTerminalProbe",
     ] {
         copy(
             &cargo::executable(&proof, name, false)?,
