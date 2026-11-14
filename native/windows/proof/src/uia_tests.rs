@@ -6,6 +6,13 @@ use windows::core::{PCWSTR, w};
 
 #[test]
 fn hidden_owned_rich_edit_has_independent_uia_text_and_utf16_selection() {
+    crate::uia_test_process::run(
+        "uia::public_provider_tests::hidden_owned_rich_edit_has_independent_uia_text_and_utf16_selection",
+        hidden_owned_rich_edit,
+    );
+}
+
+fn hidden_owned_rich_edit() {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let thread = std::thread::spawn(move || {
         let _apartment = crate::editor::Apartment::initialize().unwrap();
@@ -91,7 +98,7 @@ fn hidden_owned_rich_edit_has_independent_uia_text_and_utf16_selection() {
         thread: Some(thread),
         tid,
     };
-    let _apartment = crate::editor::Apartment::initialize().unwrap();
+    let _apartment = crate::uia_test_process::MtaApartment::initialize();
     let automation: IUIAutomation =
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.unwrap();
     let element: IUIAutomationElement = interface!(

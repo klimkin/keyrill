@@ -612,8 +612,67 @@ pub fn run_editor(mode: FixtureMode) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
+
+    fn check_fixture_from_mta(window: HWND) {
+        let window = window.0 as usize;
+        let client = std::thread::spawn(move || {
+            let _apartment = crate::uia_test_process::MtaApartment::initialize();
+            let window = HWND(window as *mut std::ffi::c_void);
+            assert!(crate::proof_inspect::check_owned_fixture(window, "привет "));
+            assert!(!crate::proof_inspect::check_owned_fixture(
+                window, "ghbdtn "
+            ));
+        });
+        let handle = HANDLE(client.as_raw_handle());
+        let mut quit = None;
+        loop {
+            // SAFETY: The retained JoinHandle owns the wait handle until the client is joined.
+            let wait = unsafe {
+                MsgWaitForMultipleObjectsEx(
+                    Some(&[handle]),
+                    windows::Win32::System::Threading::INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            };
+            if wait == WAIT_OBJECT_0 {
+                break;
+            }
+            if wait.0 != WAIT_OBJECT_0.0 + 1 {
+                eprintln!("UIA owner message wait failed: {}", wait.0);
+                std::process::abort();
+            }
+            let mut message = MSG::default();
+            // SAFETY: This STA owns the queue and message storage throughout each call.
+            while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                if message.message == WM_QUIT {
+                    quit = Some(message.wParam.0 as i32);
+                } else {
+                    // SAFETY: The creating STA dispatches its queue while the fixture is alive.
+                    unsafe {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+            }
+        }
+        if let Some(code) = quit {
+            // SAFETY: The owner STA posts only to its own still-live thread queue.
+            unsafe { PostQuitMessage(code) };
+        }
+        client.join().unwrap();
+    }
+
     #[test]
     fn actual_rich_edit_fixture_preserves_ids_exclusion_styles_and_tsf_setup() {
+        crate::uia_test_process::run(
+            "editor::tests::actual_rich_edit_fixture_preserves_ids_exclusion_styles_and_tsf_setup",
+            actual_rich_edit_fixture,
+        );
+    }
+
+    fn actual_rich_edit_fixture() {
         let _apartment = Apartment::initialize().unwrap();
         let manager: ITfThreadMgr =
             unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }.unwrap();
@@ -641,14 +700,7 @@ mod tests {
                 Some(LPARAM(7)),
             );
         }
-        assert!(crate::proof_inspect::check_owned_fixture(
-            fixture.window,
-            "привет "
-        ));
-        assert!(!crate::proof_inspect::check_owned_fixture(
-            fixture.window,
-            "ghbdtn "
-        ));
+        check_fixture_from_mta(fixture.window);
         assert_eq!(reset_scopes(fixture.window, fixture.context.scope), S_OK);
         drop(fixture);
         assert_eq!(activated.deactivate(), S_OK);

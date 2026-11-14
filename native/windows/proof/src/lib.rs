@@ -38,3 +38,6 @@ pub mod source;
 pub mod terminal_probe;
 #[cfg(windows)]
 pub mod uia;
+
+#[cfg(all(windows, test))]
+mod uia_test_process;
