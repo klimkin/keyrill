@@ -1,8 +1,10 @@
 //! Explicit-target UIA evidence. Character reads follow native and provider metadata.
 use crate::field::{self, Metadata, NativeFocus, Provider, ReadOnly, Refusal, WindowFacts};
 use crate::native::{Target, ThreadCheck, ThreadState, capture_thread, started, window_long};
+use crate::public_fixture::Fixture;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
+use windows::Win32::System::Ole::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::System::Variant::*;
 use windows::Win32::UI::Accessibility::*;
@@ -97,6 +99,8 @@ pub struct NativeProvider<'a> {
     element: Option<IUIAutomationElement>,
     text: Option<IUIAutomationTextPattern>,
     document: Option<IUIAutomationTextRange>,
+    fixture: Option<Fixture>,
+    runtime_id: Option<Vec<i32>>,
 }
 impl<'a> NativeProvider<'a> {
     /// Acquire the retained native identities required by this observer.
@@ -165,9 +169,105 @@ impl<'a> NativeProvider<'a> {
             element: None,
             text: None,
             document: None,
+            fixture: None,
+            runtime_id: None,
         };
         result.guard()?;
         Ok(result)
+    }
+    /// Bind subsequent reads to one explicitly selected public fixture control.
+    pub fn for_fixture(mut self, fixture: Fixture) -> Self {
+        self.fixture = Some(fixture);
+        self
+    }
+    fn read_ready(&mut self) -> Result<(), Refusal> {
+        if self.target.identity.kind == 3 && self.fixture.is_none() {
+            return Err(Refusal::Binding);
+        }
+        let metadata = self.metadata_inner()?;
+        let refusal = if self.fixture.is_some() {
+            field::eligible_public(&metadata)
+        } else {
+            field::eligible(&metadata)
+        };
+        if refusal != Refusal::None {
+            return Err(refusal);
+        }
+        self.focused_guard()
+    }
+    fn focused_guard(&self) -> Result<(), Refusal> {
+        self.guard()?;
+        if let Some(element) = &self.element {
+            let focused: IUIAutomationElement =
+                self.call(|| interface!(self.automation, GetFocusedElement))?;
+            let same: BOOL = self.call(|| {
+                value!(
+                    self.automation,
+                    CompareElements,
+                    focused.as_raw(),
+                    element.as_raw()
+                )
+            })?;
+            if same != BOOL(1) {
+                return Err(Refusal::Stale);
+            }
+            if let Some(expected) = &self.runtime_id
+                && self.call(|| runtime_id(&focused))? != *expected
+            {
+                return Err(Refusal::Stale);
+            }
+        }
+        self.guard()
+    }
+    fn public_binding(
+        &self,
+        focused: &IUIAutomationElement,
+        fixture: Fixture,
+    ) -> Result<Vec<i32>, Refusal> {
+        let name = self.call(|| element_name(focused))?;
+        let name = String::from_utf16(&name).map_err(|_| Refusal::Binding)?;
+        if !fixture.control_name_matches(&name) {
+            return Err(Refusal::Binding);
+        }
+        let id = self.call(|| runtime_id(focused))?;
+        let walker: IUIAutomationTreeWalker =
+            self.call(|| interface!(self.automation, RawViewWalker))?;
+        let mut element = focused.clone();
+        let mut public_document = false;
+        let mut native_binding = false;
+        for _ in 0..32 {
+            let pid: i32 = self.call(|| value!(element, CurrentProcessId))?;
+            if pid != self.target.identity.process as i32 {
+                break;
+            }
+            let kind: UIA_CONTROLTYPE_ID = self.call(|| value!(element, CurrentControlType))?;
+            let name = self.call(|| element_name(&element))?;
+            let name = String::from_utf16(&name).map_err(|_| Refusal::Binding)?;
+            public_document |=
+                kind == UIA_DocumentControlTypeId && fixture.document_name_matches(&name);
+            let window: HWND = self.call(|| value!(element, CurrentNativeWindowHandle))?;
+            if !window.is_invalid()
+                && [self.native.focused.handle, self.native.root.handle]
+                    .contains(&(window.0 as usize))
+            {
+                let from_handle: IUIAutomationElement =
+                    self.call(|| interface!(self.automation, ElementFromHandle, window))?;
+                let same: BOOL = self.call(|| {
+                    value!(
+                        self.automation,
+                        CompareElements,
+                        element.as_raw(),
+                        from_handle.as_raw()
+                    )
+                })?;
+                native_binding |= same == BOOL(1);
+            }
+            if public_document && native_binding {
+                return Ok(id);
+            }
+            element = self.call(|| interface!(walker, GetParentElement, element.as_raw()))?;
+        }
+        Err(Refusal::Binding)
     }
     fn guard(&self) -> Result<(), Refusal> {
         let now = sample(
@@ -232,29 +332,41 @@ impl<'a> NativeProvider<'a> {
         result.provider_pid = self.call(|| value!(focused, CurrentProcessId))?;
         let window: HWND = self.call(|| value!(focused, CurrentNativeWindowHandle))?;
         result.provider_window = window.0 as usize;
-        if result.provider_pid != self.target.identity.process as i32
-            || result.provider_window == 0
-            || result.provider_window != self.native.focused.handle
-        {
+        if result.provider_pid != self.target.identity.process as i32 {
             return Err(Refusal::Binding);
         }
-        let from_handle: IUIAutomationElement =
-            self.call(|| interface!(self.automation, ElementFromHandle, window))?;
-        let same: BOOL = self.call(|| {
-            value!(
-                self.automation,
-                CompareElements,
-                focused.as_raw(),
-                from_handle.as_raw()
-            )
-        })?;
-        if !field::bound(
-            &self.native,
-            result.provider_pid,
-            result.provider_window,
-            same.0,
-        ) {
-            return Err(Refusal::Binding);
+        if let Some(fixture) = self.fixture {
+            let id = self.public_binding(&focused, fixture)?;
+            if self
+                .runtime_id
+                .as_ref()
+                .is_some_and(|previous| *previous != id)
+            {
+                return Err(Refusal::Stale);
+            }
+            self.runtime_id = Some(id);
+        } else {
+            if result.provider_window == 0 || result.provider_window != self.native.focused.handle {
+                return Err(Refusal::Binding);
+            }
+            let from_handle: IUIAutomationElement =
+                self.call(|| interface!(self.automation, ElementFromHandle, window))?;
+            let same: BOOL = self.call(|| {
+                value!(
+                    self.automation,
+                    CompareElements,
+                    focused.as_raw(),
+                    from_handle.as_raw()
+                )
+            })?;
+            if !field::bound(
+                &self.native,
+                result.provider_pid,
+                result.provider_window,
+                same.0,
+            ) {
+                return Err(Refusal::Binding);
+            }
         }
         if let Some(element) = &self.element {
             let same: BOOL = self.call(|| {
@@ -343,14 +455,23 @@ impl Provider for NativeProvider<'_> {
         }
     }
     fn document(&mut self, bound: usize) -> Result<Vec<u16>, Refusal> {
+        if self.target.identity.kind == 3 && self.fixture.is_none() {
+            return Err(Refusal::Binding);
+        }
+        if bound == 0 || bound > 4096 {
+            return Err(Refusal::TextUnavailable);
+        }
+        self.read_ready()?;
         let document = self.document.as_ref().ok_or(Refusal::TextUnavailable)?;
-        self.call(|| {
+        let result = self.call(|| {
             let mut raw = std::ptr::null_mut();
             let result =
                 unsafe { (document.vtable().GetText)(document.as_raw(), bound as i32, &mut raw) };
             let text = unsafe { BSTR::from_raw(raw.cast()) };
             field::copy_document_text(result.0, (!raw.is_null()).then_some(&text), bound)
-        })
+        });
+        self.focused_guard()?;
+        result
     }
     fn end_caret(&mut self) -> Result<(), Refusal> {
         let text = self.text.as_ref().ok_or(Refusal::TextUnavailable)?;
@@ -393,6 +514,114 @@ impl Provider for NativeProvider<'_> {
                 Refusal::Selection
             }
         })
+    }
+    fn public_selection(
+        &mut self,
+        before: &[u16],
+        selected: &[u16],
+        after: &[u16],
+    ) -> Result<(), Refusal> {
+        if before
+            .len()
+            .saturating_add(selected.len())
+            .saturating_add(after.len())
+            > 4096
+        {
+            return Err(Refusal::TextUnavailable);
+        }
+        self.read_ready()?;
+        let text = self.text.clone().ok_or(Refusal::TextUnavailable)?;
+        let document = self.document.clone().ok_or(Refusal::TextUnavailable)?;
+        let selections: IUIAutomationTextRangeArray =
+            self.call(|| interface!(text, GetSelection))?;
+        if self.call(|| value!(selections, Length))? != 1 {
+            return Err(Refusal::Selection);
+        }
+        let selection: IUIAutomationTextRange =
+            self.call(|| interface!(selections, GetElement, 0))?;
+        let collapsed: i32 = self.call(|| {
+            value!(
+                selection,
+                CompareEndpoints,
+                TextPatternRangeEndpoint_Start,
+                selection.as_raw(),
+                TextPatternRangeEndpoint_End
+            )
+        })?;
+        if selected.is_empty() && collapsed != 0 {
+            return Err(Refusal::Selection);
+        }
+        let prefix: IUIAutomationTextRange = self.call(|| interface!(document, Clone))?;
+        let suffix: IUIAutomationTextRange = self.call(|| interface!(document, Clone))?;
+        for (range, endpoint, target_endpoint) in [
+            (
+                &prefix,
+                TextPatternRangeEndpoint_End,
+                TextPatternRangeEndpoint_Start,
+            ),
+            (
+                &suffix,
+                TextPatternRangeEndpoint_Start,
+                TextPatternRangeEndpoint_End,
+            ),
+        ] {
+            self.call(|| {
+                let moved = unsafe {
+                    (range.vtable().MoveEndpointByRange)(
+                        range.as_raw(),
+                        endpoint,
+                        selection.as_raw(),
+                        target_endpoint,
+                    )
+                };
+                if moved == S_OK {
+                    Ok(())
+                } else {
+                    Err(Refusal::Selection)
+                }
+            })?;
+        }
+        for (range, expected) in [(&prefix, before), (&selection, selected), (&suffix, after)] {
+            self.read_ready()?;
+            self.call(|| {
+                let mut raw = std::ptr::null_mut();
+                let status = unsafe {
+                    (range.vtable().GetText)(range.as_raw(), (expected.len() + 1) as i32, &mut raw)
+                };
+                let text = unsafe { BSTR::from_raw(raw.cast()) };
+                if field::copy_document_text(
+                    status.0,
+                    (!raw.is_null()).then_some(&text),
+                    expected.len() + 1,
+                )? == expected
+                {
+                    Ok(())
+                } else {
+                    Err(Refusal::Selection)
+                }
+            })?;
+            self.focused_guard()?;
+        }
+        let current: IUIAutomationTextRangeArray = self.call(|| interface!(text, GetSelection))?;
+        if self.call(|| value!(current, Length))? != 1 {
+            return Err(Refusal::Selection);
+        }
+        let current: IUIAutomationTextRange = self.call(|| interface!(current, GetElement, 0))?;
+        for endpoint in [TextPatternRangeEndpoint_Start, TextPatternRangeEndpoint_End] {
+            let same: i32 = self.call(|| {
+                value!(
+                    current,
+                    CompareEndpoints,
+                    endpoint,
+                    selection.as_raw(),
+                    endpoint
+                )
+            })?;
+            if same != 0 {
+                return Err(Refusal::Selection);
+            }
+        }
+        self.focused_guard()
     }
 }
 fn sample(
@@ -485,3 +714,49 @@ fn sample(
         parents_truncated: !parent.is_invalid(),
     })
 }
+
+fn runtime_id(element: &IUIAutomationElement) -> Result<Vec<i32>, Refusal> {
+    let array: *mut SAFEARRAY = value!(element, GetRuntimeId)?;
+    if array.is_null() {
+        return Err(Refusal::Binding);
+    }
+    struct OwnedArray(*mut SAFEARRAY);
+    impl Drop for OwnedArray {
+        fn drop(&mut self) {
+            let _ = unsafe { SafeArrayDestroy(self.0) };
+        }
+    }
+    let array = OwnedArray(array);
+    if unsafe { SafeArrayGetDim(array.0) } != 1
+        || unsafe { SafeArrayGetVartype(array.0) }.ok() != Some(VT_I4)
+    {
+        return Err(Refusal::Binding);
+    }
+    let start = unsafe { SafeArrayGetLBound(array.0, 1) }.map_err(|_| Refusal::Binding)?;
+    let end = unsafe { SafeArrayGetUBound(array.0, 1) }.map_err(|_| Refusal::Binding)?;
+    if end < start || i64::from(end) - i64::from(start) >= 32 {
+        return Err(Refusal::Binding);
+    }
+    let mut values = Vec::new();
+    for index in start..=end {
+        let mut value = 0i32;
+        unsafe { SafeArrayGetElement(array.0, &index, std::ptr::from_mut(&mut value).cast()) }
+            .map_err(|_| Refusal::Binding)?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn element_name(element: &IUIAutomationElement) -> Result<BSTR, Refusal> {
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe { (element.vtable().CurrentName)(element.as_raw(), &mut raw) };
+    let name = unsafe { BSTR::from_raw(raw.cast()) };
+    if status != S_OK || raw.is_null() || name.len() > 512 {
+        return Err(Refusal::Binding);
+    }
+    Ok(name)
+}
+
+#[cfg(test)]
+#[path = "uia_tests.rs"]
+mod public_provider_tests;

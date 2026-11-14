@@ -246,7 +246,7 @@ fn print_field(value: &field::Metadata) {
 pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode {
     let Some(options) = options::parse(arguments) else {
         eprintln!(
-            "Usage: KeyrillHostInspect build | host|field PID | public-case PID CASE | service PID [--arm-seconds 1..3600] [--expect-server-build SHA256]"
+            "Usage: KeyrillHostInspect build | host|field PID | public-case PID CASE | public-fixture PID CONTROL CASE | service PID [--arm-seconds 1..3600] [--expect-server-build SHA256]"
         );
         return ExitCode::from(2);
     };
@@ -265,7 +265,10 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
     };
     let threads = threads(options.pid).unwrap_or_default();
     let id = target.identity;
-    if !matches!(options.command, Command::PublicCase(_)) {
+    if !matches!(
+        options.command,
+        Command::PublicCase(_) | Command::PublicFixture(_, _)
+    ) {
         println!(
             "pid={} architecture={} started={:016x} kind={} version={}.{}.{}.{} threads={}",
             id.process,
@@ -302,7 +305,7 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
                 ExitCode::SUCCESS
             };
         }
-        Command::Field | Command::PublicCase(_) => {
+        Command::Field | Command::PublicCase(_) | Command::PublicFixture(_, _) => {
             let Ok(_apartment) = crate::editor::Apartment::initialize() else {
                 println!("field provider initialization unavailable before text read");
                 return ExitCode::FAILURE;
@@ -325,6 +328,17 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
                 }
             };
             let success = match options.command {
+                Command::PublicFixture(fixture, case) => {
+                    provider = provider.for_fixture(fixture);
+                    let result = crate::public_fixture::check(&mut provider, fixture, case);
+                    println!(
+                        "public-fixture fixture={fixture:?} case={} matched={} refusal={:?}",
+                        case.name(),
+                        u32::from(result.is_ok()),
+                        result.err().unwrap_or(field::Refusal::None)
+                    );
+                    result.is_ok()
+                }
                 Command::PublicCase(case) => {
                     let result = field::check_public_case(&mut provider, case);
                     println!(

@@ -198,7 +198,7 @@ fn current_process_identity_preserves_process_creation_time() {
 }
 
 #[test]
-fn payload_offsets_and_reserved_padding_match_protocol_three() {
+fn payload_offsets_and_reserved_padding_match_protocol_four() {
     let mut identity = identity();
     identity.kind = Kind::PackagedNotepad as u32;
     identity.version = [11, 2510, 6, 0];
@@ -211,7 +211,16 @@ fn payload_offsets_and_reserved_padding_match_protocol_three() {
         &[7, 2, 2, 1, 0x9abc_def0, 0x1234_5678, 2, 1]
     );
     assert_eq!(&words[173..177], &[2, 0, 3, 5]);
-    assert!(words[177..].iter().all(|word| *word == 0));
+    assert!(words[177..500].iter().all(|word| *word == 0));
+    assert_eq!(
+        words[500],
+        if cfg!(target_arch = "x86") {
+            0x014c
+        } else {
+            0x8664
+        }
+    );
+    assert!(words[501..].iter().all(|word| *word == 0));
 }
 
 #[test]
@@ -475,7 +484,7 @@ fn sdk_decoder_roundtrips_rust_payloads_through_logon_secured_mapping() {
             journal.observer(ObserverObservation { stage }, stamp);
         }
         let payload = sample(&identity, publisher.instance(), &journal);
-        assert!(payload[500..].iter().all(|word| *word == 0));
+        assert!(payload[501..].iter().all(|word| *word == 0));
         publisher.publish(&payload);
         input.write_all(b"R").unwrap();
         input.flush().unwrap();

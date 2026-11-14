@@ -1,4 +1,4 @@
-//! Read-only host metadata and protocol-three diagnostic publication.
+//! Read-only host metadata and protocol-four diagnostic publication.
 
 use crate::diagnostics::*;
 use crate::field_contract::HostIdentity;
@@ -19,7 +19,7 @@ use windows::Win32::System::Threading::{
 };
 use windows_core::{PCWSTR, PWSTR};
 
-pub(crate) const PROTOCOL: u32 = 3;
+pub(crate) const PROTOCOL: u32 = 4;
 pub(crate) const PAGE_BYTES: usize = 4096;
 pub(crate) const PAYLOAD_WORDS: usize = 512;
 const MAGIC: u32 = 0x4b525031;
@@ -32,6 +32,7 @@ pub(crate) enum Kind {
     Unknown,
     ProofEditor,
     PackagedNotepad,
+    GenericHost,
 }
 
 #[repr(u32)]
@@ -39,7 +40,7 @@ pub(crate) enum Kind {
 pub(crate) enum Reason {
     #[default]
     Unobserved,
-    #[expect(dead_code, reason = "Protocol 3 reserves this SDK wire discriminant.")]
+    #[expect(dead_code, reason = "Protocol 4 reserves this SDK wire discriminant.")]
     Unsupported,
     Stale,
     Native,
@@ -119,6 +120,7 @@ pub(crate) fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Option
         return None;
     }
     let mut identity = HostIdentity {
+        kind: Kind::GenericHost as u32,
         process: pid,
         thread,
         started: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
@@ -404,6 +406,11 @@ pub(crate) fn encode(
             add(word);
         }
     }
+    words[500] = if cfg!(target_arch = "x86") {
+        0x014c
+    } else {
+        0x8664
+    };
     words
 }
 

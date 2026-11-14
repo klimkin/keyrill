@@ -334,6 +334,7 @@ pub(crate) fn build(
         "KeyrillWorkerSmoke",
         "KeyrillDiagnosticDecoder",
         "KeyrillTerminalProbe",
+        "KeyrillPublicFixtures",
     ] {
         copy(
             &cargo::executable(&proof, name, false)?,

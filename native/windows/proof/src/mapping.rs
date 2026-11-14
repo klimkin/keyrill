@@ -24,7 +24,7 @@ const _: () = assert!(std::mem::offset_of!(Page, words) == 44);
 const _: () = assert!(std::mem::align_of::<Page>() == 4);
 const _: () = assert!(std::mem::size_of::<Page>() <= PAGE_BYTES);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Availability of a coherent version-three mapping publication.
+/// Availability of a coherent version-four mapping publication.
 pub enum Availability {
     /// A complete valid publication is readable.
     Available,
@@ -80,7 +80,11 @@ fn read(page: &Page, id: &Identity) -> (Availability, Payload) {
             && matches(page, id)
             && candidate[0] == claim
         {
-            return if decode_payload(&candidate).is_ok() {
+            return if decode_payload(&candidate).is_ok_and(|snapshot| {
+                snapshot.kind == id.kind
+                    && snapshot.version == id.version
+                    && snapshot.architecture == id.architecture
+            }) {
                 (Availability::Available, candidate)
             } else {
                 (Availability::Incompatible, [0; PAYLOAD_WORDS])
@@ -326,6 +330,7 @@ mod tests {
     fn payload(identity: &Identity, instance: u32, serial: u32) -> Payload {
         let mut words = [0; 512];
         words[0] = instance;
+        words[500] = identity.architecture;
         words[1] = identity.kind;
         words[2..6].copy_from_slice(&identity.version);
         words[15] = serial;
@@ -502,6 +507,8 @@ mod tests {
     #[test]
     fn mapping_reader_checks_frozen_layout_and_unpublished_busy_stale_payloads() {
         let identity = Identity {
+            kind: 3,
+            architecture: 0x8664,
             process: 17,
             thread: 19,
             started: 23,
@@ -517,7 +524,14 @@ mod tests {
         assert_eq!(read(&page, &identity).0, Availability::Busy);
         page.sequence.store(2, Ordering::SeqCst);
         page.words[0].store(1, Ordering::SeqCst);
+        page.words[1].store(identity.kind, Ordering::SeqCst);
+        page.words[500].store(identity.architecture, Ordering::SeqCst);
         assert_eq!(read(&page, &identity).0, Availability::Available);
+        for (index, value) in [(1, 2), (2, 1), (500, 0x014c)] {
+            let old = page.words[index].swap(value, Ordering::SeqCst);
+            assert_eq!(read(&page, &identity).0, Availability::Incompatible);
+            page.words[index].store(old, Ordering::SeqCst);
+        }
         for index in 0..8 {
             let old = page.header[index].fetch_add(1, Ordering::SeqCst);
             assert_eq!(read(&page, &identity).0, Availability::Incompatible);

@@ -464,7 +464,7 @@ and physical application acceptance under the bounded contract above.
 
 ### Observation protocol
 
-Protocol v3 uses a local-session page named by protocol, PID, process creation time and TID.
+Protocol v4 uses a local-session page named by protocol, PID, process creation time and TID.
 Arming refuses an existing object and gives mapping read/write rights only to the current logon
 SID through an explicit protected DACL. The publisher opens only an already armed page.
 An atomic nonblocking claim allows one service instance per thread page. A page-resident,
@@ -479,10 +479,11 @@ refusal, activation and callback counters, the existing V2 lifecycle journal and
 runtime policy/readiness and a deterministic SHA-256 digest of the Windows native sources.
 Decoding validates enums and the existing service and lifecycle invariants.
 
-The protocol-3 payload has 512 DWORDs in the same 4096-byte page. Its first 177 words keep the
+The protocol-4 payload has 512 DWORDs in the same 4096-byte page. Its first 177 words keep the
 existing field order. Three observation header words hold sequence, saturation, and count.
-Thirty-two ten-word rows follow, leaving twelve required-zero words after word 499. The
-versioned mapping name isolates this layout from frozen protocol 2 and protocol 1, whose 192-word payload
+Thirty-two ten-word rows follow. Word 500 carries the client PE machine, followed by eleven
+required-zero words. The versioned mapping name isolates this layout from frozen protocols
+3 and 2 and protocol 1, whose 192-word payload
 has fifteen required-zero words after its 177 fields. COM V1 remains 220 bytes. COM V2 and
 the status codecs retain their existing contracts.
 
@@ -493,7 +494,7 @@ and release delivery. Unused rows are ten zero words. The codec in
 refusal, stale-dispatch refusal, executor dispatch, and callback exception. Kind 7 means
 release. Route 1 means ordinary and 2 means preserved. Intent 1 means convert and 2 means
 reverse. Command rows have zero release delivery. Release rows have zero route, intent, and
-command ID in protocol 2. Protocol 3 uses release row word 5 for the Boolean disposition and
+command ID in protocol 2. Protocols 3 and 4 use release row word 5 for the Boolean disposition and
 word 6 for authority validation, with 0 unchecked, 1 matched and 2 refused. Word 7 stays zero.
 Validation covers the receiving canonical context, current source, focus and native field metadata.
 Release class 1 through 6 means left Ctrl, right Ctrl, left Alt, right Alt,
@@ -1445,3 +1446,45 @@ physical and automated fixture cases. Controlled schedules do not replace those 
 The table records historical C++ x64 MSVC and desktop evidence. Full Rust physical acceptance remains
 pending. ARM64, generic editors, ordinary-user registration scope, and general application reliability remain open.
 [ADR 007](adr/007-windows-tsf.md) remains proposed.
+
+### Independent generic-host diagnostics
+
+The content-free observer uses mapping protocol 4. The payload remains 512 fixed-width
+DWORDs with its existing diagnostic sections. Word 500 carries the client PE machine
+(`0x8664` for x64 or `0x014c` for x86), and words 501 through 511 are reserved zero.
+Candidate kind 3 identifies a generic supported process for observation. Kinds 1 and 2
+retain the proof editor and packaged Notepad identities. Observation carries no editing
+authority. The independent reader binds kind, package version, and architecture to its
+retained process identity alongside the PID, process creation time, and thread in the
+mapping header. Protocol 3 mappings fail the protocol-4 identity check.
+
+### Owned public fixture observers
+
+`KeyrillPublicFixtures DIRECTORY` prepares the shared browser fixture and the deterministic
+`keyrill-public-fixture-v1.txt` and `keyrill-public-fixture-v1.rtf` documents. Repeating the
+command preserves matching files and refuses conflicting contents. Keep generated files under
+untracked `.audit/`. Open the HTML with `?platform=windows&control=input` for Windows scenarios.
+The default page retains the existing macOS scenarios. The Windows selector provides input,
+textarea, plaintext contenteditable, rich contenteditable, and a second ordinary field.
+Read-only, password, and payment-scope siblings expose only metadata to the observer.
+
+Run `KeyrillHostInspect public-fixture PID CONTROL CASE` with an explicit process ID and a
+compiled public case such as `empty`, `fixture-en-word`, or `fixture-ru-word`. The accepted
+control selectors are `input`, `textarea`, `plain`, `rich`, `field-b`, `vscode`, and `word`.
+Browser controls must expose their exact public accessible label and the public Document
+ancestor title. Editor documents must expose their exact public filename through the required
+provider metadata. A logical control with HWND zero also needs a bounded same-process ancestor
+chain, a matching native HWND ancestor, stable RuntimeId, and fresh focused-element comparison.
+A private tab, other field, renamed document, unavailable provider, or changed focus refuses
+before document text is read. The generic-host `public-case` path refuses character inspection
+without an explicit fixture identity.
+
+The complete expected document includes a synthetic prefix containing an astral character,
+the named public word, and the exact suffix. The independent UIA oracle also reads the bounded
+ranges before, inside, and after the provider selection. This proves its UTF-16 location and
+collapsed caret without counting UIA Character units. Word's expected suffix includes its final
+paragraph carriage return. DOM checkpoint and composition counters are separate browser-owned
+evidence and cannot establish that the TSF service produced the result. Use `field PID` for
+metadata-only exclusion observations and identity-bound `service PID` publication for native
+counters. The controlled hidden RichEdit UIA test proves provider text/selection mechanics.
+Real browser, VS Code, Word, formatting, and physical-input acceptance remain separate gates.

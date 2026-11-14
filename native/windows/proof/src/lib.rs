@@ -14,6 +14,7 @@ pub fn observer_build() -> [u32; 8] {
 pub mod field;
 pub mod options;
 pub mod protocol;
+pub mod public_fixture;
 
 #[cfg(windows)]
 pub mod diagnostics;

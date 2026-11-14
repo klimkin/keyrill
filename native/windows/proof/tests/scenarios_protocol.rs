@@ -867,6 +867,8 @@ fn lifecycle_codec_complete_window_and_negative_matrix() {
 fn payload() -> Payload {
     let mut words = [0; 512];
     words[0] = 1;
+    words[1] = 3;
+    words[500] = 0x8664;
     words[24..26].copy_from_slice(&[1, 1]);
     words
 }
@@ -1185,12 +1187,12 @@ fn observation_codec_rejects_frozen_mapping_headers() {
     assert!(!view.Value.is_null());
     // SAFETY: this privately owned mapping has the frozen eight-DWORD atomic header.
     let header = unsafe { &*view.Value.cast::<[AtomicU32; 8]>() };
-    for (version, extent) in [(1, 192), (2, 512)] {
+    for (version, extent) in [(1, 192), (2, 512), (3, 512)] {
         header[1].store(version, Ordering::SeqCst);
         header[3].store(extent, Ordering::SeqCst);
         assert_eq!(page.read().0, Availability::Incompatible);
     }
-    header[1].store(3, Ordering::SeqCst);
+    header[1].store(4, Ordering::SeqCst);
     header[3].store(512, Ordering::SeqCst);
     assert_eq!(page.read().0, Availability::Missing);
     unsafe {

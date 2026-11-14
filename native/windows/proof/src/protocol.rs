@@ -1,10 +1,10 @@
-//! Independent reader for the frozen version-three diagnostic wire format.
+//! Independent reader for the frozen version-four diagnostic wire format.
 //!
 //! This module deliberately owns its schema. It imports no service, engine, or
 //! production diagnostic implementation.
 
 /// Diagnostic mapping protocol version.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// Fixed mapping extent in bytes.
 pub const PAGE_BYTES: usize = 4096;
 /// Fixed number of DWORDs in a payload.
@@ -15,7 +15,7 @@ pub const OBSERVATION_OFFSET: usize = 177;
 pub const LIFECYCLE_CAPACITY: usize = 16;
 /// Number of retained command observations.
 pub const OBSERVATION_CAPACITY: usize = 32;
-/// Exactly 512 little-endian DWORD values from a version-three publication.
+/// Exactly 512 little-endian DWORD values from a version-four publication.
 pub type Payload = [u32; PAYLOAD_WORDS];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -27,10 +27,12 @@ pub struct Identity {
     pub thread: u32,
     /// Process creation FILETIME as a 64-bit value.
     pub started: u64,
-    /// Diagnostic candidate kind, with zero unknown, one proof editor, and two packaged Notepad.
+    /// Diagnostic candidate kind, with one proof editor, two packaged Notepad, and three generic host.
     pub kind: u32,
     /// Package major, minor, build, and revision components.
     pub version: [u32; 4],
+    /// PE machine value captured independently from the retained process.
+    pub architecture: u32,
 }
 
 /// Format the frozen process-creation/thread mapping name.
@@ -42,14 +44,16 @@ pub fn mapping_name(identity: &Identity) -> String {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// Validated protocol-three diagnostic sections in their frozen wire order.
+/// Validated protocol-four diagnostic sections in their frozen wire order.
 pub struct ProbeSnapshot {
     /// Nonzero publisher-instance claim.
     pub instance: u32,
-    /// Diagnostic candidate kind, with zero unknown, one proof editor, and two packaged Notepad.
+    /// Diagnostic candidate kind, with one proof editor, two packaged Notepad, and three generic host.
     pub kind: u32,
     /// Package major, minor, build, and revision components.
     pub version: [u32; 4],
+    /// PE machine value captured independently from the retained process.
+    pub architecture: u32,
     /// Eight SHA-256 DWORDs in canonical displayed order.
     pub build: [u32; 8],
     /// Ten host-admission metadata DWORDs.
@@ -284,6 +288,7 @@ fn valid_observations(value: &[u32; 323], lifecycle: &[u32; 86]) -> bool {
 /// Returns the first failed native operation or evidence predicate.
 pub fn decode_payload(words: &Payload) -> Result<ProbeSnapshot, DecodeError> {
     let result = ProbeSnapshot {
+        architecture: words[500],
         instance: words[0],
         kind: words[1],
         version: std::array::from_fn(|index| words[2 + index]),
@@ -294,7 +299,12 @@ pub fn decode_payload(words: &Payload) -> Result<ProbeSnapshot, DecodeError> {
         runtime: std::array::from_fn(|index| words[165 + index]),
         observations: std::array::from_fn(|index| words[177 + index]),
     };
-    if result.instance == 0 || result.kind > 2 {
+    if result.instance == 0
+        || !(1..=3).contains(&result.kind)
+        || ![0x014c, 0x8664].contains(&result.architecture)
+        || (result.kind != 2 && result.version != [0; 4])
+        || (result.kind == 2 && result.architecture != 0x8664)
+    {
         return Err(DecodeError::Identity);
     }
     let m = result.metadata;
@@ -323,7 +333,7 @@ pub fn decode_payload(words: &Payload) -> Result<ProbeSnapshot, DecodeError> {
     if !valid_observations(&result.observations, &result.lifecycle) {
         return Err(DecodeError::Observation);
     }
-    if words[500..].iter().any(|&word| word != 0) {
+    if words[501..].iter().any(|&word| word != 0) {
         return Err(DecodeError::Reserved);
     }
     Ok(result)
@@ -334,6 +344,7 @@ pub fn complete_interval(before: &ProbeSnapshot, after: &ProbeSnapshot) -> bool 
     if before.instance == 0
         || before.instance != after.instance
         || before.build != after.build
+        || before.architecture != after.architecture
         || before.kind != after.kind
         || before.version != after.version
         || before.service[0] == 0
@@ -385,11 +396,13 @@ mod tests {
     fn empty() -> Payload {
         let mut words = [0; 512];
         words[0] = 1;
+        words[1] = 3;
+        words[500] = 0x8664;
         words[24] = 1;
         words
     }
     #[test]
-    fn frozen_protocol3_offsets_and_mapping_name() {
+    fn frozen_protocol4_offsets_and_mapping_name() {
         let mut words = empty();
         words[165] = 123;
         words[169] = 0x89abcdef;
@@ -407,15 +420,48 @@ mod tests {
                 started: 0xabc,
                 ..Identity::default()
             }),
-            "Local\\KeyrillProbe-v3-123-0000000000000abc-456"
+            "Local\\KeyrillProbe-v4-123-0000000000000abc-456"
         );
         assert!(complete_interval(&decoded, &decoded));
+    }
+    #[test]
+    fn generic_architectures_and_continuity_are_bound_to_exact_identity() {
+        let mut words = empty();
+        for machine in [0x014c, 0x8664] {
+            words[500] = machine;
+            let before = decode_payload(&words).unwrap();
+            assert!(complete_interval(&before, &before));
+            let mut changed = before.clone();
+            changed.architecture ^= 1;
+            assert!(!complete_interval(&before, &changed));
+            changed = before.clone();
+            changed.build[0] ^= 1;
+            assert!(!complete_interval(&before, &changed));
+            changed = before.clone();
+            changed.instance += 1;
+            assert!(!complete_interval(&before, &changed));
+        }
+        words[1] = 2;
+        words[2..6].copy_from_slice(&[11, 2510, 6, 0]);
+        words[500] = 0x014c;
+        assert_eq!(decode_payload(&words), Err(DecodeError::Identity));
+        words[500] = 0x8664;
+        assert!(decode_payload(&words).is_ok());
+        for index in 501..PAYLOAD_WORDS {
+            words[index] = 1;
+            assert_eq!(decode_payload(&words), Err(DecodeError::Reserved));
+            words[index] = 0;
+        }
     }
     #[test]
     fn malformed_headers_enums_reserved_and_saturation_are_rejected() {
         for (index, value) in [
             (0, 0),
-            (1, 3),
+            (1, 0),
+            (1, 4),
+            (2, 1),
+            (500, 0),
+            (500, 0xaa64),
             (14, 17),
             (16, 4),
             (17, 6),

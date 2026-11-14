@@ -5,7 +5,7 @@ use windows::Win32::Storage::Packaging::Appx::*;
 use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
-use windows::core::{PCWSTR, PWSTR, Result};
+use windows::core::{PWSTR, Result};
 
 #[cfg(target_pointer_width = "64")]
 pub(crate) use windows::Win32::UI::WindowsAndMessaging::{
@@ -120,12 +120,17 @@ pub fn process_architecture(process: HANDLE) -> Result<ProcessArchitecture> {
 /// Returns the first failed native operation or evidence predicate.
 pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identity> {
     let mut identity = Identity {
+        kind: 3,
         process: pid,
         thread,
         started: started(process, false)?,
         ..Identity::default()
     };
     let architecture = process_architecture(process)?;
+    identity.architecture = match architecture {
+        ProcessArchitecture::X64 => 0x8664,
+        ProcessArchitecture::X86 => 0x014c,
+    };
     let mut image = vec![0; 32768];
     let mut length = image.len() as u32;
     unsafe {
@@ -168,14 +173,28 @@ pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identi
     {
         return Ok(identity);
     }
+    if (size as usize) < size_of::<PACKAGE_ID>() || size as usize > size_of_val(&storage) {
+        return Ok(identity);
+    }
     let package = unsafe { &*storage.as_ptr().cast::<PACKAGE_ID>() };
-    let package_name = package.name;
+    let start = storage.as_ptr() as usize;
+    let end = start + size as usize;
+    let name = package.name.0 as usize;
     if package.processorArchitecture != PROCESSOR_ARCHITECTURE_AMD64.0 as u32
-        || package_name.is_null()
-        || unsafe { PCWSTR(package_name.0).to_string() }
-            .ok()
-            .as_deref()
-            != Some("Microsoft.WindowsNotepad")
+        || name < start
+        || name >= end
+        || !name.is_multiple_of(align_of::<u16>())
+    {
+        return Ok(identity);
+    }
+    let units = unsafe { std::slice::from_raw_parts(package.name.0, (end - name) / 2) };
+    let Some(length) = units.iter().position(|unit| *unit == 0) else {
+        return Ok(identity);
+    };
+    if !units[..length]
+        .iter()
+        .copied()
+        .eq("Microsoft.WindowsNotepad".encode_utf16())
     {
         return Ok(identity);
     }

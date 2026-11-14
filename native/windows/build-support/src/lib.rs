@@ -260,6 +260,7 @@ pub fn source_inputs(root: &Path) -> io::Result<Vec<PathBuf>> {
         ".cargo/config.toml",
         "tools/verify",
         "tools/pack-model.py",
+        "native/macos/tests/browser-fixture.html",
         "assets/model.bin",
         "assets/model-provenance.json",
         "assets/model-notice.txt",

@@ -4,21 +4,19 @@
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use keyrill_windows_proof::{
         mapping::{ArmedPage, Availability},
+        native::Target,
         options,
-        protocol::{Identity, Payload, decode_payload},
+        protocol::{Payload, decode_payload},
     };
     use std::io::{Read, Write};
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let [process, started, thread] = arguments.as_slice() else {
         return Err("expected explicit process, creation time and thread".into());
     };
-    let identity = Identity {
-        process: options::number(process).ok_or("invalid process")?,
-        thread: options::number(thread).ok_or("invalid thread")?,
-        started: started.parse::<u64>()?,
-        ..Default::default()
-    };
-    if identity.started == 0 {
+    let target = Target::open(options::number(process).ok_or("invalid process")?)?;
+    let mut identity = target.identity;
+    identity.thread = options::number(thread).ok_or("invalid thread")?;
+    if identity.started != started.parse::<u64>()? || !target.current() {
         return Err("invalid process creation time".into());
     }
     let expected = std::env::var("KEYRILL_DECODER_BUILD_DIGEST")?;
@@ -51,6 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("runtime mapping differs from the literal SDK fixture".into());
         }
         let mut encoded: Payload = [0; 512];
+        encoded[500] = snapshot.architecture;
         encoded[0] = snapshot.instance;
         encoded[1] = snapshot.kind;
         encoded[2..6].copy_from_slice(&snapshot.version);

@@ -1,5 +1,6 @@
 //! Strict argument parsing for the independent host inspector and editor.
 use crate::field::PublicCase;
+use crate::public_fixture::Fixture;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The four established proof-editor startup modes.
@@ -44,6 +45,8 @@ pub enum Command {
     Field,
     /// Check the document and caret against the named public case.
     PublicCase(PublicCase),
+    /// Inspect an explicitly identified owned public fixture.
+    PublicFixture(Fixture, PublicCase),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// Validated host-inspector command arguments.
@@ -100,12 +103,19 @@ pub fn parse(arguments: &[String]) -> Option<Options> {
         "host" => Command::Host,
         "service" => Command::Service,
         "field" => Command::Field,
+        "public-fixture" if arguments.len() == 4 => Command::PublicFixture(
+            Fixture::parse(&arguments[2])?,
+            PublicCase::parse(&arguments[3])?,
+        ),
         "public-case" if arguments.len() == 3 => {
             Command::PublicCase(PublicCase::parse(&arguments[2])?)
         }
         _ => return None,
     };
-    if matches!(result.command, Command::PublicCase(_)) {
+    if matches!(
+        result.command,
+        Command::PublicCase(_) | Command::PublicFixture(_, _)
+    ) {
         return Some(result);
     }
     if result.command != Command::Service {
@@ -243,6 +253,29 @@ mod tests {
         }
         for command in ["host", "field", "public-case", "build"] {
             assert!(parse(&args(&[command, "123", "--expect-server-build", hash])).is_none());
+        }
+    }
+    #[test]
+    fn owned_public_fixture_arguments_are_explicit_and_exact() {
+        for control in [
+            "input", "textarea", "plain", "rich", "field-b", "vscode", "word",
+        ] {
+            assert!(matches!(
+                parse(&args(&["public-fixture", "123", control, "empty"]))
+                    .unwrap()
+                    .command,
+                Command::PublicFixture(_, PublicCase::Empty)
+            ));
+        }
+        for values in [
+            vec!["public-fixture", "123", "password", "empty"],
+            vec!["public-fixture", "123", "readonly", "empty"],
+            vec!["public-fixture", "123", "sensitive", "empty"],
+            vec!["public-fixture", "123", "input", "Empty"],
+            vec!["public-fixture", "0", "input", "empty"],
+            vec!["public-fixture", "123", "input", "empty", "extra"],
+        ] {
+            assert!(parse(&args(&values)).is_none());
         }
     }
     #[test]

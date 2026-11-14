@@ -152,3 +152,23 @@ for (const scenario of SCENARIOS) {
 
 console.log('browser fixture oracle: 4 scenarios and late-caret observers passed; ' +
             'JavaScript only, no browser or IMK input');
+
+for (const base of SCENARIOS) {
+  const scenario = {...base, prefix: PREFIX, suffix: ' Fixture end.',
+    checkpoints: base.checkpoints.map(value => value.replace(/\n$/, ''))
+      .filter((value, index, values) => index === 0 || value !== values[index - 1])};
+  const run = newRun();
+  run.counts.compositionstart = 1;
+  run.counts.compositionend = 1;
+  for (const checkpoint of scenario.checkpoints) {
+    const text = scenario.prefix + checkpoint + scenario.suffix;
+    const caret = scenario.prefix.length + checkpoint.length;
+    run.reached = advance(scenario, run.reached, text, caret, caret);
+  }
+  const final = scenario.checkpoints.at(-1);
+  const text = scenario.prefix + final + scenario.suffix;
+  const caret = scenario.prefix.length + final.length;
+  assert.equal(evaluate(scenario, run, text, caret, caret).pass, true);
+  assert.equal(evaluate(scenario, run, text + 'x', caret, caret).pass, false);
+  assert.equal(evaluate(scenario, run, text, caret - 1, caret - 1).pass, false);
+}

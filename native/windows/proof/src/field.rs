@@ -389,6 +389,13 @@ pub fn writable(value: ReadOnly, text: ReadOnly) -> Refusal {
 }
 /// Check every metadata predicate before permitting a character read.
 pub fn eligible(value: &Metadata) -> Refusal {
+    eligible_control(value, &[50030])
+}
+/// Check ordinary Edit or Document metadata for explicitly bound public fixtures.
+pub fn eligible_public(value: &Metadata) -> Refusal {
+    eligible_control(value, &[50004, 50030])
+}
+fn eligible_control(value: &Metadata, controls: &[i32]) -> Refusal {
     if value.refusal != Refusal::None {
         return value.refusal;
     }
@@ -399,7 +406,7 @@ pub fn eligible(value: &Metadata) -> Refusal {
     if !value.exact_binding {
         return Refusal::Binding;
     }
-    if value.control_type != 50030 {
+    if !controls.contains(&value.control_type) {
         return Refusal::ControlType;
     }
     if !value.nonpassword {
@@ -424,6 +431,18 @@ pub trait Provider {
     /// # Errors
     /// Refuses an unavailable, noncollapsed, or displaced caret.
     fn end_caret(&mut self) -> Result<(), Refusal>;
+    /// Compare the exact public UTF-16 text before, inside, and after the selection.
+    ///
+    /// # Errors
+    /// Refuses providers without independent exact selection evidence.
+    fn public_selection(
+        &mut self,
+        _before: &[u16],
+        _selected: &[u16],
+        _after: &[u16],
+    ) -> Result<(), Refusal> {
+        Err(Refusal::Selection)
+    }
 }
 /// Validate stable metadata, the complete public document, and its exact caret.
 ///
