@@ -253,8 +253,18 @@ fn source_both_directions_defer_until_verified_finish_and_retranslate_same_key()
             }
         );
         assert!(fixture.c.a.active.borrow().is_some());
+        let handoff_end = fixture.c.host.trace.borrow().len();
+        let before_reverse = fixture.c.a.writes.get();
+        fixture.keyboard.command(&fixture.c, b'Z' as u16);
+        oracle::document(&fixture.c, &text, 7 + text.encode_utf16().count() as i32);
+        assert_eq!(fixture.c.a.writes.get(), before_reverse);
+        assert_eq!(fixture.source_calls(), (1, 1));
+        assert_eq!(
+            fixture.c.profile_state.profile.get().guidProfile,
+            active.guidProfile
+        );
         let trace = fixture.c.host.trace.borrow();
-        let trace = &trace[trace_start..];
+        let trace = &trace[trace_start..handoff_end];
         let returned = trace
             .iter()
             .position(|entry| *entry == "RequestEditSession.after")

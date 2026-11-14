@@ -320,21 +320,23 @@ Primary paths are `keys.rs`, `service.rs`, `edit.rs`, `engine.rs`, and controlle
    Backspace, repeats, AltGr, dead keys, unsupported layouts, shortcuts, and IME coexistence.
 2. Finish physical K/Z coverage for held keys, repeated commands, both modifier-release orders,
    right-side modifiers, bare Alt, focus changes, and receipt expiration.
-3. Implement configurable input-source switching after a verified automatic correction using
-   native TSF activation outside the originating edit callback. Manual conversion preserves
-   the current source.
-4. Capture target profile, client, generation, and owned serial. Newer real input cancels a
-   pending request before dispatch. Input before the confirmed activation echo uses the previous
-   confirmed mode. Recognize Keyrill's own echo while retaining the boundary receipt.
-5. Make reversal after an automatic switch restore the original text and requested source.
-   External source changes invalidate stale authority. Native activation failure preserves the
-   verified document and reports a content-free result.
+3. Retain the original source and reversal mark after verified automatic correction. The next
+   eligible letter must obtain a verified natural FINISH before source selection. Release the
+   first edit session and its document authority before native TSF activation.
+4. Carry scalar source and field facts, complete configuration identity, and callback-local
+   cancellation through the source-only operation. Read back the target profile and layout.
+   Continue the same input callback once through fresh translation and a new native admission.
+   Source notifications invalidate old document authority. Matching observations establish facts.
+5. Z, Escape, and manual conversion cancel pending source selection while the reversal mark is
+   owned. FINISH expires that receipt. External changes and failed activation stop continuation.
+   The unlocked source interval retains the FINISH scope observation and supported host metadata
+   contract. Fresh second-session exclusion prevents character access under a changed private scope.
 6. Renew live source-transition, rejection, lock-denial, cancellation, shutdown, and empty-close
    checks against the final Rust implementation.
 
-Spot checks cover manual conversion preserving its source, newer input before dispatch, input
-before an echo, source activation reentry, delayed echoes, focus loss, user source changes,
-failed native activation, and repeated reversal including Escape after a switch.
+Spot checks cover retained reversal before FINISH, late reversal after receipt expiration,
+manual conversion preserving its source, callback reentry, delayed source observations, focus
+loss, user source changes, actual target binding, failed native activation, and same-key order.
 Physical source tests are maintainer-driven.
 Verify zero replay, correct next-key order, unchanged prefix/suffix, and exact receipt lifetime.
 
@@ -468,7 +470,7 @@ For every required application/control and supported process architecture, run t
 | Input preservation | Rapid continuation, ordinary typing, Backspace/repeat, Tab, Enter, navigation, shortcuts, selection, prefix/suffix, paste, completion/formatting where applicable |
 | Native history | Native Undo/Redo in document editors, exact text/caret, and the host's recorded shortcut behavior in Terminal |
 | Authority | Focus A-to-B-to-A, window/tab/pane changes, caret movement, external edits, foreign marks, failed locks, denied sessions, delayed callbacks, unknown writes |
-| Source and lifetime | EN/RU selection, owned source transition, configured automatic switch, reversal after switch, close with owned mark, empty close, deactivation and unload |
+| Source and lifetime | EN/RU selection, configured source handoff after verified FINISH, retained reversal before FINISH and expiration afterward, close with owned mark, empty close, deactivation and unload |
 | Exclusion | Password, read-only, sensitive/uncertain scopes, per-app Off, unsupported controls and layouts, Terminal secret/no-echo cases, integrity or container restrictions |
 | Runtime configuration | Existing-client and new-client reload, model readiness/failure, vocabulary replace/disappear/malformed retention, settings migration and concurrent Save |
 | Package lifecycle | Clean standard-account install, required explicit elevation, repair, partial failure, upgrade with active hosts, rollback, uninstall/reinstall, reboot and additional account |

@@ -37,7 +37,7 @@
         {"id": "rapid-continuation", "mode": "automatic", "expected": "Public cgbcjr, Space, x in one burst yields список, one Space, x in order."},
         {"id": "focus-round-trip", "mode": "manual", "expected": "Partial public input in A, focus B, then A never carries editing authority or partial inference between fields."},
         {"id": "external-source-change", "mode": "manual", "expected": "External source selection finishes the old owned public word and expires its receipt."},
-        {"id": "automatic-source-switch", "mode": "automatic", "expected": "Verified correction selects the other profile. Retained reversal restores public text and the original profile."},
+        {"id": "automatic-source-switch", "mode": "automatic", "expected": "Verified correction retains its original profile and owned reversal. The next eligible letter finishes the mark, expires the receipt, confirms the target profile, and continues once through fresh admission. Late reversal cannot rewrite the finished word."},
         {"id": "owned-close", "mode": "manual", "expected": "Closing with a verified owned public word finishes only that exact mark and releases callbacks within the bound."},
         {"id": "empty-close", "mode": "manual", "expected": "Closing an empty control makes zero character writes and creates no owned mark."},
         {"id": "selection-navigation", "mode": "manual", "expected": "Selection, navigation, Enter, Tab and native shortcuts retain baseline semantics and exact input order."},

@@ -217,13 +217,16 @@ Use an assigned ordinary document with automatic correction and automatic source
 enabled, empty public dictionaries, and the EN profile selected.
 
 1. Clear the field and type `cgbcjr` followed by Space.
-2. Wait up to five seconds for `список␠` and the RU profile indicator. Record a missing change as Fail.
+2. Expect `список␠` with the EN profile indicator while the reversal mark remains owned.
 3. Press left Ctrl + left Alt + Z once while staying in the application.
 4. Expect `cgbcjr␠` and the EN profile indicator.
+5. In a second prepared empty ordinary field, type `cgbcjr`, Space, and the physical X key in one burst.
+6. Expect `список␠ч` and the RU profile indicator. The collector checks that FINISH precedes source selection and fresh admission.
+7. Press left Ctrl + left Alt + Z once. Expect `список␠ч` and RU to remain. The old receipt expired at FINISH.
 
-| Result | Text and source after correction | Text and source after reversal |
-|---|---|---|
-| Pending | | |
+| Result | Correction and retained reversal in EN | Next-letter handoff to RU | Late reversal preserves finished word |
+|---|---|---|---|
+| Pending | | | |
 
 ### P07. Read-only and password exclusions
 
