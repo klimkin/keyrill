@@ -1,6 +1,7 @@
 use super::registry::{self, wide};
-use crate::{Result, package::Package};
+use crate::Result;
 use keyrill_windows_build::Digest;
+use keyrill_windows_build::artifact::Package;
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -325,7 +326,7 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
     let identity = directory
         .file_name()
         .and_then(|v| v.to_str())
-        .filter(|v| crate::package::is_digest(v))
+        .filter(|v| keyrill_windows_build::artifact::is_digest(v))
         .ok_or("invalid cleanup version")?;
     let receipt = root.join(format!("cleanup-{identity}.json"));
     let files = if receipt.exists() {
@@ -363,7 +364,9 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
         if Path::new(name)
             .components()
             .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            || !crate::package::is_digest(hash.as_str().ok_or("cleanup hash missing")?)
+            || !keyrill_windows_build::artifact::is_digest(
+                hash.as_str().ok_or("cleanup hash missing")?,
+            )
         {
             return Err("cleanup receipt path or hash invalid".into());
         }
@@ -418,7 +421,7 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::tests::Fixture;
+    use crate::package_fixture::Fixture;
     #[test]
     fn executable_manifest_explicitly_preserves_the_callers_privileges() {
         use windows::Win32::System::LibraryLoader::*;

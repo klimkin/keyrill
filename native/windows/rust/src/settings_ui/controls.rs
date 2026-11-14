@@ -282,17 +282,10 @@ impl State {
         button("&Save", SAVE, 20, 708, 100)?;
         button("Re&load", RELOAD, 134, 708, 100)?;
         button("&Close", CLOSE, 610, 708, 100)?;
-        let digest = crate::build_identity::BUILD_DIGEST
-            .iter()
-            .map(|word| format!("{word:08x}"))
-            .collect::<String>();
-        set_text(
-            self.control(READINESS),
-            &format!(
-                "Settings build {}.\r\nLive model, dictionary and host admission status are unavailable in this window.",
-                &digest[..16]
-            ),
-        );
+        // SAFETY: the UI owns this HWND and polls only content-free worker reports.
+        if unsafe { SetTimer(Some(self.window.get()), 1, 100, None) } == 0 {
+            return Err(windows_core::Error::from_thread());
+        }
         self.layout();
         self.reload();
         Ok(())

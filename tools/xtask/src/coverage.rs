@@ -29,7 +29,7 @@ fn validate(ledger: &Value, executed: &BTreeSet<String>) -> Result<()> {
     let actual: Option<BTreeSet<_>> = coverage.iter().map(|row| row["id"].as_str()).collect();
     let expected = expected.ok_or("baseline suite identity invalid")?;
     let actual = actual.ok_or("baseline suite successor identity invalid")?;
-    if suites.len() != 25 || coverage.len() != 25 || expected.len() != 25 || actual != expected {
+    if suites.len() != 33 || coverage.len() != 33 || expected.len() != 33 || actual != expected {
         return Err("baseline suite inventory and successor set differ".into());
     }
     validate_records(coverage, executed)
@@ -92,8 +92,8 @@ mod tests {
             "schema": 1,
             "baselineCommit": "03e58ca542445855943eb6ac74e10a52c4ab5633",
             "families": (0..111).map(|index| record(format!("original.schedule.{index}"))).collect::<Vec<_>>(),
-            "suites": (0..25).map(|index| format!("original.suite.{index}")).collect::<Vec<_>>(),
-            "suiteCoverage": (0..25).map(|index| record(format!("original.suite.{index}"))).collect::<Vec<_>>(),
+            "suites": (0..33).map(|index| format!("original.suite.{index}")).collect::<Vec<_>>(),
+            "suiteCoverage": (0..33).map(|index| record(format!("original.suite.{index}"))).collect::<Vec<_>>(),
         })
     }
 

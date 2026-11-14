@@ -5,9 +5,9 @@ mod tsf;
 
 use crate::Result;
 use crate::journal::{Backend, Change, Journal};
-use crate::package::{Package, is_digest};
 use keyrill_windows::profiles::{PROFILES, SERVICE_ID};
 use keyrill_windows_build::Target;
+use keyrill_windows_build::artifact::{Package, is_digest};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -354,13 +354,7 @@ impl Installation {
         let setup = directory.join("x64/KeyrillSetup.exe");
         for (name, value) in [
             ("DisplayName", "Keyrill".to_owned()),
-            (
-                "DisplayVersion",
-                package.manifest()["version"]
-                    .as_str()
-                    .ok_or("version missing")?
-                    .to_owned(),
-            ),
+            ("DisplayVersion", package.version().to_owned()),
             ("Publisher", "Keyrill contributors".into()),
             (
                 "InstallLocation",
@@ -658,7 +652,7 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::tests::Fixture;
+    use crate::package_fixture::Fixture;
 
     fn receipt(desired: &str, previous: Option<&str>) -> Journal {
         Journal {

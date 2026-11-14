@@ -19,7 +19,7 @@ unsafe extern "system" fn reenter(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-struct Window(Rc<State>);
+pub(super) struct Window(pub(super) Rc<State>);
 
 #[test]
 fn native_client_edges_follow_control_roles() {
@@ -35,17 +35,17 @@ fn native_client_edges_follow_control_roles() {
 }
 
 impl Window {
-    fn new(source: Source) -> Self {
+    pub(super) fn new(source: Source) -> Self {
         let state = State::new(source);
         open(&state, false).expect("hidden native settings window");
         Self(state)
     }
 
-    fn click(&self, id: u16) {
+    pub(super) fn click(&self, id: u16) {
         send(self.0.control(id), BM_CLICK, 0, 0);
     }
 
-    fn status(&self) -> String {
+    pub(super) fn status(&self) -> String {
         get_text(self.0.control(STATUS)).unwrap()
     }
 

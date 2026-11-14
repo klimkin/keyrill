@@ -747,11 +747,36 @@ dictionary choices, and application overrides. Save validates the complete draft
 verified readback. Conflicting saves retain the draft and require Reload. Select a row to change
 its identity or policy. Renaming to another existing identity is rejected. New starts a separate row.
 
-`KeyrillSettings.exe --preview` uses synthetic in-memory defaults for UI review. The window reports
-the compiled build identity and the availability of live runtime status. Its current live-adoption
-status is unavailable. Native window tests cover complete Save/Reload/Close, invalid paths,
-concurrent-window conflicts, selected identity edits, scrolling, reentrancy, and callback cleanup.
-Interactive UIA and visual checks remain pending.
+The standard TSF Properties operation supports direct class-factory `ITfFnConfigure` and
+`GetFunction(GUID_NULL, IID_ITfFnConfigure)` on the same service object. Its inherited
+`ITfFunction` returns a caller-owned display name. Show requires an exact product language/profile
+pair, validates an optional owner, launches the adjacent same-architecture Settings executable,
+and waits for its exit with COM-aware pumping. Settings owns its standalone message loop.
+
+Show requires a complete unsigned package in its exact manifest-digest directory, the current
+production build identity, declared DLL and Settings hashes, and matching PE architecture.
+Retained ordinary file and directory handles prevent launch-path replacement through process
+creation. An elevated caller additionally requires administrator/System ownership and ACLs that
+withhold writes from other principals for the package root, architecture and launch inputs.
+Manifest hashes identify bytes in this unsigned package. They provide no publisher authentication
+and do not identify the already loaded in-memory DLL image. Unpackaged development output reports
+configuration unavailable. Running Settings directly remains available.
+
+One Settings-owned worker prepares the embedded model and dictionaries off the UI thread using
+the last verified loaded or saved complete snapshot. Draft edits leave that binding in place.
+Verified Save or Reload restarts the check. A conflict retains and identifies the previous report.
+The UI polls immutable reports and shows pending, last-good and error states. Live host adoption
+is unavailable because this window has no bound host. Existing native inspectors retain their
+independent runtime-evidence role.
+
+`KeyrillSettings.exe --preview` uses synthetic in-memory defaults and disables local resource
+checks. Ordinary isolated UI fixtures also disable preflight. Explicit integration tests prepare
+isolated temporary dictionaries. Native tests cover SDK pointer/reference/thread contracts,
+profile refusal, retained launch paths, reparse points, privileged peer refusal, actual preview
+child lifetime and modal pumping, preserved host quit requests, complete Save/Reload/Close,
+conflicts, stale reports and resource-error retention. Preview-helper success and ordinary
+packaged SDK Show success are separate assertions. Installed-candidate interaction and physical
+application acceptance remain maintainer gates.
 
 ## Public Terminal child
 

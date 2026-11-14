@@ -1,6 +1,8 @@
-use super::*;
+use keyrill_windows_build::{Digest, Target, artifact::*};
+use serde_json::Value;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{fs, path::PathBuf};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct Fixture(pub(crate) PathBuf);
@@ -59,11 +61,6 @@ impl Fixture {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
         files.insert(name.into(), json!(Digest::of_bytes(bytes).to_string()));
-    }
-    fn replace(&self, manifest: &mut Value, name: &str, bytes: &[u8]) {
-        fs::write(self.0.join(name), bytes).unwrap();
-        manifest["files"][name] = json!(Digest::of_bytes(bytes).to_string());
-        self.save(manifest);
     }
     fn save(&self, value: &Value) {
         fs::write(
@@ -124,90 +121,4 @@ fn synthetic_pe(target: Target, test_export: bool) -> Vec<u8> {
         position += name.len() + 1;
     }
     b
-}
-
-#[test]
-fn synthetic_pe_package_is_deterministic_and_copy_verifiable_without_execution() {
-    let one = Fixture::new();
-    let two = Fixture::new();
-    one.candidate();
-    two.candidate();
-    let one = Package::open(&one.0).unwrap();
-    let two = Package::open(&two.0).unwrap();
-    assert_eq!(one.digest(), two.digest());
-    assert_eq!(one.files(), two.files());
-}
-#[test]
-fn refuses_missing_resources_stale_files_and_missing_client_architecture() {
-    for name in [
-        "resources/english.ico",
-        "x86/KeyrillTsf.dll",
-        "licenses/synthetic-1/LICENSE",
-    ] {
-        let fixture = Fixture::new();
-        fixture.candidate();
-        fs::remove_file(fixture.0.join(name)).unwrap();
-        assert!(Package::open(&fixture.0).is_err());
-    }
-    for name in [
-        "stale.dll",
-        "words-en.txt",
-        "KeyrillProofEditor.exe",
-        "KeyrillTsfTest.dll",
-    ] {
-        let fixture = Fixture::new();
-        fixture.candidate();
-        fs::write(fixture.0.join(name), b"unexpected").unwrap();
-        assert!(Package::open(&fixture.0).is_err());
-    }
-}
-#[test]
-fn refuses_wrong_target_test_exports_resource_tampering_and_changed_source() {
-    let fixture = Fixture::new();
-    let mut manifest = fixture.candidate();
-    fixture.replace(
-        &mut manifest,
-        "x86/KeyrillTsf.dll",
-        &synthetic_pe(Target::X64, false),
-    );
-    assert!(Package::open(&fixture.0).is_err());
-    fixture.replace(
-        &mut manifest,
-        "x86/KeyrillTsf.dll",
-        &synthetic_pe(Target::X86, true),
-    );
-    assert!(Package::open(&fixture.0).is_err());
-    fixture.replace(
-        &mut manifest,
-        "x86/KeyrillTsf.dll",
-        &synthetic_pe(Target::X86, false),
-    );
-    assert!(Package::open(&fixture.0).is_ok());
-    fixture.replace(&mut manifest, "resources/english.ico", b"stale icon");
-    assert!(Package::open(&fixture.0).is_err());
-    fixture.replace(&mut manifest, "resources/english.ico", &icon(false));
-    manifest["source"] = json!("f".repeat(64));
-    fixture.save(&manifest);
-    assert!(Package::open(&fixture.0).is_err());
-}
-#[test]
-fn refuses_hash_mismatch_and_narrow_or_wide_developer_paths() {
-    let fixture = Fixture::new();
-    fixture.candidate();
-    fs::write(fixture.0.join("LICENSE"), b"changed").unwrap();
-    assert!(Package::open(&fixture.0).is_err());
-    let mut manifest = fixture.candidate();
-    for path in [
-        b"C:\\Users\\fixture\\source.rs".to_vec(),
-        "C:\\Users\\fixture\\source.rs"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect(),
-    ] {
-        let mut image = synthetic_pe(Target::X64, false);
-        image.extend(path);
-        fixture.replace(&mut manifest, "x64/KeyrillSetup.exe", &image);
-        assert!(Package::open(&fixture.0).is_err());
-    }
-    assert!(reject_developer_paths(b"c:\\users\\\0/home/\0/users/\0").is_ok());
 }

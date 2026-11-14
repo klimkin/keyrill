@@ -1,5 +1,6 @@
 use crate::diagnostics::{self, RuntimeSnapshot, Snapshot, SnapshotV2};
 use crate::service::{LOCKS, OBJECTS, ObjectLease, Service, Sinks, WORKERS};
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -17,9 +18,9 @@ use windows::Win32::UI::TextServices::{
     TF_IPP_FLAG_ACTIVE, TF_IPSINK_FLAG_ACTIVE,
 };
 use windows::Win32::UI::TextServices::{
-    ITfFunctionProvider, ITfFunctionProvider_Vtbl, ITfKeyEventSink, ITfKeyEventSink_Vtbl,
-    ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
-    ITfThreadMgr,
+    ITfFnConfigure, ITfFnConfigure_Vtbl, ITfFunction, ITfFunction_Vtbl, ITfFunctionProvider,
+    ITfFunctionProvider_Vtbl, ITfKeyEventSink, ITfKeyEventSink_Vtbl, ITfTextInputProcessor_Impl,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr,
 };
 use windows_core::{
     BOOL, GUID, HRESULT, IUnknown, IUnknown_Vtbl, IUnknownImpl, Interface, Ref, Result, implement,
@@ -72,6 +73,21 @@ unsafe trait RawFunctionProvider: IUnknown {
         function: *const GUID,
         id: *const GUID,
         output: *mut *mut c_void,
+    ) -> HRESULT;
+}
+
+#[interface("db593490-098f-11d3-8df0-00105a2799b5")]
+unsafe trait RawFunction: IUnknown {
+    fn GetDisplayName(&self, output: *mut *mut c_void) -> HRESULT;
+}
+
+#[interface("88f567c6-1757-49f8-a1b2-89234c1eeff9")]
+unsafe trait RawConfigure: RawFunction {
+    fn Show(
+        &self,
+        parent: windows::Win32::Foundation::HWND,
+        language: u16,
+        profile: *const GUID,
     ) -> HRESULT;
 }
 
@@ -139,6 +155,7 @@ assert_method!(
     ITfTextInputProcessorEx,
     RawKeyEventSink,
     RawFunctionProvider,
+    RawConfigure,
     RawSnapshotReader,
     RawSnapshotReaderV2,
     RawRuntimeReader,
@@ -149,6 +166,7 @@ assert_method!(
 )]
 struct ServiceCom {
     service: Rc<Service>,
+    configuring: Cell<bool>,
 }
 
 pub(crate) fn create(service: Rc<Service>) -> ITfTextInputProcessorEx {
@@ -164,7 +182,10 @@ struct OwnInterfaces {
 pub(crate) struct OwnServiceLease(Rc<OwnInterfaces>);
 
 pub(crate) fn create_owned(service: Rc<Service>) -> OwnServiceLease {
-    let object = windows_core::ComObject::new(ServiceCom { service });
+    let object = windows_core::ComObject::new(ServiceCom {
+        service,
+        configuring: Cell::new(false),
+    });
     let processor = object.to_interface::<ITfTextInputProcessorEx>();
     let composition = object.as_interface::<ITfCompositionSink>().as_raw();
     OwnServiceLease(Rc::new(OwnInterfaces {
@@ -511,7 +532,9 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
             if function != GUID::zeroed() {
                 return E_NOINTERFACE;
             }
-            let interface = if id == diagnostics::SNAPSHOT_IID {
+            let interface = if id == ITfFnConfigure::IID || id == ITfFunction::IID {
+                self.as_interface::<RawConfigure>().to_owned().into_raw()
+            } else if id == diagnostics::SNAPSHOT_IID {
                 self.as_interface::<RawSnapshotReader>()
                     .to_owned()
                     .into_raw()
@@ -529,6 +552,89 @@ impl RawFunctionProvider_Impl for ServiceCom_Impl {
             // SAFETY: transfer one reference to our own generated interface through the checked output.
             unsafe { output.write(interface) };
             S_OK
+        })
+    }
+}
+
+const _: () = {
+    assert!(RawFunction::IID.to_u128() == ITfFunction::IID.to_u128());
+    assert!(RawConfigure::IID.to_u128() == ITfFnConfigure::IID.to_u128());
+    assert!(size_of::<RawFunction_Vtbl>() == size_of::<ITfFunction_Vtbl>());
+    assert!(align_of::<RawFunction_Vtbl>() == align_of::<ITfFunction_Vtbl>());
+    assert!(size_of::<RawConfigure_Vtbl>() == size_of::<ITfFnConfigure_Vtbl>());
+    assert!(align_of::<RawConfigure_Vtbl>() == align_of::<ITfFnConfigure_Vtbl>());
+    assert!(
+        std::mem::offset_of!(RawFunction_Vtbl, base__)
+            == std::mem::offset_of!(ITfFunction_Vtbl, base__)
+    );
+    assert!(
+        std::mem::offset_of!(RawConfigure_Vtbl, base__)
+            == std::mem::offset_of!(ITfFnConfigure_Vtbl, base__)
+    );
+};
+assert_method!(RawFunction_Vtbl, ITfFunction_Vtbl, GetDisplayName);
+assert_method!(RawConfigure_Vtbl, ITfFnConfigure_Vtbl, Show);
+
+impl RawFunction_Impl for ServiceCom_Impl {
+    unsafe fn GetDisplayName(&self, output: *mut *mut c_void) -> HRESULT {
+        if output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the caller provides one writable BSTR output slot.
+        unsafe { output.write(std::ptr::null_mut()) };
+        if !self.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
+        fence(|| {
+            let literal = windows_core::w!("Keyrill Settings");
+            // SAFETY: the static literal supplies the exact UTF-16 allocation span.
+            let name =
+                unsafe { windows::Win32::Foundation::SysAllocStringLen(Some(literal.as_wide())) };
+            if name.is_empty() {
+                return windows::Win32::Foundation::E_OUTOFMEMORY;
+            }
+            // SAFETY: transfer the allocated BSTR to the checked SDK output.
+            unsafe { output.write(name.into_raw().cast_mut().cast()) };
+            S_OK
+        })
+    }
+}
+
+impl RawConfigure_Impl for ServiceCom_Impl {
+    unsafe fn Show(
+        &self,
+        parent: windows::Win32::Foundation::HWND,
+        language: u16,
+        profile: *const GUID,
+    ) -> HRESULT {
+        if !self.service.owner_thread() {
+            return windows::Win32::Foundation::RPC_E_WRONG_THREAD;
+        }
+        if profile.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the SDK caller lends one readable profile GUID for this call.
+        let profile = unsafe { profile.read() };
+        if !crate::profiles::PROFILES
+            .iter()
+            .any(|p| p.language == language && p.id == profile)
+        {
+            return windows::Win32::Foundation::E_INVALIDARG;
+        }
+        if self.configuring.replace(true) {
+            return windows::Win32::Foundation::RPC_E_CALL_REJECTED;
+        }
+        struct Configuring<'a>(&'a Cell<bool>);
+        impl Drop for Configuring<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let _gate = Configuring(&self.configuring);
+        let _keep = self.to_interface::<ITfTextInputProcessorEx>();
+        fence(|| match crate::configure::show(parent) {
+            Ok(()) => S_OK,
+            Err(error) => error.code(),
         })
     }
 }
@@ -693,3 +799,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
         S_FALSE
     }
 }
+
+#[cfg(test)]
+#[path = "configure_com_tests.rs"]
+mod configure_tests;

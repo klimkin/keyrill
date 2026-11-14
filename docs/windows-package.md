@@ -30,6 +30,38 @@ and every installed file hash. Its SHA-256 is the candidate identity. Verificati
 copying the directory through read-only validation. Unsigned hashes establish content consistency.
 Publisher authenticity requires maintainer signing.
 
+Validation bounds each opened file before allocating or reading its contents. The shared
+package reader permits 64 MiB per executable, 4 MiB per public resource and 1 MiB per JSON
+file. A complete package permits 256 files including its manifest and 256 MiB in total.
+These budgets allow headroom for the embedded model, both client architectures and dependency
+licenses. The allowed layout has at most three relative path components. Windows validation
+uses whole-path no-reparse native opens and enumerates retained directory handles. It rejects
+offline entries and retains directory and file leases until all content checks finish.
+Declared PE tables permit 96 sections, 128 exports and
+128-byte export names.
+
+The native boundary uses `NtCreateFile` with `OBJ_DONT_REPARSE` for each actual open and
+`NtQueryDirectoryFile` with one bounded `FileNamesInformation` entry per query. The general
+`OBJECT_ATTRIBUTES` contract documents this flag's reparse refusal. The function-specific
+`NtCreateFile` page lists zero and `OBJ_CASE_INSENSITIVE` for that field. Native tests verify
+the selected combination on the test host, including a directory converted into a junction
+while retained. A handle-based query stays on that original directory and a child path open
+refuses the redirect.
+[OBJECT_ATTRIBUTES](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes),
+[NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile),
+[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile)
+
+An elevated host checks the retained package-root, architecture, manifest, DLL and Settings
+ACLs before it reads package contents. An ordinary host can validate a complete user-owned
+package. Settings launch remains bound to the loaded DLL's production identity, manifest
+identity and retained peer hashes.
+
+The launch keeps the immediate-child lease chain through process creation. Native tests on
+the local test filesystem observe `ERROR_DIR_NOT_EMPTY` when a retained populated directory
+is changed into a junction, and refusal of child deletion and directory replacement.
+These checks cover the ordinary local-filesystem contract. Arbitrary filesystem filters and
+concurrent DOS drive remapping have no qualification evidence.
+
 Repeat staging into a second new directory from the same build receipts and compare the manifest
 and file hashes. Candidate staging is deterministic for those inputs. Independently rebuilding
 the binaries is a separate reproducibility check. Signing changes binary bytes and requires a

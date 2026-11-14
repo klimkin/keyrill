@@ -1229,7 +1229,7 @@ impl State {
     }
 }
 
-fn model_for(preferences: &crate::settings::Preferences) -> Model {
+pub(crate) fn model_for(preferences: &crate::settings::Preferences) -> Model {
     let profile = environment("USERPROFILE").ok().flatten();
     let sources = std::array::from_fn(|index| match &preferences.dictionaries[index] {
         crate::settings::DictionaryPath::Explicit(path) => Source::Explicit(

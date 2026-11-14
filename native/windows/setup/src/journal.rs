@@ -70,7 +70,7 @@ impl Journal {
             .as_str()
             .ok_or("receipt desired state absent")?
             .to_owned();
-        if desired != "absent" && !crate::package::is_digest(&desired) {
+        if desired != "absent" && !keyrill_windows_build::artifact::is_digest(&desired) {
             return Err("receipt package invalid".into());
         }
         let previous = if value["previous"].is_null() {
@@ -79,7 +79,7 @@ impl Journal {
             Some(
                 value["previous"]
                     .as_str()
-                    .filter(|v| crate::package::is_digest(v))
+                    .filter(|v| keyrill_windows_build::artifact::is_digest(v))
                     .ok_or("receipt previous package invalid")?
                     .to_owned(),
             )

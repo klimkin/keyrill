@@ -307,6 +307,7 @@ unsafe extern "system" fn procedure(
                     ((wparam.0 >> 16) & 0xffff) as u16,
                 ),
                 WM_SIZE => state.layout(),
+                WM_TIMER if wparam.0 == 1 => state.poll_readiness(),
                 WM_VSCROLL => {
                     let mut info = SCROLLINFO {
                         cbSize: size_of::<SCROLLINFO>() as u32,
@@ -364,6 +365,11 @@ unsafe extern "system" fn procedure(
                 }
                 WM_CLOSE if state.busy.get() => return LRESULT(0),
                 WM_NCDESTROY => {
+                    state.stop_readiness();
+                    // SAFETY: retire this window's timer before releasing its state.
+                    unsafe {
+                        let _ = KillTimer(Some(window), 1);
+                    }
                     state.window.set(HWND::default());
                     // SAFETY: clearing userdata transfers and drops exactly its one native Rc owner.
                     unsafe {
@@ -452,7 +458,7 @@ pub(super) fn open(state: &Rc<State>, visible: bool) -> windows_core::Result<HWN
             CW_USEDEFAULT,
             770 * dpi / 96,
             820 * dpi / 96,
-            None,
+            Some(state.owner.get()),
             None,
             Some(HINSTANCE(module.0)),
             Some(Rc::as_ptr(state).cast()),
@@ -470,10 +476,32 @@ pub(super) fn open(state: &Rc<State>, visible: bool) -> windows_core::Result<HWN
 pub fn run() -> i32 {
     fenced(|| {
         let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+        let mut owner = HWND::default();
         let source = match arguments.as_slice() {
             [] => Source::CurrentUser,
             [argument] if argument == "--preview" => {
                 Source::Preview(RefCell::new(Snapshot::default()))
+            }
+            [flag, window, process, thread] if flag == "--owner" => {
+                let parsed = (|| {
+                    Some((
+                        window.to_str()?.parse::<usize>().ok()?,
+                        process.to_str()?.parse::<u32>().ok()?,
+                        thread.to_str()?.parse::<u32>().ok()?,
+                    ))
+                })();
+                let Some((window, process, thread)) = parsed else {
+                    return 2;
+                };
+                let candidate = HWND(window as *mut _);
+                let mut actual_process = 0;
+                // SAFETY: owner identity is used only for native window ownership and never text access.
+                let actual_thread =
+                    unsafe { GetWindowThreadProcessId(candidate, Some(&mut actual_process)) };
+                if actual_thread != 0 && actual_thread == thread && actual_process == process {
+                    owner = candidate;
+                }
+                Source::CurrentUser
             }
             _ => return 2,
         };
@@ -482,6 +510,7 @@ pub fn run() -> i32 {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
         let state = State::new(source);
+        state.owner.set(owner);
         let Ok(window) = open(&state, true) else {
             return 1;
         };

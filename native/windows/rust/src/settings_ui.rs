@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 mod controls;
 mod native;
+mod readiness;
 #[cfg(test)]
 mod tests;
 
@@ -48,6 +49,8 @@ enum Source {
     Preview(RefCell<Snapshot>),
     #[cfg(test)]
     Test(Rc<crate::settings::testing::Isolated>),
+    #[cfg(test)]
+    Preflight(Rc<crate::settings::testing::Isolated>),
 }
 
 impl Source {
@@ -56,7 +59,7 @@ impl Source {
             Self::CurrentUser => Store::current_user()?.load(),
             Self::Preview(snapshot) => Ok(snapshot.borrow().clone()),
             #[cfg(test)]
-            Self::Test(store) => store.0.load(),
+            Self::Test(store) | Self::Preflight(store) => store.0.load(),
         }
     }
 
@@ -75,7 +78,7 @@ impl Source {
                 SaveOutcome::Saved(saved)
             }
             #[cfg(test)]
-            Self::Test(store) => store.0.save(opened.revision, draft),
+            Self::Test(store) | Self::Preflight(store) => store.0.save(opened.revision, draft),
         }
     }
 
@@ -94,6 +97,7 @@ struct Draft {
 struct State {
     source: Source,
     window: Cell<HWND>,
+    owner: Cell<HWND>,
     busy: Cell<bool>,
     failed: Cell<bool>,
     font: Cell<HFONT>,
@@ -101,6 +105,7 @@ struct State {
     laying_out: Cell<bool>,
     controls: RefCell<Vec<(HWND, Rect)>>,
     draft: RefCell<Draft>,
+    readiness: RefCell<readiness::Readiness>,
 }
 
 #[derive(Clone, Copy)]
@@ -125,6 +130,7 @@ impl State {
         Rc::new(Self {
             source,
             window: Cell::new(HWND::default()),
+            owner: Cell::new(HWND::default()),
             busy: Cell::new(false),
             failed: Cell::new(false),
             font: Cell::new(HFONT::default()),
@@ -132,6 +138,7 @@ impl State {
             laying_out: Cell::new(false),
             controls: RefCell::new(Vec::new()),
             draft: RefCell::new(Draft::default()),
+            readiness: RefCell::new(readiness::Readiness::default()),
         })
     }
 
@@ -152,6 +159,7 @@ impl State {
     fn reload(&self) {
         match self.source.load() {
             Ok(snapshot) => {
+                self.restart_readiness(&snapshot);
                 let value = snapshot.value.clone();
                 *self.draft.borrow_mut() = Draft {
                     applications: value.applications.clone(),
@@ -183,6 +191,8 @@ impl State {
                 self.status("Loaded complete settings. Save applies the complete draft. Close discards unsaved edits.");
             }
             Err(_) => {
+                self.readiness.borrow_mut().previous_settings = true;
+                self.render_readiness();
                 self.draft.borrow_mut().conflicted = true;
                 enable(self.control(SAVE), false);
                 self.status(
@@ -329,6 +339,7 @@ impl State {
         };
         match self.source.save(&opened, draft) {
             SaveOutcome::Saved(saved) => {
+                self.restart_readiness(&saved);
                 self.draft.borrow_mut().opened = Some(saved);
                 let status = if self.source.preview() {
                     "Draft saved in preview memory. User preferences were untouched."
@@ -338,6 +349,8 @@ impl State {
                 self.status(status);
             }
             SaveOutcome::Conflict(_) => {
+                self.readiness.borrow_mut().previous_settings = true;
+                self.render_readiness();
                 self.draft.borrow_mut().conflicted = true;
                 enable(self.control(SAVE), false);
                 self.status("Settings changed in another window. Your draft is retained. Reload replaces the draft with current settings before Save can proceed.");

@@ -26,7 +26,15 @@
     "rust_com_boundary_release-before",
     "rust_com_boundary_release-after",
     "rust_diagnostic_roundtrip_production",
-    "rust_diagnostic_roundtrip_test-api"
+    "rust_diagnostic_roundtrip_test-api",
+    "rust_configure_sdk_production",
+    "rust_configure_package_production",
+    "rust_configure_preview_production",
+    "rust_settings_local_readiness_production",
+    "rust_configure_sdk_test-api",
+    "rust_configure_package_test-api",
+    "rust_configure_preview_test-api",
+    "rust_settings_local_readiness_test-api"
   ],
   "families": [
     {
@@ -2634,6 +2642,100 @@
       ],
       "reconciliations": [
         "The ignored-by-default test must run explicitly for this runtime feature variant. The actual producer publishes a logon-secured mapping and the independent KeyrillDiagnosticDecoder checks literal offsets and re-encodes all 512 words across command routes/stages, release deliveries/sides, completions, observer stages, and the zero reserved tail."
+      ]
+    },
+    {
+      "id": "rust_configure_sdk_production",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::production::com::configure_tests::configure_sdk_factory_inheritance_and_provider_preserve_identity_and_reference_ownership",
+        "runtime::production::com::configure_tests::configure_sdk_rejects_bad_profiles_before_unavailable_package_and_initializes_outputs",
+        "runtime::production::com::configure_tests::configure_sdk_checks_thread_reentry_and_panic_fence"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
+      ]
+    },
+    {
+      "id": "rust_configure_package_production",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::production::configure::tests::package_identity_paths_and_retained_leases_refuse_replacement",
+        "runtime::production::configure::tests::package_launch_refuses_changed_build_missing_files_and_wrong_pe",
+        "runtime::production::configure::tests::package_reparse_and_lower_integrity_writable_peer_are_refused",
+        "runtime::production::configure::tests::native_launch_failure_keeps_the_callers_quit_message"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
+      ]
+    },
+    {
+      "id": "rust_configure_preview_production",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::production::configure::tests::native_settings_preview_child_waits_for_close_and_preserves_host_quit"
+      ],
+      "reconciliations": [
+        "Actual same-architecture Settings --preview process via a private native helper verifies child lifetime, pumped host callbacks, preserved host WM_QUIT and abnormal child status. Ordinary SDK Show success remains a separate complete-package assertion."
+      ]
+    },
+    {
+      "id": "rust_settings_local_readiness_production",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::production::settings_ui::readiness::tests::native_preflight_uses_verified_saved_snapshot_and_restarts_only_after_save_or_reload",
+        "runtime::production::settings_ui::readiness::tests::native_preflight_conflict_keeps_prior_revision_report_and_preview_is_isolated",
+        "runtime::production::settings_ui::readiness::tests::preflight_mailbox_rejects_stale_generation_and_revision"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
+      ]
+    },
+    {
+      "id": "rust_configure_sdk_test-api",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::test-api::com::configure_tests::configure_sdk_factory_inheritance_and_provider_preserve_identity_and_reference_ownership",
+        "runtime::test-api::com::configure_tests::configure_sdk_rejects_bad_profiles_before_unavailable_package_and_initializes_outputs",
+        "runtime::test-api::com::configure_tests::configure_sdk_checks_thread_reentry_and_panic_fence"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
+      ]
+    },
+    {
+      "id": "rust_configure_package_test-api",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::test-api::configure::tests::package_identity_paths_and_retained_leases_refuse_replacement",
+        "runtime::test-api::configure::tests::package_launch_refuses_changed_build_missing_files_and_wrong_pe",
+        "runtime::test-api::configure::tests::package_reparse_and_lower_integrity_writable_peer_are_refused",
+        "runtime::test-api::configure::tests::native_launch_failure_keeps_the_callers_quit_message"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
+      ]
+    },
+    {
+      "id": "rust_configure_preview_test-api",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::test-api::configure::tests::native_settings_preview_child_waits_for_close_and_preserves_host_quit"
+      ],
+      "reconciliations": [
+        "Actual same-architecture Settings --preview process via a private native helper verifies child lifetime, pumped host callbacks, preserved host WM_QUIT and abnormal child status. Ordinary SDK Show success remains a separate complete-package assertion."
+      ]
+    },
+    {
+      "id": "rust_settings_local_readiness_test-api",
+      "disposition": "ported",
+      "rustTests": [
+        "runtime::test-api::settings_ui::readiness::tests::native_preflight_uses_verified_saved_snapshot_and_restarts_only_after_save_or_reload",
+        "runtime::test-api::settings_ui::readiness::tests::native_preflight_conflict_keeps_prior_revision_report_and_preview_is_isolated",
+        "runtime::test-api::settings_ui::readiness::tests::preflight_mailbox_rejects_stale_generation_and_revision"
+      ],
+      "reconciliations": [
+        "Native SDK and local-only resource checks run against bounded synthetic package files and isolated settings/dictionaries. Live host adoption and installed-candidate physical checks remain separate."
       ]
     }
   ],

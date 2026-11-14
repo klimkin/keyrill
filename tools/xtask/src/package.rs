@@ -1,8 +1,8 @@
 use crate::cargo::{self, Result};
+use keyrill_windows_build::artifact::{BINARIES, Package, icon, reject_developer_paths};
 use keyrill_windows_build::{
     BuildConfig, Digest, Instrumentation, Target, identity, is_source_input, pe, source_inputs,
 };
-use keyrill_windows_setup::package::{BINARIES, Package, icon, reject_developer_paths};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -158,7 +158,7 @@ fn licenses(
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let file = entry.file_name().to_string_lossy().into_owned();
-            if !keyrill_windows_setup::package::LICENSE_NAMES.contains(&file.as_str()) {
+            if !keyrill_windows_build::artifact::LICENSE_NAMES.contains(&file.as_str()) {
                 continue;
             }
             let path = entry.path();

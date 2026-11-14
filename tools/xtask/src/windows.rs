@@ -130,6 +130,10 @@ impl Build {
                     .join(","),
             );
         command.env("KEYRILL_TARGET_ARCH", self.target.name());
+        command.env(
+            "KEYRILL_SETTINGS_PREVIEW",
+            self.directory.join("KeyrillSettings.exe"),
+        );
         Ok(command)
     }
 }
@@ -626,9 +630,10 @@ mod tests {
     #[test]
     fn production_registrar_build_includes_its_adjacent_setup_dependency() {
         assert!(PRODUCTION_PACKAGES.contains(&"keyrill-windows-setup"));
-        for name in ["KeyrillRegister", "KeyrillSettings", "KeyrillSetup"] {
-            assert!(PRODUCTION_EXECUTABLES.contains(&name));
-        }
+        assert_eq!(
+            PRODUCTION_EXECUTABLES,
+            &["KeyrillRegister", "KeyrillSettings", "KeyrillSetup"]
+        );
     }
 
     #[test]

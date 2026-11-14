@@ -7,6 +7,8 @@ mod application_identity;
 #[cfg(windows)]
 mod com;
 #[cfg(windows)]
+mod configure;
+#[cfg(windows)]
 mod diagnostics;
 #[cfg(windows)]
 mod engine;

@@ -4,6 +4,9 @@ use std::collections::BTreeSet;
 use std::io::{self, ErrorKind};
 
 type Result<T> = io::Result<T>;
+const MAX_SECTIONS: usize = 96;
+const MAX_EXPORTS: usize = 128;
+const MAX_EXPORT_NAME_BYTES: usize = 128;
 
 fn invalid() -> io::Error {
     io::Error::new(
@@ -65,6 +68,7 @@ impl Image<'_> {
         let remaining = &self.bytes[offset..];
         let length = remaining
             .iter()
+            .take(MAX_EXPORT_NAME_BYTES + 1)
             .position(|&byte| byte == 0)
             .ok_or_else(invalid)?;
         self.offset(rva, length + 1)?;
@@ -108,6 +112,9 @@ fn header(image: &[u8], target: Target) -> Result<Header> {
     }
     bytes(image, optional, optional_bytes)?;
     let count = usize::from(word(image, header + 2)?);
+    if count == 0 || count > MAX_SECTIONS {
+        return Err(invalid());
+    }
     bytes(
         image,
         optional + optional_bytes,
@@ -168,7 +175,7 @@ pub fn exports(image: &[u8], target: Target) -> Result<BTreeSet<String>> {
     let export = parsed.offset(export_rva, export_bytes as usize)?;
     let functions = dword(image, export + 20)? as usize;
     let names = dword(image, export + 24)? as usize;
-    if names > functions || functions == 0 || names == 0 {
+    if names > functions || functions == 0 || names == 0 || functions > MAX_EXPORTS {
         return Err(invalid());
     }
     let pointers = parsed.offset(
@@ -345,6 +352,32 @@ mod tests {
         }
         let mut image = fixture(Target::X64);
         set16(&mut image, 68, 0xaa64);
+        assert!(exports(&image, Target::X64).is_err());
+    }
+
+    #[test]
+    fn bounds_section_export_and_symbol_name_work() {
+        let mut image = fixture(Target::X64);
+        image.resize(8192, 0);
+        set16(&mut image, 70, MAX_SECTIONS as u16);
+        assert!(validate(&image, Target::X64).is_ok());
+        set16(&mut image, 70, MAX_SECTIONS as u16 + 1);
+        assert!(validate(&image, Target::X64).is_err());
+
+        let mut image = fixture(Target::X64);
+        image.resize(2048, 0);
+        set32(&mut image, 224, 1536);
+        set32(&mut image, 532, MAX_EXPORTS as u32);
+        assert!(exports(&image, Target::X64).is_ok());
+        set32(&mut image, 532, MAX_EXPORTS as u32 + 1);
+        assert!(exports(&image, Target::X64).is_err());
+
+        set32(&mut image, 532, 1);
+        image[592..592 + MAX_EXPORT_NAME_BYTES].fill(b'A');
+        image[592 + MAX_EXPORT_NAME_BYTES] = 0;
+        assert!(exports(&image, Target::X64).is_ok());
+        image[592 + MAX_EXPORT_NAME_BYTES] = b'A';
+        image[593 + MAX_EXPORT_NAME_BYTES] = 0;
         assert!(exports(&image, Target::X64).is_err());
     }
 

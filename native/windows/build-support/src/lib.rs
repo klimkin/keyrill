@@ -1,5 +1,7 @@
 //! Shared source and artifact identities for the Rust Windows build.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+
+extern crate self as keyrill_windows_build;
 
 use sha2::{Digest as _, Sha256};
 use std::fmt::{self, Write as _};
@@ -386,3 +388,6 @@ mod tests;
 
 /// Portable PE validation shared by building and packaging.
 pub mod pe;
+
+/// Complete unsigned production package validation.
+pub mod artifact;
