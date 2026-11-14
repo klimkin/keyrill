@@ -84,6 +84,7 @@ pub fn source_profile(index: usize) -> TF_INPUTPROCESSORPROFILE {
             GUID::from_u128(0x4c1e583c_f8e5_4b7d_b66c_b7e7319aed51)
         },
         catid: GUID_TFCAT_TIP_KEYBOARD,
+        hklSubstitute: HKL(if index == 0 { 0x04090409 } else { 0x04190419 } as *mut _),
         dwFlags: TF_IPP_FLAG_ACTIVE,
         ..Default::default()
     }
@@ -96,7 +97,8 @@ pub(super) unsafe fn fixed(
     layout: HKL,
     flags: u32,
 ) {
-    let target = source_profile(1);
+    assert!(matches!(lang, 0x409 | 0x419));
+    let target = source_profile((lang == 0x419) as usize);
     assert_eq!(kind, TF_PROFILETYPE_INPUTPROCESSOR);
     assert_eq!(lang, target.langid);
     unsafe {
@@ -227,15 +229,20 @@ unsafe extern "system" fn ITfInputProcessorProfiles_ChangeCurrentLanguage(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
-            assert_eq!(a1, 0x419);
+            assert!(matches!(a1, 0x409 | 0x419));
             let state = p.profile();
-            assert_eq!(state.language_calls.get(), 0);
-            state.language_calls.set(1);
-            state.language.set(a1);
-            let mut active = source_profile(1);
-            active.clsid = GUID::zeroed();
-            active.guidProfile = GUID::zeroed();
-            state.profile.set(active);
+            state.language_calls.set(state.language_calls.get() + 1);
+            if state.language_effect.get() {
+                state.language.set(a1);
+                let mut active = source_profile((a1 == 0x419) as usize);
+                active.clsid = GUID::zeroed();
+                active.guidProfile = GUID::zeroed();
+                state.profile.set(active);
+                let language = a1 as usize;
+                state
+                    .substitute
+                    .set(HKL((language << 16 | language) as *mut _));
+            }
             p.hit("language.change");
             p.result("ChangeCurrentLanguage")
         })

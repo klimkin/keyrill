@@ -13,7 +13,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     ITfComposition, ITfCompositionSink, ITfCompositionSink_Impl, ITfDocumentMgr,
     ITfInputProcessorProfileActivationSink, ITfInputProcessorProfileActivationSink_Impl,
-    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
+    ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, TF_INPUTPROCESSORPROFILE,
+    TF_IPP_FLAG_ACTIVE, TF_IPSINK_FLAG_ACTIVE,
 };
 use windows::Win32::UI::TextServices::{
     ITfFunctionProvider, ITfFunctionProvider_Vtbl, ITfKeyEventSink, ITfKeyEventSink_Vtbl,
@@ -302,19 +303,39 @@ impl ITfThreadMgrEventSink_Impl for ServiceCom_Impl {
 impl ITfInputProcessorProfileActivationSink_Impl for ServiceCom_Impl {
     fn OnActivated(
         &self,
-        _: u32,
-        _: u16,
+        kind: u32,
+        language: u16,
         service: *const GUID,
-        _: *const GUID,
+        category: *const GUID,
         profile: *const GUID,
-        _: HKL,
+        layout: HKL,
         flags: u32,
     ) -> Result<()> {
         if service.is_null() || profile.is_null() {
             return Err(E_POINTER.into());
         }
         // SAFETY: the SDK callback supplies readable GUID references for its duration.
-        unsafe { self.service.profile_changed(*service, *profile, flags) }.ok()
+        unsafe {
+            self.service.profile_changed(TF_INPUTPROCESSORPROFILE {
+                dwProfileType: kind,
+                langid: language,
+                clsid: *service,
+                catid: if category.is_null() {
+                    GUID::zeroed()
+                } else {
+                    *category
+                },
+                guidProfile: *profile,
+                hkl: layout,
+                dwFlags: if flags & TF_IPSINK_FLAG_ACTIVE != 0 {
+                    TF_IPP_FLAG_ACTIVE
+                } else {
+                    0
+                },
+                ..Default::default()
+            })
+        }
+        .ok()
     }
 }
 

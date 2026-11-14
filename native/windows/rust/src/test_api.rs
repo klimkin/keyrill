@@ -22,6 +22,25 @@ use windows_core::{BOOL, HRESULT, IUnknown, Interface};
 const VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestSourceStatus(
+    handle: *mut c_void,
+    output: *mut u32,
+) -> HRESULT {
+    fence(|| {
+        if handle.is_null() || output.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the controlled caller retains its private handle and writable output throughout.
+        let handle = unsafe { &*handle.cast::<Handle>() };
+        handle.service.checked(|| {
+            // SAFETY: the output is one distinct writable u32 owned by this synchronous call.
+            unsafe { output.write(handle.service.source_status()) };
+            S_OK
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "system" fn KeyrillTestBuildDigest(count: u32, output: *mut u32) -> HRESULT {
     fence(|| {
         if output.is_null() {
@@ -330,7 +349,7 @@ unsafe extern "system" fn KeyrillTestEvent(
             let accepted = unsafe {
                 handle
                     .service
-                    .execute(handle.owner.clone(), context, event.read())
+                    .execute(handle.owner.clone(), context, event.read(), false)
             }
             .eaten;
             // SAFETY: checked writable output belongs to this synchronous caller.

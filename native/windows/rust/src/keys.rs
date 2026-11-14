@@ -50,6 +50,50 @@ pub(crate) enum Key {
     Event(NativeEvent),
 }
 
+pub(crate) struct PhysicalKey {
+    pub(crate) key: WPARAM,
+    pub(crate) flags: LPARAM,
+    pub(crate) keyboard: [u8; 256],
+}
+
+pub(crate) fn handoff_letter(
+    physical: &PhysicalKey,
+    layout: HKL,
+    fresh: &[u8; 256],
+) -> Option<NativeEvent> {
+    let key = physical.key.0;
+    let word_key = (b'A' as usize..=b'Z' as usize).contains(&key)
+        || [
+            VK_OEM_4,
+            VK_OEM_6,
+            VK_OEM_1,
+            VK_OEM_7,
+            VK_OEM_COMMA,
+            VK_OEM_PERIOD,
+            VK_OEM_3,
+        ]
+        .iter()
+        .any(|candidate| candidate.0 as usize == key);
+    if physical.keyboard != *fresh
+        || !word_key
+        || physical.flags.0 as u32 & 0xff000000 != 0
+        || physical.flags.0 as u16 != 1
+    {
+        return None;
+    }
+    let Key::Event(event) = translate(physical.key, physical.flags, layout, fresh).ok()? else {
+        return None;
+    };
+    let view = event.view().ok()?;
+    if view.role != 1
+        || view.units.len() != 1
+        || !char::from_u32(u32::from(view.units[0])).is_some_and(char::is_alphabetic)
+    {
+        return None;
+    }
+    Some(event)
+}
+
 fn down(state: &[u8; 256], key: VIRTUAL_KEY) -> bool {
     state[key.0 as usize] & 0x80 != 0
 }

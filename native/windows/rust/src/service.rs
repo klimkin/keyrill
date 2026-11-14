@@ -24,6 +24,9 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::TextServices::*;
 use windows_core::{HRESULT, IUnknown, Interface};
 
+mod source;
+pub(crate) use source::Operation as SourceTicket;
+
 pub(crate) static OBJECTS: AtomicU32 = AtomicU32::new(0);
 pub(crate) static LOCKS: AtomicU32 = AtomicU32::new(0);
 pub(crate) static WORKERS: AtomicU32 = AtomicU32::new(0);
@@ -88,6 +91,8 @@ struct State {
     applied_ready: Option<Ready>,
     application_off: bool,
     retirement_attempt: Option<(u32, crate::settings::Revision)>,
+    source: source::SourceState,
+    delivery: Option<Rc<Cell<bool>>>,
 }
 
 impl State {
@@ -131,6 +136,7 @@ pub(crate) struct Authority {
 pub(crate) struct Execution {
     pub(crate) eaten: bool,
     completion: crate::edit::Completion,
+    source: Option<Rc<source::Operation>>,
 }
 
 pub(crate) struct Sinks {
@@ -282,6 +288,7 @@ struct AdmittedKey {
     mode: u32,
     keyboard: [u8; 256],
     layout: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
+    target_layout: Option<windows::Win32::UI::Input::KeyboardAndMouse::HKL>,
 }
 
 struct AltCycle {
@@ -380,6 +387,9 @@ impl Service {
         let Some(ready) = state.pending_ready.clone() else {
             return S_OK;
         };
+        if source::veto(&state) || !state.source.accepts_ready(&ready) {
+            state.source.cancel();
+        }
         state.runtime.configuration_error = ready.configuration_error;
         state.runtime.error = ready.error;
         if let Some(configuration) = &ready.configuration {
@@ -407,11 +417,17 @@ impl Service {
             }
             return S_OK;
         }
+        if state.source.defer_adoption() {
+            return S_OK;
+        }
         let _ = Self::adopt_ready(&mut state, ready);
         S_OK
     }
 
     fn adopt_ready(state: &mut State, ready: Ready) -> Result<(), u32> {
+        if !state.source.accepts_ready(&ready) {
+            state.source.cancel();
+        }
         let policy = ready
             .configuration
             .as_ref()
@@ -623,6 +639,11 @@ impl Service {
     }
 
     pub(crate) fn invalidate(&self) {
+        self.state.borrow_mut().source.cancel();
+        self.invalidate_generation();
+    }
+
+    fn invalidate_generation(&self) {
         self.revoke_release();
         let mut state = self.state.borrow_mut();
         state.metadata = crate::observation::Metadata::default();
@@ -649,7 +670,13 @@ impl Service {
             cause,
             Unresolved::None,
         );
-        self.invalidate_word(self.owned().is_some());
+        if cause == LifecycleCause::ProfileChanged
+            && matches!(self.state.borrow().source, source::SourceState::Changing(_))
+        {
+            self.invalidate_generation();
+        } else {
+            self.invalidate_word(self.owned().is_some());
+        }
     }
 
     pub(crate) fn terminated(&self, composition: *mut c_void) -> HRESULT {
@@ -859,8 +886,7 @@ impl Service {
                 && self.preparing(native.epoch)
                 && self.state.borrow().generation == generation
             {
-                let _ =
-                    self.profile_changed(profile.clsid, profile.guidProfile, TF_IPSINK_FLAG_ACTIVE);
+                let _ = self.profile_changed(profile);
             }
         }
         if self.preparing(native.epoch) {
@@ -1098,19 +1124,16 @@ impl Service {
         }
     }
 
-    pub(crate) fn profile_changed(
-        &self,
-        service: windows_core::GUID,
-        profile: windows_core::GUID,
-        flags: u32,
-    ) -> HRESULT {
+    pub(crate) fn profile_changed(&self, profile: TF_INPUTPROCESSORPROFILE) -> HRESULT {
         self.checked(|| {
+            self.source_profile_observed(&profile);
             self.invalidate_for_lifecycle(LifecycleCause::ProfileChanged);
             let mut state = self.state.borrow_mut();
-            state.mode = if service == SERVICE_ID && flags & TF_IPSINK_FLAG_ACTIVE != 0 {
+            state.mode = if profile.clsid == SERVICE_ID && profile.dwFlags & TF_IPP_FLAG_ACTIVE != 0
+            {
                 PROFILES
                     .iter()
-                    .find(|entry| entry.id == profile)
+                    .find(|entry| entry.id == profile.guidProfile)
                     .map_or(0, |entry| entry.mode)
             } else {
                 0
@@ -1266,7 +1289,7 @@ impl Service {
         let witnessed = cycle.as_ref().is_some_and(|cycle| self.same_cycle(cycle));
         let permission = self.state.borrow().release_permission.clone();
         // SAFETY: the command's native callback retains context through this synchronous request.
-        let execution = unsafe { self.execute(owner, context, event) };
+        let execution = unsafe { self.execute(owner, context, event, false) };
         let reserved_permission = cycle.as_ref().is_some_and(|cycle| {
             permission
                 .as_ref()
@@ -1325,6 +1348,9 @@ impl Service {
             return S_OK;
         }
         self.checked(|| {
+            if delivery == diagnostics::ReleaseDelivery::Actual {
+                self.source_input();
+            }
             let Some(modifier) = diagnostics::classify_relevant_release(key, flags) else {
                 return S_OK;
             };
@@ -1585,11 +1611,20 @@ impl Service {
             self.refuse(Stage::Layout, Cause::Stale, S_OK);
             return Err(S_OK);
         }
+        let target_layout = PROFILES
+            .iter()
+            .find(|entry| entry.mode != mode)
+            .map(|entry| {
+                let language = entry.language as usize;
+                HKL((language << 16 | language) as *mut _)
+            })
+            .filter(|target| loaded[..count as usize].contains(target));
         Ok(AdmittedKey {
             guard,
             mode,
             keyboard,
             layout,
+            target_layout,
         })
     }
 
@@ -1604,6 +1639,7 @@ impl Service {
         self.checked(|| {
             #[cfg(feature = "test-api")]
             self.inject_panic(1);
+            let delivery = self.begin_delivery();
             let decision = ReleaseDecision::new(self);
             self.count(Counter::KeyEntered);
             let admitted = match self.admit_key(context, None, &owner) {
@@ -1632,6 +1668,18 @@ impl Service {
             }
             // SAFETY: inbound COM holds context and writable eaten through this synchronous call.
             let role = event.view().map_or(0, |event| event.role);
+            let physical = crate::keys::PhysicalKey {
+                key,
+                flags,
+                keyboard: admitted.keyboard,
+            };
+            let source_candidate = self.source_candidate(&admitted, &physical);
+            if !self.current(admitted.guard) {
+                return S_OK;
+            }
+            if matches!(role, 3..=5) {
+                self.state.borrow_mut().source.cancel();
+            }
             let ticket = if matches!(role, 4 | 5) {
                 let facts = diagnostics::ModifierFacts::project(&admitted.keyboard);
                 let intent = if role == 4 {
@@ -1654,7 +1702,15 @@ impl Service {
             } else {
                 self.revoke_release();
                 // SAFETY: native callback retains context through this synchronous execution.
-                unsafe { self.execute(owner, context, event) }.eaten
+                let mut execution =
+                    unsafe { self.execute(owner.clone(), context, event, source_candidate) };
+                if let Some(operation) = execution.source.take() {
+                    // SAFETY: this original inbound callback still owns the exact physical delivery.
+                    execution = unsafe {
+                        self.finish_source_delivery(owner, context, &physical, &delivery, operation)
+                    };
+                }
+                execution.eaten
             };
             if accepted {
                 self.count(Counter::Consumed);
@@ -1673,6 +1729,7 @@ impl Service {
         eaten: *mut windows_core::BOOL,
     ) -> HRESULT {
         self.checked(|| {
+            self.source_input();
             let Some(binding) = BINDINGS.iter().find(|binding| binding.id == id) else {
                 return S_OK;
             };
@@ -1685,6 +1742,7 @@ impl Service {
                 unsafe { self.witness_alt(owner, context, &decision) };
                 return S_OK;
             }
+            self.state.borrow_mut().source.cancel();
             let intent = if binding.role == 4 {
                 diagnostics::ManualIntent::Convert
             } else {
@@ -1740,6 +1798,7 @@ impl Service {
         owner: crate::com::OwnServiceLease,
         context: *mut c_void,
         event: NativeEvent,
+        source_candidate: bool,
     ) -> Execution {
         use crate::edit::{Effect, Frame};
         self.count(Counter::HandleEntered);
@@ -1802,6 +1861,7 @@ impl Service {
             self.refuse(Stage::Session, Cause::Stale, S_OK);
             return Execution::default();
         }
+        frame.allow_source_handoff(source_candidate);
         self.count(Counter::Requested);
         {
             let mut state = self.state.borrow_mut();
@@ -1825,6 +1885,17 @@ impl Service {
         {
             Execution {
                 eaten: frame.eaten(),
+                source: if result.outer.exact()
+                    && result.callback == S_OK
+                    && result.valid
+                    && result.effect == Effect::Verified
+                    && self.current(guard)
+                    && self.owned().is_none()
+                {
+                    frame.take_source_handoff()
+                } else {
+                    None
+                },
                 completion: if (result.outer.exact() && result.callback == S_OK && result.valid)
                     || frame.completion() == crate::edit::Completion::Unknown
                 {
@@ -1848,6 +1919,7 @@ impl Service {
             );
             Execution {
                 eaten,
+                source: None,
                 completion: if result.effect != Effect::Unattempted {
                     crate::edit::Completion::Unknown
                 } else {
@@ -2039,6 +2111,7 @@ impl Service {
         if outcome == 0
             && state.owned.is_none()
             && !state.pending_restricts()
+            && !state.source.defer_adoption()
             && let Some(ready) = state.pending_ready.clone().filter(|ready| ready.model)
         {
             Self::adopt_ready(&mut state, ready)?;

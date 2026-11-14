@@ -4,7 +4,7 @@ use crate::engine::Plan;
 use crate::field::{self, CandidateField, Contract, Identity};
 use crate::foreign::document as native;
 use crate::foreign::{self, Call, InterfaceError, Lease, Returned};
-use crate::service::{Authority, Owned, OwnedIdentity, Service};
+use crate::service::{Authority, Owned, OwnedIdentity, Service, SourceTicket};
 use keyrill_ffi::NativeEvent;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -72,6 +72,8 @@ pub(crate) struct Frame {
     outcome_recorded: Cell<bool>,
     diagnose: bool,
     decision: Option<Rc<Cell<bool>>>,
+    source_candidate: Cell<bool>,
+    source_handoff: RefCell<Option<Rc<SourceTicket>>>,
     // Retain the service and module through native reference retirement above.
     owner: FrameOwner,
 }
@@ -141,6 +143,8 @@ impl Frame {
             outcome_recorded: Cell::new(false),
             diagnose,
             decision,
+            source_candidate: Cell::new(false),
+            source_handoff: RefCell::new(None),
             owner,
         })
     }
@@ -155,6 +159,47 @@ impl Frame {
             true,
             None,
         )
+    }
+
+    pub(crate) fn allow_source_handoff(&self, allowed: bool) {
+        self.source_candidate.set(allowed);
+    }
+
+    pub(crate) fn take_source_handoff(&self) -> Option<Rc<SourceTicket>> {
+        self.source_handoff.borrow_mut().take()
+    }
+
+    pub(crate) unsafe fn source_field(
+        service: Rc<Service>,
+        owner: OwnServiceLease,
+        context: *mut std::ffi::c_void,
+    ) -> Option<Identity> {
+        let authority = service.capture_authority()?;
+        if authority.owned.is_some() {
+            return None;
+        }
+        let guard = authority.guard;
+        let event = NativeEvent::new(6, 1, 1, &[]).ok()?;
+        // SAFETY: the source-only caller retains the native receiving context for this metadata query.
+        let frame = unsafe {
+            Self::capture(
+                Rc::clone(&service),
+                owner,
+                context,
+                event,
+                authority,
+                false,
+                None,
+            )
+        }
+        .ok()?;
+        let editing = frame.editing_work()?;
+        let field = frame.fresh_field(editing)?;
+        if !frame.writable(editing) || frame.no_foreign(editing).is_none() || !frame.alive() {
+            return None;
+        }
+        drop(frame);
+        service.current_owned(guard, None).then_some(field.identity)
     }
 
     pub(crate) fn retirement(
@@ -1211,6 +1256,19 @@ impl Frame {
             }
             self.effect.set(Effect::Verified);
             self.eaten.set(plan.disposition == 1);
+            let source = self.field.get().and_then(|field| {
+                self.service.verified_source_edit(
+                    editing.authority.guard,
+                    &event,
+                    &plan,
+                    field.identity,
+                    self.source_candidate.get(),
+                )
+            });
+            if self.source_candidate.get() && plan.action == 2 && plan.disposition == 2 {
+                *self.source_handoff.borrow_mut() = source;
+                return;
+            }
             if plan.action == 1 && (view.role == 4 || view.role == 5) {
                 self.completion.set(Completion::ManualMark);
             }

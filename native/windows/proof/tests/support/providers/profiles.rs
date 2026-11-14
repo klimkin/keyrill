@@ -27,10 +27,15 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_ActivateProfile(
         boundary(this, |p| {
             source::fixed(a1, a2, a3, a4, a5, a6);
             let state = p.profile();
-            assert_eq!(state.language.get(), 0x419);
-            assert_eq!(state.activation_calls.get(), 0);
-            state.activation_calls.set(1);
-            state.profile.set(source_profile(1));
+            assert_eq!(state.language.get(), a2);
+            state.activation_calls.set(state.activation_calls.get() + 1);
+            if state.activation_effect.get() {
+                state.profile.set(source_profile((a2 == 0x419) as usize));
+                let language = a2 as usize;
+                state
+                    .substitute
+                    .set(HKL((language << 16 | language) as *mut _));
+            }
             p.hit("profile.activate");
             p.result("ActivateProfile")
         })
@@ -69,7 +74,7 @@ unsafe extern "system" fn ITfInputProcessorProfileMgr_GetProfile(
         boundary(this, |p| {
             source::fixed(a1, a2, a3, a4, a5, 0);
             p.hit("target.read");
-            a6.write(source_profile(1));
+            a6.write(p.profile().available[(a2 == 0x419) as usize].get());
             p.result("GetProfile")
         })
     }
@@ -176,7 +181,24 @@ unsafe extern "system" fn ITfInputProcessorProfileSubstituteLayout_GetSubstitute
     unsafe {
         boundary(this, |p| {
             p.hit("GetSubstituteKeyboardLayout");
-            a4.write(p.profile().substitute.get());
+            let index = (a2 == 0x419) as usize;
+            let expected = source_profile(index);
+            assert_eq!(*a1, expected.clsid);
+            assert_eq!(a2, expected.langid);
+            assert_eq!(*a3, expected.guidProfile);
+            p.hit(if index == 0 {
+                "substitute.en"
+            } else {
+                "substitute.ru"
+            });
+            let state = p.profile();
+            a4.write(state.bindings[index].get().unwrap_or_else(|| {
+                if state.profile.get().langid == a2 {
+                    state.substitute.get()
+                } else {
+                    expected.hklSubstitute
+                }
+            }));
             p.result("GetSubstituteKeyboardLayout")
         })
     }

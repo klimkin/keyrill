@@ -37,8 +37,12 @@ pub struct Profile {
     pub enabled: Cell<windows_core::BOOL>,
     pub language_calls: Cell<u32>,
     pub activation_calls: Cell<u32>,
+    pub language_effect: Cell<bool>,
+    pub activation_effect: Cell<bool>,
     pub profile: Cell<TF_INPUTPROCESSORPROFILE>,
     pub substitute: Cell<HKL>,
+    pub available: [Cell<TF_INPUTPROCESSORPROFILE>; 2],
+    pub bindings: [Cell<Option<HKL>>; 2],
     pub results: RefCell<std::collections::BTreeMap<&'static str, HRESULT>>,
     pub nulls: RefCell<Vec<&'static str>>,
 }
@@ -49,6 +53,8 @@ impl Default for Profile {
             enabled: Cell::new(true.into()),
             language_calls: Cell::new(0),
             activation_calls: Cell::new(0),
+            language_effect: Cell::new(true),
+            activation_effect: Cell::new(true),
             profile: Cell::new(TF_INPUTPROCESSORPROFILE {
                 dwProfileType: TF_PROFILETYPE_INPUTPROCESSOR,
                 langid: 0x409,
@@ -60,6 +66,8 @@ impl Default for Profile {
                 ..Default::default()
             }),
             substitute: Cell::new(HKL(0x04090409usize as *mut _)),
+            available: std::array::from_fn(|index| Cell::new(source_profile(index))),
+            bindings: std::array::from_fn(|_| Cell::new(None)),
             results: RefCell::new(Default::default()),
             nulls: RefCell::new(vec![]),
         }
@@ -527,6 +535,8 @@ pub const BOUNDARIES: &[&str] = &[
     "language.read",
     "profile.read",
     "target.read",
+    "substitute.en",
+    "substitute.ru",
     "enabled.read",
     "language.change",
     "profile.activate",

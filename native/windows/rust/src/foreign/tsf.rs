@@ -238,6 +238,88 @@ pub(crate) fn failure(call: Call) -> HRESULT {
     }
 }
 
+pub(crate) fn current_language(profiles: &Lease<ITfInputProcessorProfiles>) -> (Call, u16) {
+    let mut language = 0;
+    // SAFETY: the retained profiles interface receives distinct initialized scalar storage.
+    let result = unsafe {
+        (super::vtable::<ITfInputProcessorProfiles>(pointer(profiles)).GetCurrentLanguage)(
+            pointer(profiles),
+            &mut language,
+        )
+    };
+    (Call { result }, language)
+}
+
+pub(crate) fn change_language(profiles: &Lease<ITfInputProcessorProfiles>, language: u16) -> Call {
+    // SAFETY: profiles is retained throughout the bounded source-selection request.
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfInputProcessorProfiles>(pointer(profiles)).ChangeCurrentLanguage)(
+                pointer(profiles),
+                language,
+            )
+        },
+    }
+}
+
+pub(crate) fn profile_enabled(
+    profiles: &Lease<ITfInputProcessorProfiles>,
+    profile: &crate::profiles::Profile,
+) -> (Call, BOOL) {
+    let mut enabled = BOOL(0);
+    // SAFETY: all profile identity inputs are immutable and output is initialized writable storage.
+    let result = unsafe {
+        (super::vtable::<ITfInputProcessorProfiles>(pointer(profiles)).IsEnabledLanguageProfile)(
+            pointer(profiles),
+            &crate::profiles::SERVICE_ID,
+            profile.language,
+            &profile.id,
+            &mut enabled,
+        )
+    };
+    (Call { result }, enabled)
+}
+
+pub(crate) fn target_profile(
+    profiles: &Lease<ITfInputProcessorProfileMgr>,
+    profile: &crate::profiles::Profile,
+) -> (Call, TF_INPUTPROCESSORPROFILE) {
+    let mut output = TF_INPUTPROCESSORPROFILE::default();
+    // SAFETY: the retained manager and exact static identity live through this output query.
+    let result = unsafe {
+        (super::vtable::<ITfInputProcessorProfileMgr>(pointer(profiles)).GetProfile)(
+            pointer(profiles),
+            TF_PROFILETYPE_INPUTPROCESSOR,
+            profile.language,
+            &crate::profiles::SERVICE_ID,
+            &profile.id,
+            HKL::default(),
+            &mut output,
+        )
+    };
+    (Call { result }, output)
+}
+
+pub(crate) fn activate_profile(
+    profiles: &Lease<ITfInputProcessorProfileMgr>,
+    profile: &crate::profiles::Profile,
+) -> Call {
+    // SAFETY: the retained manager and immutable static target live through this flags-zero request.
+    Call {
+        result: unsafe {
+            (super::vtable::<ITfInputProcessorProfileMgr>(pointer(profiles)).ActivateProfile)(
+                pointer(profiles),
+                TF_PROFILETYPE_INPUTPROCESSOR,
+                profile.language,
+                &crate::profiles::SERVICE_ID,
+                &profile.id,
+                HKL::default(),
+                0,
+            )
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

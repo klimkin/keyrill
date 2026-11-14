@@ -1,4 +1,6 @@
 //! Real isolated HKCU values, the production worker, and advised DLL keyboard entry.
+#[path = "scenarios_source_handoff.rs"]
+mod source_handoff;
 use crate::support::{client::Client, oracle};
 use crate::worker_support::{Environment, Files, RuntimeSnapshot, runtime, wait, wide};
 use std::ffi::c_void;

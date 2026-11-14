@@ -2404,12 +2404,32 @@
         "controlled::scenarios_configuration::pending_off_survives_focus_invalidation",
         "controlled::scenarios_configuration::pending_off_survives_source_invalidation",
         "controlled::scenarios_configuration::pending_off_survives_unknown_retirement",
-        "controlled::scenarios_configuration::pending_off_is_cancelled_by_new_activation"
+        "controlled::scenarios_configuration::pending_off_is_cancelled_by_new_activation",
+        "controlled::scenarios_configuration::source_handoff::source_both_directions_defer_until_verified_finish_and_retranslate_same_key",
+        "controlled::scenarios_configuration::source_handoff::source_boundary_reversal_escape_manual_and_abstention_never_switch",
+        "controlled::scenarios_configuration::source_handoff::source_shift_caps_and_nonqualifying_physical_keys_are_bounded",
+        "controlled::scenarios_configuration::source_handoff::source_first_finish_denial_unknown_and_request_mismatch_never_authorize_source",
+        "controlled::scenarios_configuration::source_handoff::source_failures_stop_without_retry_rollback_or_new_mark",
+        "controlled::scenarios_configuration::source_handoff::source_reentry_focus_activation_and_callbacks_cancel_irrevocably",
+        "controlled::scenarios_configuration::source_handoff::source_pending_disable_vetoes_before_mutation_and_during_language_call",
+        "controlled::scenarios_configuration::source_handoff::source_target_already_selected_skips_activation_and_late_callbacks_expire_authority",
+        "controlled::scenarios_configuration::source_handoff::source_second_lock_denial_and_attempted_unknown_keep_effect_derived_disposition",
+        "controlled::scenarios_configuration::source_handoff::source_sensitive_or_uncertain_controls_have_zero_new_reads_and_mutations",
+        "controlled::scenarios_configuration::source_handoff::source_scope_change_inside_native_call_grants_no_character_authority",
+        "controlled::scenarios_configuration::source_handoff::source_unavailable_layout_repeats_keyboard_drift_and_expired_callbacks_do_not_switch",
+        "controlled::scenarios_configuration::source_handoff::source_matching_observations_require_actual_readback_and_fresh_authority",
+        "controlled::scenarios_configuration::source_handoff::source_unchanged_worker_publications_keep_intent_and_pending_snapshot",
+        "controlled::scenarios_configuration::source_handoff::source_callback_capable_retirement_revokes_before_source_mutation",
+        "controlled::scenarios_configuration::source_handoff::source_pc_oem_letters_use_actual_finish_and_target_translation",
+        "controlled::scenarios_configuration::source_handoff::source_changed_complete_configuration_cancels_prepared_staged_and_inflight_intent",
+        "controlled::scenarios_configuration::source_handoff::source_preexisting_target_binding_refuses_before_source_mutation",
+        "controlled::scenarios_configuration::source_handoff::source_target_metadata_callbacks_revoke_before_source_mutation"
       ],
       "reconciliations": [
         "Family mappings enumerate composition/admission/commands, diagnostics/metadata/publication, lifecycle, source, and shutdown schedules. Fixture and native denial proof unit successors are required alongside controlled DLL tests. Foreign C++ throw mechanics are reconciled to native HRESULT, legal reentry, or contained Rust panic in the corresponding families.",
         "Shared ordinary TSF admission uses app-agnostic native candidates and an immediately scoped range permit. Normal advised key entry covers arbitrary and wrapper classes, exact ordinary scope, native identity, sensitive/read-only/disabled refusals, exact failure/null diagnostics, reentrant context loss, and post-write exclusion with no readback or replay. Unrecognized Notepad versions require explicit ordinary scope; only exact bounded versions retain the unavailable-scope exception. Earlier class-only command exclusions now use detached native focus, preserving zero text reads and composition effects.",
-        "Complete persisted configuration schedules use advised entry and isolated native stores. They cover Manual, Automatic, Off, invalid revisions, source rebinding, latest-save publication, bounded retirement, focus/source/termination invalidation, unknown effects, and activation replacement."
+        "Complete persisted configuration schedules use advised entry and isolated native stores. They cover Manual, Automatic, Off, invalid revisions, source rebinding, latest-save publication, bounded retirement, focus/source/termination invalidation, unknown effects, and activation replacement.",
+        "Deferred source handoff uses the actual advised DLL entry and independent raw COM providers. Exact whole documents, carets, key dispositions, one write per proposal, source identities, and complete applied configuration identities cover both EN/RU directions. Source-only metadata uses the scope last verified at FINISH with the supported host metadata-coherence and notification prerequisite. Silent private-scope drift can leave the OS source changed, while the second fresh executor refuses character reads, starts and writes under that scope. The physical key class covers nonrepeat A-Z and seven PC OEM positions when target translation yields one alphabetic scalar, with Shift/Caps on loaded exact EN/RU substitute layouts. Both directions retain the actual core FINISH/REPLAN gate. Broader PC keyboard and installed Rust host qualification remain pending for x64 and x86."
       ]
     },
     {
