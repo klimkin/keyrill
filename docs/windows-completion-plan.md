@@ -33,6 +33,14 @@ or adopting a weaker backend requires an explicit decision.
 The user selected these targets and Intel/AMD x64 plus x86 application support. Windows 11 is
 the proposed operating-system baseline. Its exact supported build range must be fixed in phase 0.
 
+The named applications define required acceptance targets and representative regression coverage.
+The product goal is EN/RU source availability across TSF-enabled applications, with shared
+native admission of the focused control. A control that satisfies a validated shared contract
+should become eligible through that contract without a new application-name entry.
+Phase 2 must establish that contract and its limits before broadening runtime admission.
+Per-application settings remain optional behavior restrictions, and host-specific exceptions
+remain narrowly tied to their independently verified facts.
+
 | Application | Required ordinary controls | Proposed default when automatic correction is enabled | Additional acceptance |
 |---|---|---|---|
 | Notepad | Main plain-text document | Automatic | Retain the current version-bounded baseline and test the shipping version |
@@ -191,6 +199,11 @@ Compare a narrowly identified control-family contract with a broader capability-
 in isolated experiments. Choose the smallest design that proves ordinary-field authority before
 character access and remains valid around reentrant calls.
 
+Prefer a shared positive native contract wherever the experiments establish it. Validate the
+same predicate across independently implemented controls and representative applications.
+Advertised TSF interfaces alone do not prove safe scope, ownership, or readback behavior.
+Keep identity-dependent host exceptions explicit when their evidence cannot be generalized.
+
 Preserve the proven Notepad unavailable-scope exception under its existing exact contract.
 Every additional exception needs its own evidence and negative schedules. A successful TSF call
 or a process name alone cannot widen admission.
@@ -241,7 +254,9 @@ Keep a single owned-composition executor. Add field contracts and native capabil
 at the admission boundary selected in phase 2. Recheck context, focus, security, scope,
 generation, and field identity after callback-capable queries and before every effect.
 
-Implement and verify these units in order.
+Implement each proven shared contract once, then verify it across these application/control
+units in order. Reuse a passing contract across additional applications. Investigate a failure
+at its native contract boundary before adding an application-specific exception.
 
 1. Chrome text input and textarea, then contenteditable as a separate unit.
 2. Edge using the same candidate family, with independent actual-app verification.
@@ -460,6 +475,21 @@ can run in separate worktrees. Keep admission/executor changes under one integra
 Use independent reviewers and exact-path Conventional Commits. Run focused checks after each
 unit, then full required gates before integration. Maintain one support manifest and one
 build-to-package identity chain throughout.
+
+## Maintainer involvement
+
+Automate implementation, builds, controlled providers, artifact verification, permitted desktop
+input, and independent UIA assertions. Batch installation and registration setup around validated
+candidates. Keep source selection instructions together with the relevant application sequence.
+
+Prepare one guided physical-validation session with complete per-control sequences and observers
+already armed. The maintainer performs installation, elevation or permission prompts, source
+selection, physical-key cases, and the restricted Terminal input. Inspect results independently
+and request another sequence when an observed failure needs a new experiment.
+
+The application list creates test coverage work. Compatible applications sharing a validated
+runtime contract need no individual configuration step from the user. Hands-on duration remains
+an estimate until the first host experiments establish source-selection and physical-test needs.
 
 ## Open decisions before the long implementation run
 
