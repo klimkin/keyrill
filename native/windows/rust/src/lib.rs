@@ -34,6 +34,8 @@ pub mod registrar;
 mod runtime_window;
 #[cfg(windows)]
 mod service;
+#[cfg(windows)]
+pub mod settings;
 #[cfg(all(windows, feature = "test-api"))]
 mod test_api;
 #[cfg(windows)]

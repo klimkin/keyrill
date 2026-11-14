@@ -627,6 +627,27 @@ PC OEM keys with Shift and Caps Lock in each already loaded supported layout. Th
 controlled observations, not physical keyboard or live TSF routing evidence. Separate automated
 real-editor runs passed the manual commands and PC printable-key cases described below.
 
+## Persisted preferences store
+
+The Rust `settings` API stores one complete per-user `REG_BINARY` value named `Preferences`
+under `HKCU\Software\Keyrill`, using the explicit 64-bit registry view for both client bitnesses.
+It contains automatic inference, source-switching preference, both dictionary choices, and
+restrictive application overrides. Shipping defaults disable automatic inference, enable
+source switching, and select the default dictionary locations.
+
+Loads have no initialization write. Save validates the entire candidate, compares its opaque
+revision under a user-SID-bound cross-session mutex, writes one complete value, and requires
+exact fresh readback. Every save creates a fresh nonce. An old saved revision conflicts after
+deletion or recreation. A missing revision compares with current absence. Invalid, partial,
+future-schema, or inaccessible values leave a worker reader's last valid snapshot intact.
+
+The mutex requires the current user's exact owner and private DACL plus an explicit medium
+mandatory-integrity label. Native tests verify the actual label and reject a preexisting
+low-integrity object. Actual cooperation between elevated and normal writers and separate logon
+sessions still needs deployment validation. The store API is ready for settings UI and runtime
+publication integration. The activation environment described below remains the current runtime
+configuration entry point.
+
 ## Shared model and personal vocabulary
 
 Windows captures a complete configuration at activation. `KEYRILL_WINDOWS_POLICY` accepts
