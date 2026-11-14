@@ -51,6 +51,7 @@ pub(crate) struct Model {
 pub(crate) enum Config {
     #[default]
     Off,
+    Persisted,
     Fixture,
     Model(Model),
 }
@@ -58,7 +59,7 @@ pub(crate) enum Config {
 impl Config {
     pub(crate) fn policy(&self) -> u32 {
         match self {
-            Self::Off => 0,
+            Self::Off | Self::Persisted => 0,
             Self::Fixture => 1,
             Self::Model(_) => 2,
         }
@@ -107,13 +108,42 @@ pub(crate) struct SourceReady {
     pub(crate) dictionary: Option<Arc<DictionaryOwner>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Prepared {
+    pub(crate) settings: crate::settings::Snapshot,
+    pub(crate) application: crate::settings::AppPolicy,
+}
+
+impl Prepared {
+    pub(crate) fn policy(&self) -> u32 {
+        u32::from(
+            self.settings.value.automatic
+                && self.application == crate::settings::AppPolicy::Automatic,
+        ) * 2
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct Ready {
     pub(crate) activation: u32,
     pub(crate) revision: u64,
     pub(crate) model: bool,
+    pub(crate) configuration: Option<Prepared>,
+    pub(crate) configuration_error: Error,
     pub(crate) error: Error,
     pub(crate) sources: [SourceReady; 2],
+}
+
+impl Ready {
+    pub(crate) fn capability(&self) -> u8 {
+        match &self.configuration {
+            Some(configuration) if configuration.application == crate::settings::AppPolicy::Off => {
+                0
+            }
+            Some(configuration) if configuration.policy() == 0 => 1,
+            _ => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

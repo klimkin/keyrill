@@ -294,7 +294,11 @@ fn runtime_service_model_vocabulary_receipts_and_configuration() {
         );
         let before = runtime(&c.service).revision;
         files.write("en.add", b"publicword\n");
-        maintain_until(&c, |s| s.revision > before + 1 && s.sources[0] == 2);
+        let maintain: unsafe extern "system" fn(*mut c_void) -> HRESULT =
+            unsafe { c.api.export(b"KeyrillTestMaintain\0") };
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert_eq!(unsafe { maintain(c.handle) }, S_OK);
+        assert_eq!(runtime(&c.service).revision, before);
         let mut reverse = InputEvent::command(5);
         reverse.mode = mode;
         assert!(c.event(reverse));
@@ -303,6 +307,10 @@ fn runtime_service_model_vocabulary_receipts_and_configuration() {
             if mode == 1 { "cgbcjr " } else { "цщкдв " },
             if mode == 1 { 14 } else { 13 },
         );
+        let mut finish = InputEvent::command(6);
+        finish.mode = mode;
+        assert!(!c.event(finish));
+        maintain_until(&c, |s| s.revision > before + 1 && s.sources[0] == 2);
         println!("scenario runtime.service.mode-{mode}.receipt-across-publication");
     }
     for (en, ru) in [
@@ -599,6 +607,7 @@ fn runtime_nested_message_pumping_defers_snapshot_adoption() {
     assert!(c.key(b'c' as u16, true));
     assert!(called.get());
     assert_eq!(runtime(&c.service).revision, before.revision);
+    assert!(!c.event(InputEvent::command(6)));
     maintain_until(&c, |s| s.revision > before.revision);
     oracle::document(&c, "c", 8);
     assert_eq!(c.deactivate(), S_OK);

@@ -44,6 +44,17 @@ pub struct Environment {
     previous: Option<OsString>,
 }
 impl Environment {
+    pub fn absent(name: &str) -> Self {
+        let previous = std::env::var_os(name);
+        // Serial controlled tests own these process-global configuration variables.
+        unsafe {
+            std::env::remove_var(name);
+        }
+        Self {
+            name: name.into(),
+            previous,
+        }
+    }
     pub fn set(name: &str, value: impl AsRef<OsStr>) -> Self {
         let previous = std::env::var_os(name);
         // Serial controlled tests own these process-global configuration variables.

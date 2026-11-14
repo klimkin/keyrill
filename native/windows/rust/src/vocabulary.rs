@@ -2,8 +2,8 @@
 
 use crate::service::WORKERS;
 use crate::vocabulary_contract::{
-    Boundary, Config, DictionaryOwner, Error, Model, ModuleOwner, Path, Ready, Source, SourceReady,
-    Status,
+    Boundary, Config, DictionaryOwner, Error, Model, ModuleOwner, Path, Prepared, Ready, Source,
+    SourceReady, Status,
 };
 use keyrill_ffi::{kr_abi_version, kr_prepare_model};
 use std::ffi::c_void;
@@ -455,6 +455,23 @@ pub(crate) fn parse_path(text: &[u16]) -> Option<Path> {
 
 pub(crate) fn capture_config() -> Option<Config> {
     let policy = environment("KEYRILL_WINDOWS_POLICY").ok()?;
+    if policy.is_none() {
+        return Some(Config::Persisted);
+    }
+    let equals = |text: &str| {
+        policy
+            .as_ref()
+            .is_some_and(|value| value.iter().copied().eq(text.encode_utf16()))
+    };
+    if equals("fixture") {
+        return Some(Config::Fixture);
+    }
+    if equals("off") {
+        return Some(Config::Off);
+    }
+    if !equals("model") {
+        return None;
+    }
     let english = environment("KEYRILL_WINDOWS_EN_DICTIONARY").ok()?;
     let russian = environment("KEYRILL_WINDOWS_RU_DICTIONARY").ok()?;
     let explicit = [english, russian].map(|value| match value {
@@ -464,20 +481,6 @@ pub(crate) fn capture_config() -> Option<Config> {
     let [english, russian] = explicit;
     let english = english?;
     let russian = russian?;
-    let equals = |text: &str| {
-        policy
-            .as_ref()
-            .is_some_and(|value| value.iter().copied().eq(text.encode_utf16()))
-    };
-    if policy.is_none() || equals("fixture") {
-        return Some(Config::Fixture);
-    }
-    if equals("off") {
-        return Some(Config::Off);
-    }
-    if !equals("model") {
-        return None;
-    }
     let profile = environment("USERPROFILE").ok()?;
     let source = |path: Option<Path>, language: &str| {
         path.map(Source::Explicit).unwrap_or_else(|| {
@@ -1153,8 +1156,13 @@ impl SourceState {
     }
 }
 
+enum WorkConfig {
+    Model(Model),
+    Persisted(Option<String>),
+}
+
 struct State {
-    config: Model,
+    config: WorkConfig,
     activation: u32,
     stop: Handle,
     revoked: AtomicBool,
@@ -1164,7 +1172,14 @@ struct State {
 
 impl State {
     fn publish(&self, ready: Ready) -> Result<(), Error> {
+        self.publish_if(ready, || true).map(|_| ())
+    }
+
+    fn publish_if(&self, ready: Ready, current: impl FnOnce() -> bool) -> Result<bool, Error> {
         self.hooks.at(Boundary::BeforePublish, HANDLE::default(), 0);
+        if !current() {
+            return Ok(false);
+        }
         let replaced = {
             let mut mailbox = self.mailbox.lock().map_err(|_| Error::Startup)?;
             if self.revoked.load(Ordering::Acquire) {
@@ -1175,7 +1190,7 @@ impl State {
         };
         drop(replaced);
         self.hooks.at(Boundary::Published, HANDLE::default(), 0);
-        Ok(())
+        Ok(true)
     }
 
     fn run(&self, instance: PTP_CALLBACK_INSTANCE, ready: &mut Ready) -> Result<(), Error> {
@@ -1190,17 +1205,151 @@ impl State {
             return Err(Error::Model);
         }
         check_stop(self.stop.0)?;
+        if let WorkConfig::Persisted(namespace) = &self.config {
+            return self.run_persisted(ready, namespace.as_deref());
+        }
+        let WorkConfig::Model(model) = &self.config else {
+            unreachable!()
+        };
         let mut sources = [SourceState::default(), SourceState::default()];
         ready.model = true;
         loop {
             ready.revision = ready.revision.checked_add(1).ok_or(Error::Startup)?;
             for (index, source) in sources.iter_mut().enumerate() {
-                source.step(&self.config.sources[index], self.stop.0, self.hooks)?;
+                source.step(&model.sources[index], self.stop.0, self.hooks)?;
                 ready.sources[index] = source.ready.clone();
             }
             check_stop(self.stop.0)?;
             self.publish(ready.clone())?;
             // SAFETY: State retains the stop event throughout this callback.
+            if unsafe { WaitForSingleObject(self.stop.0, 500) } != WAIT_TIMEOUT {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn model_for(preferences: &crate::settings::Preferences) -> Model {
+    let profile = environment("USERPROFILE").ok().flatten();
+    let sources = std::array::from_fn(|index| match &preferences.dictionaries[index] {
+        crate::settings::DictionaryPath::Explicit(path) => Source::Explicit(
+            parse_path(&path.as_str().encode_utf16().collect::<Vec<_>>())
+                .expect("typed local path already validated"),
+        ),
+        crate::settings::DictionaryPath::Default => {
+            let path = profile.as_ref().and_then(|profile| {
+                let mut path = profile.clone();
+                let language = ["en", "ru"][index];
+                path.extend(format!("\\vimfiles\\spell\\{language}.utf-8.add").encode_utf16());
+                parse_path(&path)
+            });
+            Source::Default(path)
+        }
+    });
+    Model { sources }
+}
+
+impl State {
+    fn run_persisted(&self, ready: &mut Ready, namespace: Option<&str>) -> Result<(), Error> {
+        #[cfg(feature = "test-api")]
+        let store = match namespace {
+            Some(namespace) => crate::settings::Store::isolated_test(namespace),
+            None => crate::settings::Store::current_user(),
+        };
+        #[cfg(not(feature = "test-api"))]
+        let store = {
+            debug_assert!(namespace.is_none());
+            crate::settings::Store::current_user()
+        };
+        let mut reader = crate::settings::Reader::default();
+        let identities = crate::application_identity::current();
+        let mut binding: Option<Model> = None;
+        let mut sources = [SourceState::default(), SourceState::default()];
+        let mut complete: Option<Ready> = None;
+        loop {
+            check_stop(self.stop.0)?;
+            let refreshed = store
+                .as_ref()
+                .ok()
+                .and_then(|store| reader.refresh(store).ok());
+            let configuration_error = if refreshed.is_some() {
+                Error::None
+            } else {
+                Error::Configuration
+            };
+            let snapshot = reader.snapshot().clone();
+            let model = model_for(&snapshot.value);
+            for (index, source) in sources.iter_mut().enumerate() {
+                if binding
+                    .as_ref()
+                    .is_none_or(|old| old.sources[index] != model.sources[index])
+                {
+                    *source = SourceState::default();
+                }
+                source.step(&model.sources[index], self.stop.0, self.hooks)?;
+            }
+            binding = Some(model);
+            check_stop(self.stop.0)?;
+            let current = store.as_ref().ok().and_then(|store| store.load().ok());
+            let unchanged = current.as_ref().is_some_and(|current| *current == snapshot);
+            let dictionaries_ready = sources
+                .iter()
+                .all(|source| source.ready.dictionary.is_some());
+            let prepared = Prepared {
+                settings: snapshot.clone(),
+                application: crate::application_identity::policy(&identities, &snapshot.value),
+            };
+            let candidate = if unchanged && (dictionaries_ready || prepared.policy() == 0) {
+                Some(Ready {
+                    activation: self.activation,
+                    model: true,
+                    configuration: Some(prepared),
+                    configuration_error: if identities.is_ok() {
+                        configuration_error
+                    } else {
+                        Error::Unavailable
+                    },
+                    sources: std::array::from_fn(|index| sources[index].ready.clone()),
+                    ..Ready::default()
+                })
+            } else {
+                Some({
+                    let mut previous = complete.clone().unwrap_or_else(|| Ready {
+                        activation: self.activation,
+                        sources: std::array::from_fn(|index| sources[index].ready.clone()),
+                        ..Ready::default()
+                    });
+                    previous.configuration_error = if !unchanged {
+                        Error::Configuration
+                    } else {
+                        Error::None
+                    };
+                    previous.error = sources
+                        .iter()
+                        .map(|source| source.ready.error)
+                        .find(|error| *error != Error::None)
+                        .unwrap_or(Error::None);
+                    previous
+                })
+            };
+            if let Some(mut candidate) = candidate {
+                candidate.revision = ready.revision.checked_add(1).ok_or(Error::Startup)?;
+                if self.publish_if(candidate.clone(), || {
+                    !unchanged
+                        || store
+                            .as_ref()
+                            .ok()
+                            .and_then(|store| store.load().ok())
+                            .as_ref()
+                            == Some(&snapshot)
+                })? {
+                    *ready = candidate.clone();
+                    if candidate.configuration.is_some() {
+                        complete = Some(candidate);
+                    }
+                }
+            }
+            // SAFETY: this callback retains its own stop event until all work drains.
             if unsafe { WaitForSingleObject(self.stop.0, 500) } != WAIT_TIMEOUT {
                 return Ok(());
             }
@@ -1260,9 +1409,33 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
+    pub(crate) fn start_persisted(
+        &mut self,
+        activation: u32,
+        owner: ModuleOwner,
+        hooks: Hooks,
+    ) -> bool {
+        #[cfg(feature = "test-api")]
+        let namespace = std::env::var_os("KEYRILL_WINDOWS_TEST_SETTINGS_NAMESPACE")
+            .map(|value| value.to_string_lossy().into_owned());
+        #[cfg(not(feature = "test-api"))]
+        let namespace = None;
+        self.start_config(WorkConfig::Persisted(namespace), activation, owner, hooks)
+    }
+
     pub(crate) fn start(
         &mut self,
         model: &Model,
+        activation: u32,
+        owner: ModuleOwner,
+        hooks: Hooks,
+    ) -> bool {
+        self.start_config(WorkConfig::Model(model.clone()), activation, owner, hooks)
+    }
+
+    fn start_config(
+        &mut self,
+        config: WorkConfig,
         activation: u32,
         owner: ModuleOwner,
         hooks: Hooks,
@@ -1277,7 +1450,7 @@ impl Worker {
         #[cfg(feature = "test-api")]
         let hooks = configured.as_ref().map_or(hooks, |lease| lease.0);
         let started = catch_unwind(AssertUnwindSafe(|| {
-            self.launch(model, activation, owner, hooks)
+            self.launch(config, activation, owner, hooks)
         }))
         .unwrap_or(false);
         #[cfg(feature = "test-api")]
@@ -1285,7 +1458,13 @@ impl Worker {
         started
     }
 
-    fn launch(&mut self, model: &Model, activation: u32, owner: ModuleOwner, hooks: Hooks) -> bool {
+    fn launch(
+        &mut self,
+        config: WorkConfig,
+        activation: u32,
+        owner: ModuleOwner,
+        hooks: Hooks,
+    ) -> bool {
         let Ok(lease) = HookLease::acquire(hooks) else {
             return false;
         };
@@ -1293,7 +1472,7 @@ impl Worker {
             return false;
         };
         let state = Arc::new(State {
-            config: model.clone(),
+            config,
             activation,
             stop,
             revoked: AtomicBool::new(false),

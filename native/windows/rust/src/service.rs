@@ -85,6 +85,18 @@ struct State {
     worker: Option<vocabulary::Worker>,
     maintenance_window: Option<crate::runtime_window::Window>,
     pending_ready: Option<Ready>,
+    applied_ready: Option<Ready>,
+    application_off: bool,
+    retirement_attempt: Option<(u32, crate::settings::Revision)>,
+}
+
+impl State {
+    fn pending_restricts(&self) -> bool {
+        self.pending_ready
+            .as_ref()
+            .zip(self.applied_ready.as_ref())
+            .is_some_and(|(next, current)| next.capability() < current.capability())
+    }
 }
 
 pub(crate) struct OwnedIdentity;
@@ -341,13 +353,13 @@ impl Service {
         })
     }
 
-    pub(crate) fn maintain(&self) -> HRESULT {
+    pub(crate) fn maintain(self: &Rc<Self>) -> HRESULT {
         if !self.owner_thread() {
             return RPC_E_WRONG_THREAD;
         }
         let mut state = self.state.borrow_mut();
         if state.activation != Activation::Active
-            || state.stopped
+            || self.poisoned.get()
             || state.diagnostic_depth != 0
             || state.busy
             || state.admitting_key
@@ -358,19 +370,7 @@ impl Service {
             epoch: state.epoch,
             generation: state.generation,
         };
-        let worker = state.worker.take();
-        drop(state);
-        let Some(mut worker) = worker else {
-            return S_OK;
-        };
-        let latest = worker.poll();
-        let mut state = self.state.borrow_mut();
-        if !self.state_current(&state, guard) {
-            drop(state);
-            drop(worker);
-            return S_OK;
-        }
-        state.worker = Some(worker);
+        let latest = state.worker.as_mut().and_then(vocabulary::Worker::poll);
         if let Some(latest) = latest
             && latest.activation == state.runtime.activation
             && latest.revision > state.runtime.revision
@@ -380,12 +380,55 @@ impl Service {
         let Some(ready) = state.pending_ready.clone() else {
             return S_OK;
         };
+        state.runtime.configuration_error = ready.configuration_error;
+        state.runtime.error = ready.error;
+        if let Some(configuration) = &ready.configuration {
+            state.runtime.requested = configuration.policy();
+        }
+        if !ready.model {
+            state.runtime.error = ready.error;
+            return S_OK;
+        }
+        if let Some(owned) = &state.owned {
+            if !state.stopped && state.pending_restricts() {
+                let revision = ready
+                    .configuration
+                    .as_ref()
+                    .expect("changed complete configuration")
+                    .settings
+                    .revision;
+                let attempt = (owned.serial, revision);
+                if state.retirement_attempt != Some(attempt) {
+                    state.retirement_attempt = Some(attempt);
+                    let mode = state.mode;
+                    drop(state);
+                    return self.retire_configuration(guard, mode);
+                }
+            }
+            return S_OK;
+        }
+        let _ = Self::adopt_ready(&mut state, ready);
+        S_OK
+    }
+
+    fn adopt_ready(state: &mut State, ready: Ready) -> Result<(), u32> {
+        let policy = ready
+            .configuration
+            .as_ref()
+            .map_or(if ready.model { 2 } else { 0 }, |configuration| {
+                configuration.policy()
+            });
         let Some(engine) = state.engine.as_mut() else {
-            return S_OK;
+            return Err(5);
         };
-        if engine.adopt(&ready).is_err() {
+        if engine
+            .policy(policy)
+            .and_then(|()| engine.adopt(&ready))
+            .is_err()
+        {
             state.runtime.error = RuntimeError::Startup;
-            return S_OK;
+            state.stopped = true;
+            return Err(5);
         }
         state.runtime.model_ready = ready.model as u32;
         state.runtime.error = ready.error;
@@ -393,29 +436,50 @@ impl Service {
             state.runtime.sources[index] = source.status;
             state.runtime.source_errors[index] = source.error;
         }
-        if ready.model && state.runtime.effective != 2 {
-            if state.owned.is_some() {
-                return S_OK;
-            }
-            if state
-                .engine
-                .as_mut()
-                .is_none_or(|engine| engine.policy(2).is_err())
-            {
-                state.runtime.error = RuntimeError::Startup;
-                return S_OK;
-            }
-            state.runtime.effective = 2;
-        }
+        state.application_off = ready.configuration.as_ref().is_some_and(|configuration| {
+            configuration.application == crate::settings::AppPolicy::Off
+        });
+        state.runtime.requested = policy;
+        state.runtime.effective = policy;
         state.runtime.revision = ready.revision;
+        state.applied_ready = Some(ready);
         state.pending_ready = None;
-        S_OK
+        state.retirement_attempt = None;
+        Ok(())
+    }
+
+    fn retire_configuration(self: &Rc<Self>, guard: Guard, mode: u32) -> HRESULT {
+        let Some(authority) = self.capture_authority() else {
+            return S_OK;
+        };
+        let Some(frame) = crate::edit::Frame::retirement(Rc::clone(self), authority, mode) else {
+            return S_OK;
+        };
+        if !self.current(guard) || !frame.alive() {
+            return S_OK;
+        }
+        self.state.borrow_mut().busy = true;
+        let busy = ExecutionCall(self);
+        let result = frame.request_editing();
+        if result.effect == crate::edit::Effect::Attempted {
+            self.invalidate_if(guard, true);
+        }
+        let retired = result.outer.exact()
+            && result.callback == S_OK
+            && result.completed
+            && result.valid
+            && self.current(guard)
+            && self.owned().is_none();
+        drop(frame);
+        drop(busy);
+        if retired { self.maintain() } else { S_OK }
     }
 
     fn start_runtime(self: &Rc<Self>, epoch: u64) {
         let (guard, model, activation) = {
             let state = self.state.borrow();
-            let Some(Config::Model(model)) = &state.accepted_config else {
+            let Some(config @ (Config::Model(_) | Config::Persisted)) = &state.accepted_config
+            else {
                 return;
             };
             (
@@ -423,7 +487,7 @@ impl Service {
                     epoch,
                     generation: state.generation,
                 },
-                model.clone(),
+                config.clone(),
                 state.runtime.activation,
             )
         };
@@ -465,7 +529,15 @@ impl Service {
         } else {
             ModuleOwner::Dll
         };
-        let started = worker.start(&model, activation, owner, vocabulary::Hooks::default());
+        let started = match &model {
+            Config::Model(model) => {
+                worker.start(model, activation, owner, vocabulary::Hooks::default())
+            }
+            Config::Persisted => {
+                worker.start_persisted(activation, owner, vocabulary::Hooks::default())
+            }
+            _ => false,
+        };
         if !self.current(guard) {
             drop(worker);
             drop(window);
@@ -487,23 +559,23 @@ impl Service {
 
     fn runtime_current(&self, epoch: u64) -> bool {
         let state = self.state.borrow();
-        !self.poisoned.get()
-            && !state.stopped
-            && state.activation == Activation::Active
-            && state.epoch == epoch
+        !self.poisoned.get() && state.activation == Activation::Active && state.epoch == epoch
     }
 
     fn stop_runtime(&self) {
-        let (worker, window, ready) = {
+        let (worker, window, pending, applied) = {
             let mut state = self.state.borrow_mut();
+            state.retirement_attempt = None;
             (
                 state.worker.take(),
                 state.maintenance_window.take(),
                 state.pending_ready.take(),
+                state.applied_ready.take(),
             )
         };
         drop(worker);
-        drop(ready);
+        drop(pending);
+        drop(applied);
         drop(window);
     }
 
@@ -836,6 +908,10 @@ impl Service {
                     state.accepted_config = Some(Config::Off);
                 }
                 let policy = state.accepted_config.as_ref().map_or(0, Config::policy);
+                state.application_off = matches!(state.accepted_config, Some(Config::Persisted));
+                state.applied_ready = None;
+                state.pending_ready = None;
+                state.retirement_attempt = None;
                 state.runtime = RuntimeSnapshot {
                     requested: policy,
                     configuration_error: if invalid_configuration {
@@ -1345,6 +1421,18 @@ impl Service {
     ) -> Result<AdmittedKey, HRESULT> {
         use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
         let state = self.state.borrow();
+        if state.application_off
+            || (state.owned.is_none()
+                && state.pending_ready.as_ref().is_some_and(|ready| {
+                    ready.configuration.as_ref().is_some_and(|configuration| {
+                        configuration.application == crate::settings::AppPolicy::Off
+                    })
+                }))
+        {
+            drop(state);
+            self.refuse(Stage::Key, Cause::Predicate, S_OK);
+            return Err(S_OK);
+        }
         if state.busy || state.admitting_key || state.observing_host {
             drop(state);
             self.refuse(Stage::Key, Cause::Reentry, S_OK);
@@ -1661,6 +1749,8 @@ impl Service {
                 Some(Cause::Inactive)
             } else if state.stopped {
                 Some(Cause::Stopped)
+            } else if state.application_off {
+                Some(Cause::Predicate)
             } else if context.is_null() {
                 Some(Cause::Missing)
             } else if state.busy {
@@ -1680,6 +1770,20 @@ impl Service {
         };
         let Some(authority) = authority else {
             return Execution::default();
+        };
+        let event = {
+            let state = self.state.borrow();
+            if state.pending_restricts() {
+                if authority.owned.is_none() {
+                    return Execution::default();
+                }
+                let Ok(finish) = NativeEvent::new(6, state.mode, 1, &[]) else {
+                    return Execution::default();
+                };
+                finish
+            } else {
+                event
+            }
         };
         let guard = authority.guard;
         self.state.borrow_mut().busy = true;
@@ -1931,7 +2035,15 @@ impl Service {
         if !self.state_current(&state, guard) {
             return Err(5);
         }
-        state.engine.as_mut().ok_or(5u32)?.commit(id, outcome)
+        state.engine.as_mut().ok_or(5u32)?.commit(id, outcome)?;
+        if outcome == 0
+            && state.owned.is_none()
+            && !state.pending_restricts()
+            && let Some(ready) = state.pending_ready.clone().filter(|ready| ready.model)
+        {
+            Self::adopt_ready(&mut state, ready)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn capture_field(
@@ -2141,8 +2253,10 @@ impl Service {
     pub(crate) fn interested(&self) -> bool {
         self.count(Counter::TestEntered);
         let state = self.state.borrow();
-        let interested =
-            state.activation == Activation::Active && !state.stopped && state.mode != 0;
+        let interested = state.activation == Activation::Active
+            && !state.stopped
+            && !state.application_off
+            && state.mode != 0;
         let cause = if state.activation != Activation::Active {
             Cause::Inactive
         } else if state.stopped {

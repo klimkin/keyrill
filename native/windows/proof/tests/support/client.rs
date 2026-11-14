@@ -6,6 +6,24 @@ use windows::Win32::{
     UI::TextServices::*,
 };
 use windows_core::{HRESULT, IUnknown, Interface};
+struct FixturePolicy;
+impl FixturePolicy {
+    fn set() -> Self {
+        // Serial test constructors select the fixture explicitly and restore the absent override.
+        unsafe {
+            std::env::set_var("KEYRILL_WINDOWS_POLICY", "fixture");
+        }
+        Self
+    }
+}
+impl Drop for FixturePolicy {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var("KEYRILL_WINDOWS_POLICY");
+        }
+    }
+}
+
 pub struct Client {
     pub host: Rc<HostCapsule>,
     pub a: Rc<Document>,
@@ -19,6 +37,7 @@ pub struct Client {
     pub service: ITfTextInputProcessorEx,
     pub handle: *mut c_void,
     pub api: Api,
+    _policy: Option<FixturePolicy>,
 }
 impl Client {
     pub fn new() -> Self {
@@ -28,6 +47,9 @@ impl Client {
         Self::with_layout_callback(false)
     }
     fn with_layout_callback(with_layout: bool) -> Self {
+        let policy = (std::env::var_os("KEYRILL_WINDOWS_POLICY").is_none()
+            && std::env::var_os("KEYRILL_WINDOWS_TEST_SETTINGS_NAMESPACE").is_none())
+        .then(FixturePolicy::set);
         let api = Api::load();
         let host = Rc::new(HostCapsule::default());
         let a = Document::new(Rc::clone(&host), 101);
@@ -94,6 +116,7 @@ impl Client {
                 service,
                 handle,
                 api,
+                _policy: policy,
             }
         }
     }

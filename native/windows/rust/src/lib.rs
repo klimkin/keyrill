@@ -3,6 +3,8 @@
 #![cfg_attr(windows, allow(non_snake_case))]
 
 #[cfg(windows)]
+mod application_identity;
+#[cfg(windows)]
 mod com;
 #[cfg(windows)]
 mod diagnostics;

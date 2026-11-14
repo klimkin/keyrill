@@ -31,6 +31,19 @@ pub(super) struct Store {
 }
 
 impl Store {
+    #[cfg(any(test, feature = "test-api"))]
+    pub(super) fn isolated_test(namespace: &str) -> Result<Self, SettingsError> {
+        if namespace.len() != 32 || !namespace.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(SettingsError::Invalid);
+        }
+        let mut store = Self::current_user()?;
+        store.path = wide(&format!("Software\\KeyrillTests\\Settings-{namespace}"));
+        let base = String::from_utf16(&store.name[..store.name.len() - 1])
+            .map_err(|_| SettingsError::Invalid)?;
+        store.name = wide(&format!("{base}.Tests.{namespace}"));
+        Ok(store)
+    }
+
     pub(super) fn current_user() -> Result<Self, SettingsError> {
         let sid = user_sid()?;
         Ok(Self {

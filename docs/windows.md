@@ -690,9 +690,20 @@ future-schema, or inaccessible values leave a worker reader's last valid snapsho
 The mutex requires the current user's exact owner and private DACL plus an explicit medium
 mandatory-integrity label. Native tests verify the actual label and reject a preexisting
 low-integrity object. Actual cooperation between elevated and normal writers and separate logon
-sessions still needs deployment validation. The native settings editor uses this store.
-Runtime publication integration remains in progress. The activation environment described below
-remains the current runtime configuration entry point.
+sessions still needs deployment validation. The native settings editor and runtime use this store.
+The existing vocabulary worker prepares a complete settings and dictionary publication. Invalid
+updates retain the last valid complete configuration. Native source switching remains in progress.
+
+Application overrides match canonical executable paths or package families. The most restrictive
+matching override wins. VS Code, VS Code Insiders, Word, and Windows Terminal default to Manual.
+An explicit Automatic override follows the global automatic-correction switch. Manual retains
+owned words for K and Z with inference disabled. Off passes input with zero character inspection
+or composition.
+
+Compatible updates adopt at a natural owned-word finish. A newly restrictive policy blocks new
+work and requests a bounded unchanged finish through the same executor. Denied retirement keeps
+the complete update pending. Focus, source, and exact termination preserve that pending update.
+An unknown effect keeps editing stopped while configuration maintenance continues.
 
 ### Native settings editor
 
@@ -760,13 +771,15 @@ and real desktop evidence under uncommitted `.audit/`.
 
 ## Shared model and personal vocabulary
 
-Windows captures a complete configuration at activation. `KEYRILL_WINDOWS_POLICY` accepts
-`off`, `fixture`, or `model`. An absent value preserves the fixture proof default. Invalid
-configuration retains the service's previous complete configuration; its first invalid
-configuration uses off. Off disables inference while preserving manual conversion and reversal.
+An absent `KEYRILL_WINDOWS_POLICY` selects persisted preferences and continuous worker refresh.
+Explicit `off`, `fixture`, and `model` values select the existing proof policies at activation.
+Invalid explicit configuration retains the service's previous complete configuration. Its first
+invalid configuration uses off. Off disables inference while preserving manual conversion and reversal.
 
-`KEYRILL_WINDOWS_EN_DICTIONARY` and `KEYRILL_WINDOWS_RU_DICTIONARY` accept absolute local
-paths. Defaults are `%USERPROFILE%\vimfiles\spell\en.utf-8.add` and `ru.utf-8.add`. A genuinely
+The explicit model policy accepts absolute local paths through `KEYRILL_WINDOWS_EN_DICTIONARY`
+and `KEYRILL_WINDOWS_RU_DICTIONARY`. Persisted preferences provide both paths in the shipping mode.
+Off and fixture policies ignore these unused bindings. Defaults are
+`%USERPROFILE%\vimfiles\spell\en.utf-8.add` and `ru.utf-8.add`. A genuinely
 absent default initially supplies empty protection. An explicit absent source remains missing,
 so the shared model abstains until both sources are ready. A real empty file is ready after
 settling. Invalid or disappearing files retain their last good snapshot for that activation.

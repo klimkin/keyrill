@@ -2394,11 +2394,22 @@
         "controlled::scenarios_admission_watch::missing_admission_watch_refuses_without_text_or_composition",
         "controlled::scenarios_admission_watch::successful_watch_without_cookie_is_terminal_until_reactivation",
         "controlled::scenarios_admission_watch::scope_revocation_at_every_late_getter_and_release_precedes_next_operation",
-        "controlled::scenarios_admission_watch::advised_context_notifications_revoke_every_late_metadata_occurrence"
+        "controlled::scenarios_admission_watch::advised_context_notifications_revoke_every_late_metadata_occurrence",
+        "controlled::scenarios_configuration::persisted_defaults_manual_automatic_and_off_use_advised_entry",
+        "controlled::scenarios_configuration::persisted_invalid_and_rebound_dictionary_keep_complete_revision",
+        "controlled::scenarios_configuration::persisted_preparation_latest_save_wins_and_revoked_worker_cannot_publish",
+        "controlled::scenarios_configuration::persisted_off_waits_for_verified_owned_finish_and_reentrant_deactivate_wins",
+        "controlled::scenarios_configuration::explicit_policy_validates_only_its_dictionary_bindings",
+        "controlled::scenarios_configuration::pending_off_survives_exact_host_termination",
+        "controlled::scenarios_configuration::pending_off_survives_focus_invalidation",
+        "controlled::scenarios_configuration::pending_off_survives_source_invalidation",
+        "controlled::scenarios_configuration::pending_off_survives_unknown_retirement",
+        "controlled::scenarios_configuration::pending_off_is_cancelled_by_new_activation"
       ],
       "reconciliations": [
         "Family mappings enumerate composition/admission/commands, diagnostics/metadata/publication, lifecycle, source, and shutdown schedules. Fixture and native denial proof unit successors are required alongside controlled DLL tests. Foreign C++ throw mechanics are reconciled to native HRESULT, legal reentry, or contained Rust panic in the corresponding families.",
-        "Shared ordinary TSF admission uses app-agnostic native candidates and an immediately scoped range permit. Normal advised key entry covers arbitrary and wrapper classes, exact ordinary scope, native identity, sensitive/read-only/disabled refusals, exact failure/null diagnostics, reentrant context loss, and post-write exclusion with no readback or replay. Unrecognized Notepad versions require explicit ordinary scope; only exact bounded versions retain the unavailable-scope exception. Earlier class-only command exclusions now use detached native focus, preserving zero text reads and composition effects."
+        "Shared ordinary TSF admission uses app-agnostic native candidates and an immediately scoped range permit. Normal advised key entry covers arbitrary and wrapper classes, exact ordinary scope, native identity, sensitive/read-only/disabled refusals, exact failure/null diagnostics, reentrant context loss, and post-write exclusion with no readback or replay. Unrecognized Notepad versions require explicit ordinary scope; only exact bounded versions retain the unavailable-scope exception. Earlier class-only command exclusions now use detached native focus, preserving zero text reads and composition effects.",
+        "Complete persisted configuration schedules use advised entry and isolated native stores. They cover Manual, Automatic, Off, invalid revisions, source rebinding, latest-save publication, bounded retirement, focus/source/termination invalidation, unknown effects, and activation replacement."
       ]
     },
     {

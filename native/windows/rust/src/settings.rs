@@ -208,6 +208,18 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens an explicitly isolated synthetic registry namespace for controlled DLL schedules.
+    /// This feature-gated provider never addresses the user's production preference value.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid namespace or unavailable native user identity.
+    #[cfg(any(test, feature = "test-api"))]
+    pub fn isolated_test(namespace: &str) -> Result<Self, SettingsError> {
+        Ok(Self {
+            native: native::Store::isolated_test(namespace)?,
+        })
+    }
+
     /// Selects the current process user's store without reading or writing preferences.
     ///
     /// # Errors

@@ -46,6 +46,14 @@ enum Work {
     Editing(Editing),
 }
 
+enum FrameOwner {
+    Incoming(OwnServiceLease),
+    Retirement {
+        _service: Rc<Service>,
+        _module: crate::service::ObjectLease,
+    },
+}
+
 pub(crate) struct Frame {
     service: Rc<Service>,
     work: Work,
@@ -64,8 +72,8 @@ pub(crate) struct Frame {
     outcome_recorded: Cell<bool>,
     diagnose: bool,
     decision: Option<Rc<Cell<bool>>>,
-    // Keep the generated COM allocation alive through all host reference retirement above.
-    owner: OwnServiceLease,
+    // Retain the service and module through native reference retirement above.
+    owner: FrameOwner,
 }
 
 struct Observe<'a> {
@@ -109,7 +117,7 @@ struct FinishSelection {
 impl Frame {
     fn with_work(
         service: Rc<Service>,
-        owner: OwnServiceLease,
+        owner: FrameOwner,
         work: Work,
         ownership: Option<Rc<OwnedIdentity>>,
         diagnose: bool,
@@ -139,7 +147,43 @@ impl Frame {
 
     #[cfg(feature = "test-api")]
     pub(crate) fn new(service: Rc<Service>, owner: OwnServiceLease) -> Rc<Self> {
-        Self::with_work(service, owner, Work::Probe, None, true, None)
+        Self::with_work(
+            service,
+            FrameOwner::Incoming(owner),
+            Work::Probe,
+            None,
+            true,
+            None,
+        )
+    }
+
+    pub(crate) fn retirement(
+        service: Rc<Service>,
+        authority: Authority,
+        mode: u32,
+    ) -> Option<Rc<Self>> {
+        let owned = authority.owned.as_ref()?;
+        let event = NativeEvent::new(6, mode, 1, &[]).ok()?;
+        let context = owned._context.clone();
+        let identity = Some(owned.context_id.clone());
+        let ownership = Some(Rc::clone(&owned.identity));
+        let owner = FrameOwner::Retirement {
+            _service: Rc::clone(&service),
+            _module: crate::service::ObjectLease::new(),
+        };
+        Some(Self::with_work(
+            service,
+            owner,
+            Work::Editing(Editing {
+                context,
+                identity,
+                event,
+                authority,
+            }),
+            ownership,
+            true,
+            None,
+        ))
     }
 
     pub(crate) unsafe fn editing(
@@ -193,7 +237,7 @@ impl Frame {
         };
         let frame = Self::with_work(
             service,
-            owner,
+            FrameOwner::Incoming(owner),
             Work::Editing(Editing {
                 context,
                 identity,
@@ -866,11 +910,14 @@ impl Frame {
             let Some(permit) = self.permit_range(editing, cookie, &selection.range, field) else {
                 return false;
             };
+            let FrameOwner::Incoming(owner) = &self.owner else {
+                return false;
+            };
             let Some(composition) = self.required(native::start_composition(
                 &context,
                 cookie,
                 &selection.range,
-                self.owner.composition_sink(),
+                owner.composition_sink(),
             )) else {
                 return false;
             };
@@ -1092,6 +1139,12 @@ impl Frame {
                 self.invalidate(true);
                 return;
             };
+            if matches!(self.owner, FrameOwner::Retirement { .. })
+                && (plan.action != 2 || plan.mark != plan.expected)
+            {
+                self.invalidate(true);
+                return;
+            }
             self.last_action.set(plan.action);
             self.last_disposition.set(plan.disposition);
             if plan.action != 1 && plan.action != 2 {
