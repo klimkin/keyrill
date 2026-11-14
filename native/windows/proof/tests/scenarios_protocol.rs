@@ -28,7 +28,7 @@ impl Keyboard {
     fn new() -> Self {
         let mut saved = [0; 256];
         unsafe {
-            GetKeyboardState(&mut saved).unwrap();
+            assert!(crate::support::keyboard_state(&mut saved));
             SetKeyboardState(&[0; 256]).unwrap();
         }
         Self {

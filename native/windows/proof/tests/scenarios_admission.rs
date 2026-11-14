@@ -548,7 +548,7 @@ impl Keyboard {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
         let mut previous = [0; 256];
         unsafe {
-            GetKeyboardState(&mut previous).unwrap();
+            assert!(crate::support::keyboard_state(&mut previous));
             SetKeyboardState(&[0; 256]).unwrap();
         }
         Self(previous)

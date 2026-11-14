@@ -9,7 +9,7 @@ use windows_core::{BOOL, Interface};
 fn down(c: &Client) -> bool {
     let mut previous = [0; 256];
     unsafe {
-        GetKeyboardState(&mut previous).unwrap();
+        assert!(crate::support::keyboard_state(&mut previous));
         SetKeyboardState(&[0; 256]).unwrap();
         let sink = c.manager.key_sink.borrow().clone().unwrap();
         let mut eaten = BOOL(0);

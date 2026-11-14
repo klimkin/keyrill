@@ -18,9 +18,7 @@ struct Keyboard {
 impl Keyboard {
     fn new() -> Self {
         let mut previous = [0; 256];
-        unsafe {
-            GetKeyboardState(&mut previous).unwrap();
-        }
+        assert!(crate::support::keyboard_state(&mut previous));
         let keyboard = Self {
             previous,
             state: [0; 256],

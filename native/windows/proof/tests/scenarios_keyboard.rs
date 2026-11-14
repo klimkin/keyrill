@@ -190,7 +190,7 @@ impl Keyboard {
     fn new() -> Self {
         let mut saved = [0; 256];
         unsafe {
-            GetKeyboardState(&mut saved).unwrap();
+            assert!(crate::support::keyboard_state(&mut saved));
             SetKeyboardState(&[0; 256]).unwrap();
         }
         Self {
@@ -217,6 +217,7 @@ impl Keyboard {
         let scan = unsafe { MapVirtualKeyW(key.0 as u32, MAPVK_VK_TO_VSC) } as isize;
         let mut eaten = false.into();
         unsafe {
+            SetKeyboardState(&self.state).unwrap();
             assert_eq!(
                 (sink.vtable().OnKeyDown)(
                     sink.as_raw(),
@@ -235,6 +236,7 @@ impl Keyboard {
         let sink = c.service.cast::<ITfKeyEventSink>().unwrap();
         let mut eaten = true.into();
         unsafe {
+            SetKeyboardState(&self.state).unwrap();
             assert_eq!(
                 (sink.vtable().OnKeyUp)(
                     sink.as_raw(),
@@ -275,6 +277,16 @@ impl Drop for Keyboard {
             SetKeyboardState(&self.saved).unwrap();
         }
     }
+}
+
+#[test]
+fn keyboard_native_snapshot_retains_mutable_output() {
+    let mut keyboard = Keyboard::new();
+    keyboard.set(VK_CAPITAL, 1);
+    let mut observed = [0; 256];
+    assert!(crate::support::keyboard_state(&mut observed));
+    assert_eq!(observed[VK_CAPITAL.0 as usize], 1);
+    assert!(observed[VK_CAPITAL.0 as usize] & 1 != 0);
 }
 
 #[test]

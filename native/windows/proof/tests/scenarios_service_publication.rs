@@ -390,9 +390,7 @@ fn host_mapping_publication_preserves_complete_edit_and_command_snapshots() {
     impl Keyboard {
         fn command() -> Self {
             let mut prior = [0; 256];
-            unsafe {
-                GetKeyboardState(&mut prior).unwrap();
-            }
+            assert!(crate::support::keyboard_state(&mut prior));
             let mut state = [0; 256];
             for key in [VK_CONTROL, VK_LCONTROL, VK_MENU, VK_LMENU] {
                 state[key.0 as usize] = 0x80;
