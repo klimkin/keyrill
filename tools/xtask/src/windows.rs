@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const PUBLIC_EXPORTS: [&str; 2] = ["DllCanUnloadNow", "DllGetClassObject"];
+const PRODUCTION_PACKAGES: &[&str] = &["keyrill-windows", "keyrill-windows-setup"];
+const PRODUCTION_EXECUTABLES: &[&str] = &["KeyrillRegister", "KeyrillSettings", "KeyrillSetup"];
 
 pub(crate) fn common_checks(root: &Path, target: Target) -> Result<()> {
     require_target(target)?;
@@ -246,22 +248,20 @@ pub(crate) fn build(
     fs::create_dir_all(directory.join("tests"))?;
     let mut binary_hashes = BTreeMap::new();
     let target_directory = directory.join("cargo-production");
-    let production = cargo::artifacts(
-        root,
-        &[
-            "build",
-            "--release",
-            "--target",
-            target.triple(),
-            "-p",
-            "keyrill-windows",
-            "--target-dir",
-            target_directory
-                .to_str()
-                .ok_or("target path is not Unicode")?,
-        ],
-        &environment,
-    )?;
+    let mut arguments = vec![
+        "build",
+        "--release",
+        "--target",
+        target.triple(),
+        "--target-dir",
+        target_directory
+            .to_str()
+            .ok_or("target path is not Unicode")?,
+    ];
+    for package in PRODUCTION_PACKAGES {
+        arguments.extend(["-p", package]);
+    }
+    let production = cargo::artifacts(root, &arguments, &environment)?;
     let production_dll = copy(
         &cargo::dll(&production)?,
         &directory,
@@ -269,7 +269,7 @@ pub(crate) fn build(
         target,
         &mut binary_hashes,
     )?;
-    for name in ["KeyrillRegister", "KeyrillSettings"] {
+    for name in PRODUCTION_EXECUTABLES {
         copy(
             &cargo::executable(&production, name, false)?,
             &directory,
@@ -512,6 +512,25 @@ pub(crate) fn native_tests(root: &Path, build: &mut Build) -> Result<BTreeSet<St
             Some(digest),
         )?);
     }
+    let target = build.directory.join("cargo-setup");
+    let artifacts = cargo::artifacts(
+        root,
+        &[
+            "test",
+            "--no-run",
+            "--release",
+            "--target",
+            build.target.triple(),
+            "-p",
+            "keyrill-windows-setup",
+            "--lib",
+            "--target-dir",
+            target.to_str().ok_or("target path is not Unicode")?,
+        ],
+        &build.compiler_environment,
+    )?;
+    let executable = build.record_executable(&artifacts, "keyrill_windows_setup", true)?;
+    executed.extend(run_tests(build, &executable, "setup", None)?);
     let target = build.directory.join("cargo-proof");
     let artifacts = cargo::artifacts(
         root,
@@ -566,6 +585,8 @@ pub(crate) fn native_tests(root: &Path, build: &mut Build) -> Result<BTreeSet<St
 }
 
 pub(crate) fn smoke_tests(build: &mut Build) -> Result<BTreeSet<String>> {
+    let setup = build.directory.join("KeyrillSetup.exe");
+    cargo::run(build.command(&setup)?.arg("status"))?;
     let executable = build.directory.join("KeyrillDllSmoke.exe");
     cargo::run(
         build
@@ -588,6 +609,7 @@ pub(crate) fn smoke_tests(build: &mut Build) -> Result<BTreeSet<String>> {
     )?;
     cargo::run(build.command(&executable)?.arg("missing"))?;
     Ok(BTreeSet::from([
+        "smoke::setup-status".to_owned(),
         "smoke::factory".to_owned(),
         "smoke::activation".to_owned(),
         "smoke::missing-adjacent".to_owned(),
@@ -600,6 +622,54 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn production_registrar_build_includes_its_adjacent_setup_dependency() {
+        assert!(PRODUCTION_PACKAGES.contains(&"keyrill-windows-setup"));
+        for name in ["KeyrillRegister", "KeyrillSettings", "KeyrillSetup"] {
+            assert!(PRODUCTION_EXECUTABLES.contains(&name));
+        }
+    }
+
+    #[test]
+    fn adjacent_setup_identity_is_checked_for_production_and_negative_launches() {
+        let fixture = Fixture::new();
+        let mut build = fixture.build();
+        let current = std::env::current_exe().unwrap();
+        let setup = copy(
+            &current,
+            &fixture.0,
+            "KeyrillSetup.exe",
+            Target::X64,
+            &mut build.binary_hashes,
+        )
+        .unwrap();
+        let registrar = copy(
+            &current,
+            &fixture.0,
+            "KeyrillRegister.exe",
+            Target::X64,
+            &mut build.binary_hashes,
+        )
+        .unwrap();
+        let negative = fixture.0.join("missing-adjacent");
+        fs::create_dir(&negative).unwrap();
+        let detached = copy(
+            &registrar,
+            &negative,
+            "KeyrillRegister.exe",
+            Target::X64,
+            &mut build.binary_hashes,
+        )
+        .unwrap();
+        build.command(&registrar).unwrap();
+        build.command(&detached).unwrap();
+        let mut image = fs::read(&setup).unwrap();
+        image.push(0);
+        fs::write(&setup, image).unwrap();
+        assert!(build.command(&registrar).is_err());
+        assert!(build.command(&detached).is_err());
+    }
 
     struct Fixture(PathBuf);
 

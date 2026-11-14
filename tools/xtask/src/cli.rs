@@ -20,6 +20,9 @@ impl Architectures {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
+    PackageBuild(Architectures),
+    Package(String),
+    PackageVerify(String),
     Build(Architectures),
     Controlled {
         architectures: Architectures,
@@ -43,6 +46,19 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Command> {
     };
     if platform != "windows" {
         return Err("expected windows command".into());
+    }
+    if command == "package" || command == "package-verify" {
+        let [flag, directory] = options else {
+            return Err("package and package-verify require --candidate DIRECTORY".into());
+        };
+        if flag != "--candidate" || directory.is_empty() || directory.starts_with('-') {
+            return Err("invalid candidate directory option".into());
+        }
+        return Ok(if command == "package" {
+            Command::Package(directory.clone())
+        } else {
+            Command::PackageVerify(directory.clone())
+        });
     }
     let mut architecture = None;
     let mut case = None;
@@ -98,6 +114,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Command> {
                 _ => Err("acceptance requires inventory or results PATH".into()),
             }
         }
+        "package-build" => Ok(Command::PackageBuild(architectures)),
         "build" => Ok(Command::Build(architectures)),
         "controlled" => Ok(Command::Controlled {
             architectures,

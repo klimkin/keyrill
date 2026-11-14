@@ -17,7 +17,7 @@ const PROFILES: [GUID; 2] = [
     GUID::from_u128(0x4c1e583c_f8e5_4b7d_b66c_b7e7319aed51),
 ];
 const LANGUAGES: [u16; 2] = [0x409, 0x419];
-const DESCRIPTIONS: [&str; 2] = ["Keyrill proof EN", "Keyrill proof RU"];
+const DESCRIPTIONS: [&str; 2] = ["Keyrill English", "Keyrill Русский"];
 struct Scenario {
     present: [bool; 2],
     enumeration: [HRESULT; 2],

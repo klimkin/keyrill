@@ -9,6 +9,7 @@ mod cli;
 mod closure;
 mod coverage;
 mod model;
+mod package;
 mod pe;
 mod sanitize;
 mod test_run;
@@ -21,6 +22,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(Path::parent)
         .ok_or("workspace root unavailable")?;
     match cli::parse(&arguments)? {
+        cli::Command::PackageBuild(architectures) => {
+            for &target in architectures.targets() {
+                package::build(root, target)?;
+            }
+        }
+        cli::Command::Package(directory) => package::stage(root, Path::new(&directory))?,
+        cli::Command::PackageVerify(directory) => package::verify(Path::new(&directory))?,
         cli::Command::Build(architectures) => {
             for &target in architectures.targets() {
                 let build = windows::build(root, target, Instrumentation::None)?;

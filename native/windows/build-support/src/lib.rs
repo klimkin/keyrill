@@ -219,6 +219,8 @@ fn source_file(path: &Path) -> bool {
     )
 }
 
+const EXCLUDED_DIRECTORIES: &[&str] = &["target", ".git", ".audit"];
+
 fn collect_directory(directory: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
     if !directory.try_exists()? {
         return Ok(());
@@ -234,10 +236,11 @@ fn collect_directory(directory: &Path, paths: &mut Vec<PathBuf>) -> io::Result<(
             ));
         }
         if kind.is_dir() {
-            if !matches!(
-                entry.file_name().to_str(),
-                Some("target" | ".git" | ".audit")
-            ) {
+            if !entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| EXCLUDED_DIRECTORIES.contains(&name))
+            {
                 collect_directory(&path, paths)?;
             }
         } else if kind.is_file() && source_file(&path) {
@@ -247,35 +250,57 @@ fn collect_directory(directory: &Path, paths: &mut Vec<PathBuf>) -> io::Result<(
     Ok(())
 }
 
+const ROOT_INPUTS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "LICENSE",
+    "rust-toolchain.toml",
+    ".cargo/config.toml",
+    "tools/verify",
+    "tools/pack-model.py",
+    "native/macos/tests/browser-fixture.html",
+    "assets/model.bin",
+    "assets/model-provenance.json",
+    "assets/model-notice.txt",
+    "assets/wordfreq-code-license.txt",
+    "model/data/model.inc.gz",
+    "model/data/model-manifest.json",
+    "model/data/model-notice.txt",
+    "model/data/wordfreq-code-license.txt",
+];
+const SOURCE_DIRECTORIES: &[&str] = &["include", "crates", "native/windows", "tools/xtask"];
+
+/// Identify a repository-relative source input, including a deleted or untracked path.
+#[must_use]
+pub fn is_source_input(path: &Path) -> bool {
+    if ROOT_INPUTS.iter().any(|input| path == Path::new(input)) {
+        return true;
+    }
+    SOURCE_DIRECTORIES.iter().any(|directory| {
+        path.strip_prefix(directory).is_ok_and(|relative| {
+            !relative.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| EXCLUDED_DIRECTORIES.contains(&name))
+            }) && source_file(relative)
+        })
+    })
+}
+
 /// Enumerate the source inputs in sorted repository-relative order.
 ///
 /// # Errors
 /// Returns filesystem errors or an error for a symbolic link in an input tree.
 pub fn source_inputs(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    for file in [
-        "Cargo.toml",
-        "Cargo.lock",
-        "rust-toolchain.toml",
-        ".cargo/config.toml",
-        "tools/verify",
-        "tools/pack-model.py",
-        "native/macos/tests/browser-fixture.html",
-        "assets/model.bin",
-        "assets/model-provenance.json",
-        "assets/model-notice.txt",
-        "assets/wordfreq-code-license.txt",
-        "model/data/model.inc.gz",
-        "model/data/model-manifest.json",
-        "model/data/model-notice.txt",
-        "model/data/wordfreq-code-license.txt",
-    ] {
+    for file in ROOT_INPUTS {
         let path = root.join(file);
         if path.is_file() {
             paths.push(path);
         }
     }
-    for directory in ["include", "crates", "native/windows", "tools/xtask"] {
+    for directory in SOURCE_DIRECTORIES {
         collect_directory(&root.join(directory), &mut paths)?;
     }
     paths.sort_by_cached_key(|path| relative_path(root, path));
@@ -358,3 +383,6 @@ pub fn write_rust_identity(path: &Path, digest: Digest) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Portable PE validation shared by building and packaging.
+pub mod pe;

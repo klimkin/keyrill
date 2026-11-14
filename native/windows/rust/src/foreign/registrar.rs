@@ -2,24 +2,19 @@ use super::{Call, Lease, returned_interface};
 use crate::profiles::{Profile, SERVICE_ID};
 use std::ffi::c_void;
 use windows::Win32::Foundation::{E_UNEXPECTED, S_OK};
-use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD,
-    IEnumTfLanguageProfiles, ITfCategoryMgr, ITfInputProcessorProfiles, TF_LANGUAGEPROFILE,
+    CLSID_TF_InputProcessorProfiles, IEnumTfLanguageProfiles, ITfInputProcessorProfiles,
+    TF_LANGUAGEPROFILE,
 };
 use windows_core::{BOOL, GUID, HRESULT, Interface};
 
-unsafe fn sdk_create(category: BOOL, output: *mut *mut c_void) -> Call {
+unsafe fn sdk_create(output: *mut *mut c_void) -> Call {
     // SAFETY: the typed caller retains all interfaces and buffers through this ABI call.
     windows_core::link!("ole32.dll" "system" fn CoCreateInstance(class: *const GUID, outer: *mut c_void, context: u32, id: *const GUID, output: *mut *mut c_void) -> HRESULT);
-    let (class, id) = if category.as_bool() {
-        (&CLSID_TF_CategoryMgr, &ITfCategoryMgr::IID)
-    } else {
-        (
-            &CLSID_TF_InputProcessorProfiles,
-            &ITfInputProcessorProfiles::IID,
-        )
-    };
+    let (class, id) = (
+        &CLSID_TF_InputProcessorProfiles,
+        &ITfInputProcessorProfiles::IID,
+    );
     Call {
         result: unsafe { CoCreateInstance(class, std::ptr::null_mut(), 1, id, output) },
     }
@@ -45,14 +40,7 @@ fn acquired<T: Interface>(call: Call, output: *mut c_void) -> (Call, Result<Leas
 pub(crate) fn profiles() -> (Call, Result<Lease<ITfInputProcessorProfiles>, HRESULT>) {
     let mut output = std::ptr::null_mut();
     // SAFETY: the selected class returns ITfInputProcessorProfiles into a writable pointer slot.
-    let call = unsafe { sdk_create(BOOL(0), &mut output) };
-    acquired(call, output)
-}
-
-pub(crate) fn categories() -> (Call, Result<Lease<ITfCategoryMgr>, HRESULT>) {
-    let mut output = std::ptr::null_mut();
-    // SAFETY: the selected class returns ITfCategoryMgr into a writable pointer slot.
-    let call = unsafe { sdk_create(BOOL(1), &mut output) };
+    let call = unsafe { sdk_create(&mut output) };
     acquired(call, output)
 }
 
@@ -150,24 +138,12 @@ pub(crate) fn enabled(
     }
 }
 
-pub(crate) fn service(manager: &Lease<ITfInputProcessorProfiles>, install: bool) -> Call {
-    // SAFETY: manager and immutable service GUID remain live throughout the call.
-    Call {
-        result: unsafe {
-            let table = super::vtable::<ITfInputProcessorProfiles>(pointer(manager));
-            if install {
-                (table.Register)(pointer(manager), &SERVICE_ID)
-            } else {
-                (table.Unregister)(pointer(manager), &SERVICE_ID)
-            }
-        },
-    }
-}
-
+#[cfg(any(test, feature = "test-api"))]
 fn description_buffer(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
+#[cfg(feature = "test-api")]
 pub(crate) fn add(
     manager: &Lease<ITfInputProcessorProfiles>,
     profile: &Profile,
@@ -192,49 +168,6 @@ pub(crate) fn add(
     }
 }
 
-pub(crate) fn substitute(
-    manager: &Lease<ITfInputProcessorProfiles>,
-    profile: &Profile,
-    layout: HKL,
-) -> Call {
-    // SAFETY: manager and immutable GUIDs remain live throughout the call.
-    Call {
-        result: unsafe {
-            (super::vtable::<ITfInputProcessorProfiles>(pointer(manager)).SubstituteKeyboardLayout)(
-                pointer(manager),
-                &SERVICE_ID,
-                profile.language,
-                &profile.id,
-                layout,
-            )
-        },
-    }
-}
-
-pub(crate) fn category(manager: &Lease<ITfCategoryMgr>, install: bool) -> Call {
-    // SAFETY: manager and immutable service GUID remain live throughout the call.
-    Call {
-        result: unsafe {
-            let table = super::vtable::<ITfCategoryMgr>(pointer(manager));
-            if install {
-                (table.RegisterCategory)(
-                    pointer(manager),
-                    &SERVICE_ID,
-                    &GUID_TFCAT_TIP_KEYBOARD,
-                    &SERVICE_ID,
-                )
-            } else {
-                (table.UnregisterCategory)(
-                    pointer(manager),
-                    &SERVICE_ID,
-                    &GUID_TFCAT_TIP_KEYBOARD,
-                    &SERVICE_ID,
-                )
-            }
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::description_buffer;
@@ -244,7 +177,7 @@ mod tests {
     fn profile_description_storage_has_a_trailing_nul() {
         for (profile, expected) in PROFILES
             .iter()
-            .zip(["Keyrill proof EN\0", "Keyrill proof RU\0"])
+            .zip(["Keyrill English\0", "Keyrill Русский\0"])
         {
             assert_eq!(
                 description_buffer(profile.description),

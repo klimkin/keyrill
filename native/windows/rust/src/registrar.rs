@@ -1,4 +1,4 @@
-//! Maintainer CLI for the existing TSF profiles and per-user COM registration.
+//! Maintainer source controls and delegation to the recoverable machine installer.
 
 #[cfg(feature = "test-api")]
 use crate::foreign;
@@ -10,19 +10,14 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use windows::Win32::Foundation::{
-    E_FAIL, E_UNEXPECTED, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_FOUND,
-    ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, GetLastError, S_FALSE, S_OK,
+    E_FAIL, E_UNEXPECTED, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+    ERROR_SUCCESS, S_FALSE, S_OK,
 };
-use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, RegCloseKey, RegOpenKeyExW,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{KLF_NOTELLSHELL, LoadKeyboardLayoutW};
-use windows::Win32::UI::TextServices::{
-    ITfCategoryMgr, ITfInputProcessorProfiles, TF_LANGUAGEPROFILE,
-};
+use windows::Win32::UI::TextServices::{ITfInputProcessorProfiles, TF_LANGUAGEPROFILE};
 use windows_core::{BOOL, BSTR, HRESULT, Interface, PCWSTR};
 
 enum Command {
@@ -38,10 +33,16 @@ fn command(args: &[OsString]) -> Option<Command> {
     match args {
         [name] if name == "status" => Some(Command::Status),
         [name] if name == "check" => Some(Command::Check),
-        [name] if name == "unregister" => Some(Command::Unregister),
+        [name, flag, scope] if name == "unregister" && flag == "--scope" && scope == "machine" => {
+            Some(Command::Unregister)
+        }
         [name] if name == "enable" => Some(Command::Enable),
         [name] if name == "disable" => Some(Command::Disable),
-        [name, path] if name == "register" => Some(Command::Register(path.clone())),
+        [name, flag, scope, path]
+            if name == "register" && flag == "--scope" && scope == "machine" =>
+        {
+            Some(Command::Register(path.clone()))
+        }
         _ => None,
     }
 }
@@ -70,6 +71,7 @@ fn exact(result: HRESULT) -> Result<(), HRESULT> {
     }
 }
 
+#[cfg(test)]
 fn win32_failure(result: HRESULT) -> HRESULT {
     if result.is_err() { result } else { E_FAIL }
 }
@@ -200,162 +202,6 @@ fn registry_path() -> Vec<u16> {
     )))
 }
 
-fn registry(dll: Option<&[u16]>) -> HRESULT {
-    let mut path = registry_path();
-    let Some(dll) = dll else {
-        // SAFETY: path is a live NUL-terminated UTF-16 registry path under HKCU.
-        let result = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(path.as_ptr())) };
-        return report(
-            "RegDeleteTreeW HKCU COM",
-            if result == ERROR_FILE_NOT_FOUND {
-                S_OK
-            } else {
-                result.to_hresult()
-            },
-            "service",
-        );
-    };
-    path.pop();
-    path.extend("\\InprocServer32".encode_utf16().chain(Some(0)));
-    let mut key = HKEY::default();
-    // SAFETY: path is NUL-terminated and key is a distinct writable handle slot.
-    let result = unsafe {
-        RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(path.as_ptr()),
-            None,
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_WRITE,
-            None,
-            &mut key,
-            None,
-        )
-    };
-    let _ = report("RegCreateKeyExW HKCU COM", result.to_hresult(), "service");
-    if result != ERROR_SUCCESS {
-        return result.to_hresult();
-    }
-    let bytes: Vec<u8> = dll.iter().flat_map(|unit| unit.to_le_bytes()).collect();
-    // SAFETY: key is open, and bytes includes the DLL path's terminating UTF-16 NUL.
-    let mut result = unsafe { RegSetValueExW(key, PCWSTR::null(), None, REG_SZ, Some(&bytes)) };
-    let _ = report(
-        "RegSetValueExW HKCU COM server",
-        result.to_hresult(),
-        "service",
-    );
-    if result == ERROR_SUCCESS {
-        let name = wide(OsStr::new("ThreadingModel"));
-        let apartment: Vec<u8> = "Apartment"
-            .encode_utf16()
-            .chain(Some(0))
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        // SAFETY: key is open and both the value name and REG_SZ data are terminated.
-        result =
-            unsafe { RegSetValueExW(key, PCWSTR(name.as_ptr()), None, REG_SZ, Some(&apartment)) };
-        let _ = report(
-            "RegSetValueExW HKCU COM ThreadingModel",
-            result.to_hresult(),
-            "service",
-        );
-    }
-    // SAFETY: key is the one successfully acquired handle, closed exactly once.
-    let closed = unsafe { RegCloseKey(key) };
-    let _ = report("RegCloseKey HKCU COM", closed.to_hresult(), "service");
-    if result == ERROR_SUCCESS {
-        closed.to_hresult()
-    } else {
-        result.to_hresult()
-    }
-}
-
-fn register(dll: Option<&[u16]>) -> HRESULT {
-    let manager: Lease<ITfInputProcessorProfiles> = match acquisition(
-        "CoCreateInstance InputProcessorProfiles",
-        native::profiles(),
-    ) {
-        Ok(manager) => manager,
-        Err(result) => return result,
-    };
-    let categories: Lease<ITfCategoryMgr> =
-        match acquisition("CoCreateInstance CategoryMgr", native::categories()) {
-            Ok(categories) => categories,
-            Err(result) => return result,
-        };
-    let install = dll.is_some();
-    if install {
-        let result = registry(dll);
-        if result.is_err() {
-            return result;
-        }
-    }
-    let service = report(
-        if install { "Register" } else { "Unregister" },
-        native::service(&manager, install).result,
-        "service",
-    );
-    if install && service.is_err() {
-        return service;
-    }
-    if let Some(dll) = dll {
-        for profile in &PROFILES {
-            let call = native::add(&manager, profile, dll);
-            let result = report("AddLanguageProfile", call.result, label(profile));
-            if result.is_err() {
-                return result;
-            }
-            let layout = wide(OsStr::new(profile.layout));
-            // SAFETY: layout is a live NUL-terminated KLID and KLF_NOTELLSHELL preserves source selection.
-            let layout = unsafe { LoadKeyboardLayoutW(PCWSTR(layout.as_ptr()), KLF_NOTELLSHELL) };
-            let layout = match layout {
-                Ok(layout) => {
-                    let _ = report("LoadKeyboardLayoutW", S_OK, label(profile));
-                    layout
-                }
-                Err(error) => {
-                    return report(
-                        "LoadKeyboardLayoutW",
-                        win32_failure(error.code()),
-                        label(profile),
-                    );
-                }
-            };
-            let result = report(
-                "SubstituteKeyboardLayout",
-                native::substitute(&manager, profile, layout).result,
-                label(profile),
-            );
-            if result.is_err() {
-                return result;
-            }
-        }
-    }
-    let category = report(
-        if install {
-            "RegisterCategory"
-        } else {
-            "UnregisterCategory"
-        },
-        native::category(&categories, install).result,
-        "service",
-    );
-    if install {
-        return match exact(category) {
-            Ok(()) => preflight(&manager),
-            Err(result) => result,
-        };
-    }
-    let registry = registry(None);
-    if service.is_err() {
-        service
-    } else if category.is_err() {
-        category
-    } else {
-        registry
-    }
-}
-
 fn status() -> HRESULT {
     let manager: Lease<ITfInputProcessorProfiles> = match acquisition(
         "CoCreateInstance InputProcessorProfiles status",
@@ -443,7 +289,7 @@ fn status() -> HRESULT {
         );
     }
     println!(
-        "TSF profile registration scope has not been established. No elevation fallback or source selection."
+        "Machine profile definitions and current-user enablement are separate. KeyrillSetup status inspects both COM views. No elevation fallback or source selection."
     );
     result
 }
@@ -463,40 +309,6 @@ fn enable(enabled: bool, check: bool) -> HRESULT {
     }
 }
 
-fn resolve_dll(path: &OsStr) -> Result<Vec<u16>, HRESULT> {
-    let input = wide(path);
-    let mut output = vec![0u16; 32768];
-    // SAFETY: input is NUL-terminated and output is a writable 32768-unit buffer.
-    let count = unsafe { crate::foreign::win32::full_path(PCWSTR(input.as_ptr()), &mut output) };
-    let result = if count == 0 {
-        // SAFETY: GetLastError immediately follows the failed Win32 call.
-        win32_failure(unsafe { GetLastError() }.to_hresult())
-    } else if count as usize >= output.len() {
-        ERROR_INSUFFICIENT_BUFFER.to_hresult()
-    } else {
-        S_OK
-    };
-    let _ = report("GetFullPathNameW DLL", result, "service");
-    if result.is_err() {
-        return Err(result);
-    }
-    output.truncate(count as usize + 1);
-    // SAFETY: the resolved output is a live NUL-terminated path.
-    let attributes = unsafe { GetFileAttributesW(PCWSTR(output.as_ptr())) };
-    let result = if attributes == INVALID_FILE_ATTRIBUTES {
-        // SAFETY: GetLastError immediately follows the failed Win32 call.
-        win32_failure(unsafe { GetLastError() }.to_hresult())
-    } else {
-        S_OK
-    };
-    let _ = report("GetFileAttributesW DLL", result, "service");
-    if result.is_err() {
-        Err(result)
-    } else {
-        Ok(output)
-    }
-}
-
 /// Runs the maintainer registration CLI and returns its process exit code.
 ///
 /// `status` and `check` are read-only. Installation and enablement require an explicit command.
@@ -504,18 +316,30 @@ pub fn run() -> i32 {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let Some(command) = command(&args) else {
         eprintln!(
-            "Maintainer only. Usage: KeyrillRegister status | check | register ABSOLUTE_DLL_PATH | enable | disable | unregister"
+            "Maintainer only. Usage: KeyrillRegister status | check | register --scope machine VERIFIED_PACKAGE_DIRECTORY | enable | disable | unregister --scope machine"
         );
         return 2;
     };
-    let dll = if let Command::Register(path) = &command {
-        match resolve_dll(path) {
-            Ok(path) => Some(path),
-            Err(_) => return 2,
-        }
-    } else {
-        None
-    };
+    if matches!(command, Command::Register(_) | Command::Unregister) {
+        let result = (|| -> std::io::Result<std::process::ExitStatus> {
+            let setup = std::env::current_exe()?.with_file_name("KeyrillSetup.exe");
+            let mut child = std::process::Command::new(setup);
+            match command {
+                Command::Register(package) => {
+                    child.args(["install", "--scope", "machine"]).arg(package);
+                }
+                Command::Unregister => {
+                    child.args(["uninstall", "--scope", "machine"]);
+                }
+                _ => unreachable!(),
+            }
+            child.status()
+        })();
+        return match result {
+            Ok(status) if status.success() => 0,
+            _ => 1,
+        };
+    }
     // SAFETY: the CLI initializes its current thread once and balances each successful result.
     let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     let _ = report("CoInitializeEx", initialized, "service");
@@ -527,10 +351,7 @@ pub fn run() -> i32 {
         Command::Check => enable(false, true),
         Command::Enable => enable(true, false),
         Command::Disable => enable(false, false),
-        Command::Register(_) | Command::Unregister => {
-            let _ = status();
-            register(dll.as_deref())
-        }
+        Command::Register(_) | Command::Unregister => unreachable!(),
     };
     // SAFETY: all operation-owned COM leases drained before balancing successful initialization.
     unsafe { CoUninitialize() };
@@ -544,17 +365,14 @@ pub fn run() -> i32 {
     match command {
         Command::Status => {}
         Command::Check => println!(
-            "Both proof profiles are present. Read-only check; no enablement or source selection."
+            "Both product profiles are present. Read-only check; no enablement or source selection."
         ),
-        Command::Register(_) => println!(
-            "Registered proof profiles through TSF and COM through HKCU. Enablement and source selection are separate."
-        ),
-        Command::Unregister => println!("Removed proof profiles and HKCU COM registration."),
+        Command::Register(_) | Command::Unregister => unreachable!(),
         Command::Enable => println!(
-            "Both proof profiles are present and enablement readback matches enabled. Source selection is manual."
+            "Both product profiles are present and enablement readback matches enabled. Source selection is manual."
         ),
         Command::Disable => {
-            println!("Both proof profiles are present and enablement readback matches disabled.")
+            println!("Both product profiles are present and enablement readback matches disabled.")
         }
     }
     0
@@ -597,17 +415,28 @@ mod tests {
 
     #[test]
     fn commands_require_the_existing_exact_arguments() {
-        for name in ["status", "check", "enable", "disable", "unregister"] {
+        for name in ["status", "check", "enable", "disable"] {
             assert!(command(&[OsString::from(name)]).is_some());
             assert!(command(&[OsString::from(name), OsString::from("extra")]).is_none());
         }
         assert!(command(&[]).is_none());
         assert!(command(&[OsString::from("register")]).is_none());
         assert!(command(&[OsString::from("STATUS")]).is_none());
-        let path = OsString::from("KeyrillTsf.dll");
-        let Some(Command::Register(actual)) = command(&[OsString::from("register"), path.clone()])
-        else {
-            panic!("register must preserve its DLL path");
+        let path = OsString::from("verified-package");
+        assert!(command(&[OsString::from("register"), path.clone()]).is_none());
+        assert!(command(&[OsString::from("unregister")]).is_none());
+        assert!(matches!(
+            command(&["unregister", "--scope", "machine"].map(OsString::from)),
+            Some(Command::Unregister)
+        ));
+        assert!(command(&["unregister", "--scope", "user"].map(OsString::from)).is_none());
+        let Some(Command::Register(actual)) = command(&[
+            OsString::from("register"),
+            OsString::from("--scope"),
+            OsString::from("machine"),
+            path.clone(),
+        ]) else {
+            panic!("register must preserve its package path and explicit scope");
         };
         assert_eq!(actual, path);
     }

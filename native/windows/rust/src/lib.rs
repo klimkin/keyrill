@@ -30,7 +30,7 @@ mod foreign;
 #[cfg(windows)]
 mod keys;
 #[cfg(windows)]
-mod profiles;
+pub mod profiles;
 #[cfg(windows)]
 pub mod registrar;
 #[cfg(windows)]

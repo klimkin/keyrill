@@ -48,6 +48,38 @@ fn config() -> BuildConfig<'static> {
 }
 
 #[test]
+fn source_path_classification_matches_the_enumerated_release_closure() {
+    let fixture = Fixture::new();
+    let inputs = [
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "native/windows/setup/build.rs",
+        "native/windows/setup/setup.manifest",
+        "native/windows/setup/src/space и name.rs",
+    ];
+    let ignored = [
+        "docs/notes.json",
+        ".audit/run.json",
+        "native/windows/.audit/run.json",
+        "native/windows/target/generated.rs",
+        "native/windows/cache.log",
+        "native/windows/notes.md",
+    ];
+    for path in inputs.iter().chain(ignored.iter()) {
+        fixture.write(path, b"fixture");
+    }
+    let actual = source_inputs(&fixture.0).unwrap();
+    for path in inputs.iter().chain(ignored.iter()) {
+        assert_eq!(
+            is_source_input(Path::new(path)),
+            actual.contains(&fixture.0.join(path)),
+            "{path}"
+        );
+    }
+    assert_eq!(actual.len(), inputs.len());
+}
+
+#[test]
 fn sha256_and_diagnostic_word_order_match_the_standard_vector() {
     let hash = Digest::of_bytes(b"abc");
     assert_eq!(

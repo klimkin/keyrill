@@ -93,19 +93,6 @@ pub(crate) fn volume_filesystem(file: HANDLE, output: &mut [u16]) -> Result<()> 
     }
 }
 
-pub(crate) unsafe fn full_path(input: PCWSTR, output: &mut [u16]) -> u32 {
-    windows_core::link!("kernel32.dll" "system" fn GetFullPathNameW(input: PCWSTR, capacity: u32, output: *mut u16, file_part: *mut *mut u16) -> u32);
-    // SAFETY: the caller supplies a terminated path, and output is complete writable storage.
-    unsafe {
-        GetFullPathNameW(
-            input,
-            output.len() as u32,
-            output.as_mut_ptr(),
-            std::ptr::null_mut(),
-        )
-    }
-}
-
 pub(crate) fn translate(
     key: u32,
     scan: u32,

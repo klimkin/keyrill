@@ -161,11 +161,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyrill-windows-setup"
+version = "0.1.0"
+dependencies = [
+ "keyrill-windows",
+ "keyrill-windows-build",
+ "serde_json",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "keyrill-xtask"
 version = "0.1.0"
 dependencies = [
  "flate2",
  "keyrill-windows-build",
+ "keyrill-windows-setup",
  "serde_json",
 ]
 
