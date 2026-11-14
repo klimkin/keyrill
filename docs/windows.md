@@ -138,6 +138,10 @@ the model with the Rust checker, and runs rustfmt, Clippy, workspace tests, rust
 builds. It builds the independent proof tools and both service variants, runs controlled COM,
 ABI, worker, diagnostic, and registration-free smoke tests, and checks scenario coverage.
 `cargo xtask windows controlled` builds and runs the independent controlled DLL suite alone.
+For an implementation spot check, `cargo xtask windows controlled --case
+correction_preserves_complete_documents` runs one exact compiled test with the same DLL identity
+checks. An unknown or partial name fails. The full verification commands require every selected
+test to appear in successful execution output before recording scenario coverage.
 `cargo xtask windows model-check` runs the model comparison alone.
 
 `./tools/verify sanitize` dispatches to `cargo xtask windows sanitize`. This is a separate,

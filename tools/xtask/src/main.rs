@@ -9,6 +9,7 @@ mod coverage;
 mod model;
 mod pe;
 mod sanitize;
+mod test_run;
 mod windows;
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +26,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         [platform, command] if platform == "windows" && command == "controlled" => {
             let build = windows::build(root, Instrumentation::None)?;
             windows::controlled(&build)?;
+        }
+        [platform, command, option, case]
+            if platform == "windows" && command == "controlled" && option == "--case" =>
+        {
+            let build = windows::build(root, Instrumentation::None)?;
+            windows::controlled_case(&build, case)?;
         }
         [platform, command] if platform == "windows" && command == "check" => {
             closure::check(root)?;
@@ -72,7 +79,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: windows inventory | windows fingerprint production|test-api".into(),
+                "usage: windows build|check|sanitize|model-check|inventory | windows controlled [--case EXACT_NAME] | windows fingerprint production|test-api".into(),
             );
         }
     }

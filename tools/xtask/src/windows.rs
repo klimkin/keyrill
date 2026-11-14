@@ -1,10 +1,11 @@
-use crate::{cargo, pe, sanitize};
+use crate::{cargo, pe, sanitize, test_run::TestRun};
 use cargo::Result;
 use keyrill_windows_build::{BuildConfig, Digest, Identity, Instrumentation, identity};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -300,11 +301,31 @@ pub(crate) fn controlled(build: &Build) -> Result<BTreeSet<String>> {
     run_tests(build, &build.test_executable, "controlled", None)
 }
 
+pub(crate) fn controlled_case(build: &Build, case: &str) -> Result<BTreeSet<String>> {
+    execute_tests(
+        build,
+        &build.test_executable,
+        "controlled",
+        None,
+        Some(case),
+    )
+}
+
 fn run_tests(
     build: &Build,
     executable: &Path,
     prefix: &str,
     decoder_identity: Option<Digest>,
+) -> Result<BTreeSet<String>> {
+    execute_tests(build, executable, prefix, decoder_identity, None)
+}
+
+fn execute_tests(
+    build: &Build,
+    executable: &Path,
+    prefix: &str,
+    decoder_identity: Option<Digest>,
+    exact: Option<&str>,
 ) -> Result<BTreeSet<String>> {
     let mut command = build.command(executable);
     let listing = command
@@ -314,20 +335,19 @@ fn run_tests(
     if !listing.status.success() {
         return Err("controlled test enumeration failed".into());
     }
-    let tests: BTreeSet<_> = std::str::from_utf8(&listing.stdout)?
-        .lines()
-        .filter_map(|line| {
-            line.strip_suffix(": test")
-                .map(|name| format!("{prefix}::{name}"))
-        })
-        .collect();
-    let count = tests.len();
-    if count == 0 {
-        return Err("controlled DLL suite has zero tests".into());
-    }
+    let tests = TestRun::enumerate(prefix, &listing.stdout, exact)?;
+    let count = tests.count();
     println!("Running {count} independently enumerated tests from {prefix}.");
     let mut command = build.command(executable);
-    command.args(["--test-threads=1", "--include-ignored"]);
+    command.args([
+        "--test-threads=1",
+        "--include-ignored",
+        "--format=pretty",
+        "--color=never",
+    ]);
+    if let Some(name) = tests.exact() {
+        command.args(["--exact", name]);
+    }
     if let Some(digest) = decoder_identity {
         command
             .env(
@@ -336,8 +356,13 @@ fn run_tests(
             )
             .env("KEYRILL_DECODER_BUILD_DIGEST", digest.to_string());
     }
-    cargo::run(&mut command)?;
-    Ok(tests)
+    let output = command.stdin(Stdio::null()).output()?;
+    io::stdout().write_all(&output.stdout)?;
+    io::stderr().write_all(&output.stderr)?;
+    if !output.status.success() {
+        return Err("selected test execution failed".into());
+    }
+    tests.confirmed(&output.stdout)
 }
 
 pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String>> {
