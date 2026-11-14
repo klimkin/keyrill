@@ -189,6 +189,7 @@ Sanitizer artifacts use the separate `target/windows-rust-sanitize` directory.
 | `KeyrillHostInspect.exe` | Explicit-PID field metadata, optional service observation, and named public-document UIA checks |
 | `KeyrillDllSmoke.exe` | Direct DLL factory, registration-free activation, and missing-adjacent-DLL checks |
 | `KeyrillWorkerSmoke.exe` | Actual DLL worker and vocabulary lifetime checks |
+| `KeyrillSettings.exe` | Native editor for complete per-user preferences |
 | `KeyrillDiagnosticDecoder.exe` | Independent diagnostic decoding for production and test identities |
 
 Four packages own the Windows implementation. `keyrill-windows` in `native/windows/rust`
@@ -688,9 +689,22 @@ future-schema, or inaccessible values leave a worker reader's last valid snapsho
 The mutex requires the current user's exact owner and private DACL plus an explicit medium
 mandatory-integrity label. Native tests verify the actual label and reject a preexisting
 low-integrity object. Actual cooperation between elevated and normal writers and separate logon
-sessions still needs deployment validation. The store API is ready for settings UI and runtime
-publication integration. The activation environment described below remains the current runtime
-configuration entry point.
+sessions still needs deployment validation. The native settings editor uses this store.
+Runtime publication integration remains in progress. The activation environment described below
+remains the current runtime configuration entry point.
+
+### Native settings editor
+
+Run `KeyrillSettings.exe` to edit the automatic-correction and source-switch preferences, both
+dictionary choices, and application overrides. Save validates the complete draft and requires
+verified readback. Conflicting saves retain the draft and require Reload. Select a row to change
+its identity or policy. Renaming to another existing identity is rejected. New starts a separate row.
+
+`KeyrillSettings.exe --preview` uses synthetic in-memory defaults for UI review. The window reports
+the compiled build identity and the availability of live runtime status. Its current live-adoption
+status is unavailable. Native window tests cover complete Save/Reload/Close, invalid paths,
+concurrent-window conflicts, selected identity edits, scrolling, reentrancy, and callback cleanup.
+Interactive UIA and visual checks remain pending.
 
 ## Public Terminal child
 

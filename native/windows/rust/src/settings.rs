@@ -287,3 +287,33 @@ impl Reader {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    pub(crate) struct Isolated(pub(crate) Store);
+
+    impl Isolated {
+        pub(crate) fn new() -> Self {
+            let store = Store {
+                native: native::testing::isolated(),
+            };
+            assert!(matches!(
+                store.save(Revision::default(), Preferences::default()),
+                SaveOutcome::Saved(_)
+            ));
+            Self(store)
+        }
+
+        pub(crate) fn invalidate(&self) {
+            native::testing::wrong_type(&self.0.native);
+        }
+    }
+
+    impl Drop for Isolated {
+        fn drop(&mut self) {
+            native::testing::cleanup(&self.0.native);
+        }
+    }
+}

@@ -269,13 +269,15 @@ pub(crate) fn build(
         target,
         &mut binary_hashes,
     )?;
-    copy(
-        &cargo::executable(&production, "KeyrillRegister", false)?,
-        &directory,
-        "KeyrillRegister.exe",
-        target,
-        &mut binary_hashes,
-    )?;
+    for name in ["KeyrillRegister", "KeyrillSettings"] {
+        copy(
+            &cargo::executable(&production, name, false)?,
+            &directory,
+            &format!("{name}.exe"),
+            target,
+            &mut binary_hashes,
+        )?;
+    }
     validate_exports(&production_dll, target, false)?;
 
     let target_directory = directory.join("cargo-test-api");
