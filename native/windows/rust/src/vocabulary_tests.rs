@@ -194,7 +194,7 @@ impl Events {
     }
 }
 
-unsafe extern "C" fn hook(context: *mut c_void, boundary: u32, _: HANDLE, _: usize) {
+unsafe extern "system" fn hook(context: *mut c_void, boundary: u32, _: HANDLE, _: usize) {
     // SAFETY: HookLease retains this immutable Events allocation until AfterCount returns.
     let events = unsafe { &*context.cast::<Events>() };
     if boundary == events.pause_at as u32 {

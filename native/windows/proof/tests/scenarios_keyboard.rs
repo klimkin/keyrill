@@ -240,7 +240,7 @@ impl Keyboard {
                     sink.as_raw(),
                     c.context_a.as_raw(),
                     WPARAM(key.0 as usize),
-                    LPARAM(0xc0000001),
+                    LPARAM(0xc0000001u32 as isize),
                     &mut eaten
                 ),
                 S_OK

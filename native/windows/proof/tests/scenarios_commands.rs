@@ -131,7 +131,7 @@ fn document_access(c: &Client) -> [u32; 11] {
             .count() as u32,
     ]
 }
-fn release(c: &Client, actual: bool, key: u16, flags: isize, other: bool) -> bool {
+fn release(c: &Client, actual: bool, key: u16, flags: u32, other: bool) -> bool {
     let before = document_access(c);
     let sink = sink(c);
     let callback = if actual {
@@ -147,7 +147,7 @@ fn release(c: &Client, actual: bool, key: u16, flags: isize, other: bool) -> boo
                 sink.as_raw(),
                 context.as_raw(),
                 WPARAM(key as usize),
-                LPARAM(flags),
+                LPARAM(flags as isize),
                 &mut eaten
             ),
             S_OK
@@ -1205,7 +1205,9 @@ fn dedicated_layout_regression_and_negative_matrix() {
                 19 => c
                     .profile_state
                     .substitute
-                    .set(HKL(0xffffffff04090409usize as *mut _)),
+                    .set(HKL(
+                        usize::try_from(0xffffffff04090409u64).unwrap_or(0x84090409) as *mut _,
+                    )),
                 20 => notify_profile(&c, true),
                 _ => profile.langid = 0x419,
             }
