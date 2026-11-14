@@ -1394,6 +1394,7 @@ fn preserved_dispatch_pointer_guid_thread_and_exclusion_matrix() {
                 }
                 if scenario == 5 {
                     facts.field.class_name = facts.proof_root.class_name;
+                    facts.focus = facts.root;
                 }
                 *c.host.field_facts.borrow_mut() = Some(facts);
             }

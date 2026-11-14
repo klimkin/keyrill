@@ -1488,9 +1488,8 @@ impl Service {
         if host.kind == crate::observation::Kind::PackagedNotepad as u32
             && !crate::field::known_notepad(&host)
         {
-            // SAFETY: the native key callback retains its receiving context through admission.
+            // SAFETY: the native key callback retains its receiving context through observation.
             unsafe { self.observe_host(owner.clone(), context) };
-            return Err(S_OK);
         }
         drop(substitute);
         drop(manager);

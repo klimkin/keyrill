@@ -865,7 +865,8 @@
         "controlled::scenarios_admission::uncertain_application_scope_refuses_before_acp_or_text"
       ],
       "reconciliations": [
-        "Both proof and Notepad targets, 22 result/type/null/count/scope combinations. notepad_field_fact_mutations_refuse_before_acp adds version words and all three native window nodes."
+        "Both proof and Notepad targets, 22 result/type/null/count/scope combinations. notepad_field_fact_mutations_refuse_before_acp adds version words and all three native window nodes.",
+        "Notepad identity mutation schedules use E_FAIL plus VT_EMPTY scope explicitly. Mutations must revoke the bounded exception before ACP or text; exact ordinary TSF scope may independently admit a generic candidate."
       ]
     },
     {
@@ -882,7 +883,8 @@
         "controlled::scenarios_admission::uncertain_application_scope_refuses_before_acp_or_text"
       ],
       "reconciliations": [
-        "Shared admission refusal oracle for zero ACP, text, edit, and composition effects. The admission successor matrices own its caller schedules."
+        "Shared admission refusal oracle for zero ACP, text, edit, and composition effects. The admission successor matrices own its caller schedules.",
+        "Notepad identity mutation schedules use E_FAIL plus VT_EMPTY scope explicitly. Mutations must revoke the bounded exception before ACP or text; exact ordinary TSF scope may independently admit a generic candidate."
       ]
     },
     {
@@ -901,7 +903,8 @@
         "controlled::scenarios_admission::notepad_native_policy_uncertainty_has_no_admission_effects"
       ],
       "reconciliations": [
-        "Forty-four field mutations cover identity, window styles, version, parent hierarchy, class, and enabled/completeness facts. Native policy uncertainty is separate."
+        "Forty-four field mutations cover identity, window styles, version, parent hierarchy, class, and enabled/completeness facts. Native policy uncertainty is separate.",
+        "Notepad identity mutation schedules use E_FAIL plus VT_EMPTY scope explicitly. Mutations must revoke the bounded exception before ACP or text; exact ordinary TSF scope may independently admit a generic candidate."
       ]
     },
     {
@@ -2378,10 +2381,24 @@
         "runtime::test-api::diagnostics::tests::counter_saturation_and_first_refusal_are_preserved",
         "runtime::test-api::diagnostics::tests::lifecycle_allocation_and_sequence_saturate_independently",
         "runtime::test-api::diagnostics::tests::lifecycle_retains_the_newest_sixteen_events",
-        "runtime::test-api::diagnostics::tests::observation_saturation_freezes_events_and_new_tickets"
+        "runtime::test-api::diagnostics::tests::observation_saturation_freezes_events_and_new_tickets",
+        "controlled::scenarios_admission::generic_native_classes_use_normal_key_entry_and_verified_executor",
+        "controlled::scenarios_admission::generic_native_identity_and_sensitive_scope_refuse_without_text",
+        "controlled::scenarios_admission::generic_scope_and_focus_changes_revoke_range_permission",
+        "controlled::scenarios_admission::generic_exclusion_after_write_stops_readback_and_replay",
+        "controlled::scenarios_admission::generic_native_failures_preserve_content_free_refusal_evidence",
+        "controlled::scenarios_admission::generic_reentrant_context_callbacks_revoke_pending_admission",
+        "controlled::scenarios_admission::unknown_notepad_versions_require_explicit_ordinary_scope",
+        "controlled::scenarios_admission_watch::admission_notifications_revoke_every_late_metadata_occurrence",
+        "controlled::scenarios_admission_watch::partial_watch_acquisition_and_failed_retirement_stop_authority",
+        "controlled::scenarios_admission_watch::missing_admission_watch_refuses_without_text_or_composition",
+        "controlled::scenarios_admission_watch::successful_watch_without_cookie_is_terminal_until_reactivation",
+        "controlled::scenarios_admission_watch::scope_revocation_at_every_late_getter_and_release_precedes_next_operation",
+        "controlled::scenarios_admission_watch::advised_context_notifications_revoke_every_late_metadata_occurrence"
       ],
       "reconciliations": [
-        "Family mappings enumerate composition/admission/commands, diagnostics/metadata/publication, lifecycle, source, and shutdown schedules. Fixture and native denial proof unit successors are required alongside controlled DLL tests. Foreign C++ throw mechanics are reconciled to native HRESULT, legal reentry, or contained Rust panic in the corresponding families."
+        "Family mappings enumerate composition/admission/commands, diagnostics/metadata/publication, lifecycle, source, and shutdown schedules. Fixture and native denial proof unit successors are required alongside controlled DLL tests. Foreign C++ throw mechanics are reconciled to native HRESULT, legal reentry, or contained Rust panic in the corresponding families.",
+        "Shared ordinary TSF admission uses app-agnostic native candidates and an immediately scoped range permit. Normal advised key entry covers arbitrary and wrapper classes, exact ordinary scope, native identity, sensitive/read-only/disabled refusals, exact failure/null diagnostics, reentrant context loss, and post-write exclusion with no readback or replay. Unrecognized Notepad versions require explicit ordinary scope; only exact bounded versions retain the unavailable-scope exception. Earlier class-only command exclusions now use detached native focus, preserving zero text reads and composition effects."
       ]
     },
     {

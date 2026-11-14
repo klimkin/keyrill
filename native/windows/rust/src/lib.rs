@@ -17,6 +17,7 @@ mod build_identity {
     include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 }
 #[cfg(windows)]
+mod admission_watch;
 mod edit;
 #[cfg(windows)]
 mod field;

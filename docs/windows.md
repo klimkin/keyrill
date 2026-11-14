@@ -222,7 +222,7 @@ version 3 and the actual `ITfEditSession::DoEditSession` implementation. Complet
 documents, caret, ownership, and disposition supply the oracles. Client IDs and cookies belong
 to the doubles. `native/windows/proof/scenarios.json` maps all 25 former CTest entries and 111
 scenario families to Rust tests or an explicit retirement reason. The runner checks the mapping
-against the tests it actually executes. Normal and instrumented runs passed all 172 controlled
+against the tests it actually executes. The migration validation runs passed all 172 controlled
 tests, 31 production runtime tests, 32 test-API runtime tests, 40 proof-library tests, three ABI
 tests, and three actual-DLL smoke checks. All required baseline successors executed.
 
@@ -238,13 +238,32 @@ must obey the standard HRESULT and no-throw contract. The former C++ exception-r
 and its throw-injection schedules are retired. Public COM diagnostic and wire versions retain
 their contracts. The private test API is version 3. UIA remains limited to tests and diagnostics.
 
+## Shared ordinary-field admission
+
+The runtime classifies an ordinary TSF candidate from exact native view/focus, process, thread,
+foreground root, enabled state, and process creation identity. A private range permit additionally
+requires the current top context, writable status, disabling-compartment evidence, and a single
+`IS_DEFAULT` or `IS_TEXT` scope. Native Edit password and read-only style bits apply to native Edit
+classes. Other classes obtain their sensitivity evidence from the scoped TSF metadata.
+
+Status and compartment subscriptions revoke pending operations on notification. Scope is the
+last application query before an operation. Its native interfaces remain retained through that
+operation and the final Win32 field check. The implementation assumes coherent host metadata
+and notification timing during the granted access. The contract, counterexample boundaries, and
+physical qualification requirements are recorded in [Windows admission stability](windows-admission-contract.md).
+
+Controlled schedules exercise arbitrary and wrapper class names through normal advised key
+entry, secure/read-only/disabled refusal, every reached late metadata boundary, reference release,
+context changes, and unknown-effect containment. The new generic path's real-application matrix
+remains pending. Historical bounded-Notepad observations retain their original artifact identities.
+
 ## Bounded Notepad admission and observation
 
 The runtime recognizes packaged x64 Notepad **11.2607.14.0** and **11.2609.11.0**
 for the bounded main-document path through the owned-composition executor. Its package family
 `Microsoft.WindowsNotepad_8wekyb3d8bbwe`, package name `Microsoft.WindowsNotepad`, architecture,
 executable basename and exact version are captured at service activation. Other Notepad versions
-retain metadata observation and pass every key.
+require explicit ordinary scope through the shared path.
 
 A live pre-change run on 11.2609.11.0 confirmed the expected native hierarchy, writable UIA
 binding, and missing input-scope result `E_FAIL`. The full public word passed through unchanged,
@@ -262,7 +281,8 @@ control ID zero, on the current process and TSF thread. Its immediate parent mus
 the field's `GA_ROOT`. The root may belong to a different thread. All three nodes must have
 complete metadata and be enabled. The field requires `WS_CHILD` and `ES_MULTILINE` and refuses
 `ES_PASSWORD`, `ES_READONLY` and `WS_DISABLED`. Dynamic scrollbar bits do not establish identity.
-Find, other controls, other hierarchies and unknown versions receive no text admission.
+This unavailable-scope exception requires the exact hierarchy and versions above. Other fields
+and versions follow the shared ordinary-scope path.
 
 Writable context status and all three disabled compartments precede raw selection acquisition.
 `GetStatus` requires exactly `S_OK`. A disabling compartment permits `S_OK` with `VT_EMPTY`

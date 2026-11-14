@@ -74,7 +74,11 @@ unsafe extern "system" fn ITfThreadMgr_GetFocus(
     unsafe {
         boundary(this, |p| {
             p.hit("GetFocus");
-            a1.write(p.own(ITfDocumentMgr::IID));
+            a1.write(if p.null("GetFocus") {
+                std::ptr::null_mut()
+            } else {
+                p.own(ITfDocumentMgr::IID)
+            });
             p.result("GetFocus")
         })
     }
@@ -236,7 +240,11 @@ unsafe extern "system" fn ITfDocumentMgr_GetTop(
         boundary(this, |p| {
             p.hit("GetTop");
             let pointer = p.manager().top.borrow().as_raw();
-            a1.write(retain(pointer));
+            a1.write(if p.null("GetTop") {
+                std::ptr::null_mut()
+            } else {
+                retain(pointer)
+            });
             p.result("GetTop")
         })
     }
@@ -282,6 +290,27 @@ unsafe extern "system" fn ITfSource_AdviseSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            if *a1 == ITfStatusSink::IID || *a1 == ITfCompartmentEventSink::IID {
+                let result = p.host.watch_result.get();
+                if result == S_OK {
+                    let cookie = p.host.watch_cookie.get() + 1;
+                    p.host.watch_cookie.set(cookie);
+                    let sink = IUnknown::from_raw(retain(a2));
+                    p.host
+                        .watches
+                        .borrow_mut()
+                        .push(super::super::schedule::WatchRegistration {
+                            cookie,
+                            id: *a1,
+                            sink,
+                        });
+                    if !p.host.watch_missing_cookie.get() {
+                        a3.write(cookie);
+                    }
+                }
+                p.hit("AdviseAdmission");
+                return result;
+            }
             let m = p.manager();
             let index = if *a1 == ITfThreadMgrEventSink::IID {
                 0
@@ -289,6 +318,9 @@ unsafe extern "system" fn ITfSource_AdviseSink(
                 1
             };
             m.advises[index].set(m.advises[index].get() + 1);
+            if index == 0 && m.sink_results[index].get() == S_OK {
+                replace_reference(&m.thread_sink, Some(IUnknown::from_raw(retain(a2))));
+            }
             a3.write(if m.sink_results[index].get() == S_OK {
                 index as u32 + 1
             } else {
@@ -307,9 +339,22 @@ unsafe extern "system" fn ITfSource_UnadviseSink(
 ) -> windows_core::HRESULT {
     unsafe {
         boundary(this, |p| {
+            if a1 > 100 {
+                let retired = {
+                    let mut watches = p.host.watches.borrow_mut();
+                    let index = watches.iter().position(|watch| watch.cookie == a1).unwrap();
+                    watches.remove(index)
+                };
+                drop(retired);
+                p.hit("UnadviseAdmission");
+                return p.host.unwatch_result.get();
+            }
             let m = p.manager();
             assert!(a1 == 1 || a1 == 2);
             let index = (a1 - 1) as usize;
+            if index == 0 {
+                replace_reference(&m.thread_sink, None);
+            }
             m.unadvises[index].set(m.unadvises[index].get() + 1);
             p.hit("UnadviseSink");
             p.hit(if index == 0 {

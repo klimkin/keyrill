@@ -58,5 +58,19 @@ pub(crate) struct Facts {
 }
 
 const _: () = assert!(size_of::<HostIdentity>() == 40);
-const _: () = assert!(size_of::<Window>() == 168);
-const _: () = assert!(size_of::<Facts>() == 760);
+const _: () = assert!(
+    size_of::<Window>()
+        == if cfg!(target_pointer_width = "64") {
+            168
+        } else {
+            156
+        }
+);
+const _: () = assert!(
+    size_of::<Facts>()
+        == if cfg!(target_pointer_width = "64") {
+            760
+        } else {
+            696
+        }
+);

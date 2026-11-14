@@ -23,7 +23,10 @@ fn explicit_ordinary_application_scopes_admit_one_owned_mark() {
 fn uncertain_application_scope_refuses_before_acp_or_text() {
     for version in [None, Some([11, 2607, 14, 0]), Some([11, 2609, 11, 0])] {
         for case in 0..22 {
-            let c = version.map_or_else(Client::new, Client::notepad_version);
+            let c = version.map_or_else(
+                || Client::ordinary("ArbitraryTsfHost"),
+                Client::notepad_version,
+            );
             let d = &c.a;
             match case {
                 0 => {
@@ -116,6 +119,8 @@ fn notepad_field_fact_mutations_refuse_before_acp() {
     for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
         for case in 0..44 {
             let c = Client::notepad_version(version);
+            c.a.scope_type.set(VT_EMPTY);
+            c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
             {
                 let mut facts = c.host.field_facts.borrow_mut();
                 let f = facts.as_mut().unwrap();
@@ -502,7 +507,7 @@ fn notepad_executor_refusals_expire_retained_callbacks() {
 }
 
 #[test]
-fn unknown_notepad_versions_refuse_executor_before_acp_and_pass_input() {
+fn unknown_notepad_versions_require_explicit_ordinary_scope() {
     for version in [
         [0; 4],
         [11, 2607, 13, 0],
@@ -517,16 +522,315 @@ fn unknown_notepad_versions_refuse_executor_before_acp_and_pass_input() {
                 c.a.scope_type.set(VT_EMPTY);
                 c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
             }
-            assert!(
-                !c.key(b'g' as u16, true),
+            assert_eq!(
+                c.key(b'g' as u16, true),
+                !unavailable,
                 "version {version:?}, unavailable {unavailable}"
             );
             oracle::document(&c, "g", 8);
+            if !unavailable {
+                assert_eq!(c.a.starts.get(), 1);
+                assert_eq!(c.a.writes.get(), 1);
+                continue;
+            }
             oracle::no_effects(&c);
             assert_eq!(c.a.reads.get(), 0);
             assert!(c.a.text_reads.borrow().is_empty());
             assert!(!c.host.trace.borrow().contains(&"range.ACP"));
             assert!(c.a.active.borrow().is_none());
         }
+    }
+}
+
+struct Keyboard([u8; 256]);
+impl Keyboard {
+    fn new() -> Self {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        let mut previous = [0; 256];
+        unsafe {
+            GetKeyboardState(&mut previous).unwrap();
+            SetKeyboardState(&[0; 256]).unwrap();
+        }
+        Self(previous)
+    }
+    fn down(&self, c: &Client, key: u8) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        let advised = c.manager.key_sink.borrow().clone().unwrap();
+        let scan = unsafe { MapVirtualKeyW(key as u32, MAPVK_VK_TO_VSC) } as isize;
+        let mut eaten = false.into();
+        unsafe {
+            assert_eq!(
+                (advised.sink.vtable().OnKeyDown)(
+                    advised.sink.as_raw(),
+                    c.context_a.as_raw(),
+                    WPARAM(key as usize),
+                    LPARAM((scan << 16) | 1),
+                    &mut eaten
+                ),
+                S_OK
+            );
+        }
+        c.host.check();
+        eaten.as_bool()
+    }
+}
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetKeyboardState(&self.0).unwrap() };
+    }
+}
+
+#[test]
+fn generic_native_classes_use_normal_key_entry_and_verified_executor() {
+    let keyboard = Keyboard::new();
+    for class in [
+        "ArbitraryTsfHost",
+        "Chrome_RenderWidgetHostHWND",
+        "MozillaWindowClass",
+        "_WwG",
+        "CASCADIA_HOSTING_WINDOW_CLASS",
+    ] {
+        for scope in [IS_DEFAULT, IS_TEXT] {
+            let c = Client::ordinary(class);
+            c.a.scope.set(scope);
+            // These are unrelated class-defined bits, not Edit password or readonly flags.
+            c.host
+                .field_facts
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .field
+                .style |= 0x820;
+            for key in b"GHBDTN " {
+                assert!(keyboard.down(&c, *key), "class {class}, scope {scope:?}");
+            }
+            oracle::document(&c, "привет ", 14);
+            assert_eq!(c.a.starts.get(), 1);
+            assert_eq!(c.a.writes.get(), 7);
+            assert!(keyboard.down(&c, b'X'));
+            oracle::document(&c, "привет x", 15);
+        }
+    }
+}
+
+#[test]
+fn generic_native_identity_and_sensitive_scope_refuse_without_text() {
+    let keyboard = Keyboard::new();
+    for case in 0..27 {
+        let c = Client::ordinary("ArbitraryTsfHost");
+        {
+            let mut facts = c.host.field_facts.borrow_mut();
+            let f = facts.as_mut().unwrap();
+            match case {
+                0 => f.view = HWND::default(),
+                1 => f.focus = HWND::default(),
+                2 => f.field.handle = HWND::default(),
+                3 => f.field.complete = 0,
+                4 => f.field.process += 1,
+                5 => f.field.thread += 1,
+                6 => f.field.enabled = 0,
+                7 => f.field.style |= 0x08000000,
+                8 => f.root = HWND::default(),
+                9 => f.foreground = HWND::default(),
+                10 => f.proof_root.handle = HWND::default(),
+                11 => f.proof_root.complete = 0,
+                12 => f.proof_root.process += 1,
+                13 => f.proof_root.thread = 0,
+                14 => f.proof_root.enabled = 0,
+                15 => f.proof_root.style |= 0x08000000,
+                16 => c.a.scope.set(IS_PASSWORD),
+                17 => c.a.scope.set(IS_PRIVATE),
+                18 => c.a.status.set(TF_SD_READONLY),
+                19 => c.a.disabled.set(true),
+                20 => c.a.empty_disabled.set(true),
+                21 => c.manager.disabled.set(true),
+                22 => {
+                    c.manager.top.replace(c.context_b.cast().unwrap());
+                }
+                23 => c.a.range_context.set(c.context_b.as_raw()),
+                24 => f.host.process += 1,
+                25 => f.host.thread += 1,
+                26 => f.host.started = 0,
+                _ => unreachable!(),
+            }
+        }
+        assert!(!keyboard.down(&c, b'G'), "case {case}");
+        no_admission(&c);
+    }
+    for class in ["EDIT", "RichEdit20W", "RICHEDIT50W"] {
+        for style in [0x20, 0x800] {
+            let c = Client::ordinary(class);
+            c.host
+                .field_facts
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .field
+                .style |= style;
+            assert!(!keyboard.down(&c, b'G'));
+            no_admission(&c);
+        }
+    }
+}
+
+#[test]
+fn generic_scope_and_focus_changes_revoke_range_permission() {
+    let keyboard = Keyboard::new();
+    for owned in [false, true] {
+        for boundary in [
+            "GetSelection",
+            "range.GetContext",
+            "GetInputScopes",
+            "range.ACP",
+            "GetExtent",
+            "enumerator.Next",
+            "Clone",
+            "ShiftStart",
+        ] {
+            if owned && matches!(boundary, "Clone" | "ShiftStart") {
+                continue;
+            }
+            for change in 0..3 {
+                let c = Client::ordinary("ArbitraryTsfHost");
+                if owned {
+                    assert!(keyboard.down(&c, b'G'));
+                }
+                let reads = c.a.reads.get();
+                let writes = c.a.writes.get();
+                let document = Rc::clone(&c.a);
+                let manager = Rc::clone(&c.manager);
+                let host = Rc::clone(&c.host);
+                let other = c.context_b.cast::<windows_core::IUnknown>().unwrap();
+                c.host.on(boundary, 0, move || match change {
+                    0 => document.scope.set(IS_PRIVATE),
+                    1 => host.field_facts.borrow_mut().as_mut().unwrap().focus = HWND::default(),
+                    _ => {
+                        manager.top.replace(other.clone());
+                    }
+                });
+                assert!(
+                    !keyboard.down(&c, if owned { b'H' } else { b'G' }),
+                    "owned {owned}, {boundary}, change {change}"
+                );
+                assert_eq!(
+                    c.a.reads.get(),
+                    reads,
+                    "owned {owned}, {boundary}, change {change}"
+                );
+                assert_eq!(c.a.writes.get(), writes);
+                oracle::document(&c, if owned { "g" } else { "" }, if owned { 8 } else { 7 });
+                c.host.drained();
+            }
+        }
+    }
+}
+
+#[test]
+fn generic_exclusion_after_write_stops_readback_and_replay() {
+    let keyboard = Keyboard::new();
+    let c = Client::ordinary("ArbitraryTsfHost");
+    assert!(keyboard.down(&c, b'G'));
+    let reads = c.a.reads.get();
+    let document = Rc::clone(&c.a);
+    let at_write = Rc::new(std::cell::Cell::new(0));
+    let captured = Rc::clone(&at_write);
+    c.host.on("SetText.after", 0, move || {
+        captured.set(document.reads.get());
+        document.scope.set(IS_PRIVATE);
+    });
+    assert!(keyboard.down(&c, b'H'));
+    assert!(at_write.get() >= reads);
+    assert_eq!(c.a.reads.get(), at_write.get());
+    assert_eq!(c.a.writes.get(), 2);
+    oracle::document(&c, "gh", 8);
+    assert!(!keyboard.down(&c, b'J'));
+    assert_eq!(c.a.writes.get(), 2);
+    assert_eq!(c.a.reads.get(), at_write.get());
+    c.host.drained();
+}
+
+#[test]
+fn generic_native_failures_preserve_content_free_refusal_evidence() {
+    use crate::support::dll::snapshot;
+    let keyboard = Keyboard::new();
+    for boundary in [
+        "GetFocus",
+        "GetTop",
+        "GetActiveView",
+        "GetWnd",
+        "GetStatus",
+        "GetAppProperty",
+        "scope.GetValue",
+        "GetInputScopes",
+    ] {
+        for result in [S_FALSE, E_FAIL] {
+            let c = Client::ordinary("ArbitraryTsfHost");
+            if matches!(boundary, "GetFocus" | "GetTop") {
+                c.manager.results.borrow_mut().insert(boundary, result);
+            } else {
+                c.a.results.borrow_mut().insert(boundary, result);
+            }
+            assert!(!keyboard.down(&c, b'G'), "{boundary}, {result:?}");
+            no_admission(&c);
+            let observed = snapshot(&c.service);
+            assert_eq!(observed.first[0], 1);
+            assert_eq!(observed.first[2], 1);
+            assert_eq!(observed.first[3], result.0 as u32);
+            assert_eq!(observed.counts[8], 0);
+        }
+    }
+    for boundary in ["GetFocus", "GetTop", "GetActiveView", "GetAppProperty"] {
+        let c = Client::ordinary("ArbitraryTsfHost");
+        if matches!(boundary, "GetFocus" | "GetTop") {
+            c.manager.nulls.borrow_mut().push(boundary);
+        } else {
+            c.a.nulls.borrow_mut().push(boundary);
+        }
+        assert!(!keyboard.down(&c, b'G'), "null {boundary}");
+        no_admission(&c);
+        let observed = snapshot(&c.service);
+        assert_eq!(observed.first[0], 1);
+        assert_eq!(observed.first[2], 8);
+        assert_eq!(observed.first[3], 0);
+    }
+    let c = Client::ordinary("ArbitraryTsfHost");
+    c.a.scope_type.set(VT_EMPTY);
+    c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
+    assert!(!keyboard.down(&c, b'G'));
+    no_admission(&c);
+    assert_eq!(snapshot(&c.service).first, [1, 18, 1, E_FAIL.0 as u32]);
+}
+
+#[test]
+fn generic_reentrant_context_callbacks_revoke_pending_admission() {
+    let keyboard = Keyboard::new();
+    for boundary in [
+        "manager.GetFocus",
+        "GetTop",
+        "GetActiveView",
+        "GetWnd",
+        "capture",
+        "GetStatus",
+        "GetCompartment",
+        "compartment.GetValue",
+        "thread.GetValue",
+        "GetSelection",
+        "range.GetContext",
+        "GetAppProperty",
+        "scope.GetValue",
+        "GetInputScopes",
+    ] {
+        let c = Client::ordinary("ArbitraryTsfHost");
+        let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+        let other = c.context_b.clone();
+        c.host.on(boundary, 0, move || unsafe {
+            assert_eq!(
+                (sink.vtable().OnPushContext)(sink.as_raw(), other.as_raw()),
+                S_OK
+            );
+        });
+        assert!(!keyboard.down(&c, b'G'), "{boundary}");
+        no_admission(&c);
+        c.host.drained();
     }
 }

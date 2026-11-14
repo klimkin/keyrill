@@ -20,7 +20,14 @@ pub(crate) struct Identity {
     pub(crate) root_thread: u32,
 }
 
-const _: () = assert!(size_of::<Identity>() == 48);
+const _: () = assert!(
+    size_of::<Identity>()
+        == if cfg!(target_pointer_width = "64") {
+            48
+        } else {
+            28
+        }
+);
 
 fn equal(text: &[u16], expected: &str) -> bool {
     text.iter()
@@ -119,21 +126,8 @@ fn node(window: &Window, process: u32, class: &str) -> bool {
         && equal(&window.class_name, class)
 }
 
-pub(crate) fn matches(facts: &Facts) -> Option<Identity> {
+fn bounded(facts: &Facts) -> Option<Identity> {
     let field = &facts.field;
-    if facts.process == 0
-        || facts.thread == 0
-        || facts.view.0.is_null()
-        || facts.view != facts.focus
-        || field.handle != facts.view
-        || field.complete == 0
-        || field.process != facts.process
-        || field.thread != facts.thread
-        || field.enabled == 0
-        || field.style & (ES_PASSWORD as isize | ES_READONLY as isize | WS_DISABLED.0 as isize) != 0
-    {
-        return None;
-    }
     if facts.proof_process != 0
         && equal_ascii_fold(&field.class_name, "RICHEDIT50W")
         && matches!(field.control, 101 | 102)
@@ -176,4 +170,89 @@ pub(crate) fn matches(facts: &Facts) -> Option<Identity> {
         thread: facts.thread,
         root_thread: root.thread,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Contract {
+    ProofRichEdit,
+    NotepadBounded,
+    OrdinaryTsf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CandidateField {
+    pub(crate) identity: Identity,
+    pub(crate) contract: Contract,
+    started: u64,
+}
+
+pub(crate) fn classify(facts: &Facts) -> Option<CandidateField> {
+    let field = &facts.field;
+    let root = &facts.proof_root;
+    let native_edit = [
+        "Edit",
+        "RICHEDIT50W",
+        "RichEdit20W",
+        "RichEdit20A",
+        "RichEditD2DPT",
+    ]
+    .iter()
+    .any(|class| equal_ascii_fold(&field.class_name, class));
+    if facts.process == 0
+        || facts.thread == 0
+        || facts.view.0.is_null()
+        || facts.view != facts.focus
+        || field.handle != facts.view
+        || field.complete == 0
+        || field.process != facts.process
+        || field.thread != facts.thread
+        || field.enabled == 0
+        || field.style & WS_DISABLED.0 as isize != 0
+        || (native_edit && field.style & (ES_PASSWORD as isize | ES_READONLY as isize) != 0)
+    {
+        return None;
+    }
+    if let Some(identity) = bounded(facts) {
+        return Some(CandidateField {
+            contract: if identity.kind == 1 {
+                Contract::NotepadBounded
+            } else {
+                Contract::ProofRichEdit
+            },
+            identity,
+            started: facts.host.started,
+        });
+    }
+    if facts.host.process != facts.process
+        || facts.host.thread != facts.thread
+        || facts.host.started == 0
+        || facts.root.0.is_null()
+        || facts.root != facts.foreground
+        || root.handle != facts.root
+        || root.complete == 0
+        || root.process != facts.process
+        || root.thread == 0
+        || root.enabled == 0
+        || root.style & WS_DISABLED.0 as isize != 0
+    {
+        return None;
+    }
+    Some(CandidateField {
+        contract: Contract::OrdinaryTsf,
+        started: facts.host.started,
+        identity: Identity {
+            kind: 2,
+            field: field.handle,
+            parent: facts.parent.handle,
+            root: facts.root,
+            process: facts.process,
+            thread: facts.thread,
+            root_thread: root.thread,
+        },
+    })
+}
+
+#[cfg(feature = "test-api")]
+pub(crate) fn matches(facts: &Facts) -> Option<Identity> {
+    classify(facts).map(|candidate| candidate.identity)
 }

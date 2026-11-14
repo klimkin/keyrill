@@ -1,13 +1,17 @@
 use crate::com::OwnServiceLease;
 use crate::diagnostics::{Cause, Counter, LifecycleCause, LifecycleKind, Stage, Unresolved};
 use crate::engine::Plan;
-use crate::field::{self, Identity};
+use crate::field::{self, CandidateField, Contract, Identity};
 use crate::foreign::document as native;
 use crate::foreign::{self, Call, InterfaceError, Lease, Returned};
 use crate::service::{Authority, Owned, OwnedIdentity, Service};
 use keyrill_ffi::NativeEvent;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use windows::Win32::Foundation::{E_FAIL, RPC_E_WRONG_THREAD, S_FALSE, S_OK};
 use windows::Win32::UI::TextServices::*;
 use windows_core::{BOOL, HRESULT, IUnknown, Interface, Result, implement};
@@ -48,9 +52,10 @@ pub(crate) struct Frame {
     entered: Cell<bool>,
     completed: Cell<bool>,
     expired: Cell<bool>,
+    admission_revoked: Arc<AtomicBool>,
     effect: Cell<Effect>,
     stage: Cell<Stage>,
-    field: Cell<Option<Identity>>,
+    field: Cell<Option<CandidateField>>,
     ownership: RefCell<Option<Rc<OwnedIdentity>>>,
     eaten: Cell<bool>,
     completion: Cell<Completion>,
@@ -84,6 +89,18 @@ struct SelectionObservation {
     range: Lease<ITfRange>,
     value: SelectionValue,
 }
+struct RangePermit<'range> {
+    range: &'range Lease<ITfRange>,
+    _scope: ScopeEvidence,
+}
+
+struct ScopeEvidence {
+    // Release can reenter the host, so these leases outlive the permitted native operation.
+    _property: Lease<ITfReadOnlyProperty>,
+    _scope: Option<Lease<ITfInputScope>>,
+    _values: Option<native::Scopes>,
+}
+
 struct FinishSelection {
     original: SelectionValue,
     carrier: Lease<ITfRange>,
@@ -104,6 +121,7 @@ impl Frame {
             entered: Cell::new(false),
             completed: Cell::new(false),
             expired: Cell::new(false),
+            admission_revoked: Arc::new(AtomicBool::new(false)),
             effect: Cell::new(Effect::Unattempted),
             stage: Cell::new(Stage::Session),
             field: Cell::new(None),
@@ -219,7 +237,7 @@ impl Frame {
         if !frame.writable(editing) {
             return None;
         }
-        let result = frame.alive().then_some(field);
+        let result = frame.alive().then_some(field.identity);
         let service = Rc::clone(&frame.service);
         let guard = editing.authority.guard;
         let ownership = frame.ownership.borrow().clone();
@@ -264,6 +282,7 @@ impl Frame {
     pub(crate) fn alive(&self) -> bool {
         if !self.service.owner_thread()
             || self.expired.get()
+            || self.admission_revoked.load(Ordering::Acquire)
             || self
                 .decision
                 .as_ref()
@@ -349,7 +368,7 @@ impl Frame {
         matches && self.alive()
     }
 
-    fn fresh_field(&self, editing: &Editing) -> Option<Identity> {
+    fn fresh_field(&self, editing: &Editing) -> Option<CandidateField> {
         let _observe = self.observe(Stage::Focus);
         if !self.check(self.alive(), Cause::Stale) {
             return None;
@@ -371,7 +390,7 @@ impl Frame {
         if !self.exact(facts.call) {
             return None;
         }
-        let field = field::matches(&facts.value);
+        let field = field::classify(&facts.value);
         self.check(field.is_some() && self.alive(), Cause::Predicate)
             .then_some(field)
             .flatten()
@@ -464,21 +483,26 @@ impl Frame {
         editing: &Editing,
         cookie: u32,
         range: &Lease<ITfRange>,
-        field: Identity,
-    ) -> bool {
+        field: CandidateField,
+    ) -> Option<ScopeEvidence> {
         let _observe = self.observe(Stage::AppProperty);
         if !self.alive() {
-            return false;
+            return None;
         }
-        let Some(property) = self.required(native::property(&editing.context)) else {
-            return false;
-        };
+        let property = self.required(native::property(&editing.context))?;
         self.stage.set(Stage::AppValue);
         let output = native::property_value(&property, cookie, range);
-        if output.call.result == E_FAIL && output.value.empty() && field.kind == 1 {
+        if output.call.result == E_FAIL
+            && output.value.empty()
+            && field.contract == Contract::NotepadBounded
+        {
             let alive = self.check(self.alive(), Cause::Stale);
             let _ = output.value.clear();
-            return alive && self.alive();
+            return (alive && self.alive()).then_some(ScopeEvidence {
+                _property: property,
+                _scope: None,
+                _values: None,
+            });
         }
         let valid = self.exact(output.call)
             && self.check(output.value.unknown(), Cause::WrongType)
@@ -486,53 +510,62 @@ impl Frame {
         if !valid {
             let _ = output.value.clear();
 
-            return false;
+            return None;
         }
         self.stage.set(Stage::ScopeInterface);
         let scope = output.value.input_scope();
         let _ = output.value.clear();
         if !self.alive() {
-            return false;
+            return None;
         }
-        let Some(scope) = self.queried(scope) else {
-            return false;
-        };
+        let scope = self.queried(scope)?;
         self.stage.set(Stage::Scopes);
         let scopes = native::scopes(&scope);
-        self.exact(scopes.call)
+        let valid = self.exact(scopes.call)
             && self.check(scopes.value.ordinary(), Cause::Predicate)
-            && self.check(self.alive(), Cause::Stale)
+            && self.check(self.alive(), Cause::Stale);
+        valid.then_some(ScopeEvidence {
+            _property: property,
+            _scope: Some(scope),
+            _values: Some(scopes.value),
+        })
     }
 
-    fn allowed_range(
+    fn permit_range<'range>(
         &self,
         editing: &Editing,
         cookie: u32,
-        range: &Lease<ITfRange>,
-        expected: Identity,
-    ) -> bool {
-        let Some(field) = self.fresh_field(editing) else {
-            return false;
-        };
+        range: &'range Lease<ITfRange>,
+        expected: CandidateField,
+    ) -> Option<RangePermit<'range>> {
+        let field = self.fresh_field(editing)?;
         if !self.check(field == expected, Cause::Predicate) {
-            return false;
+            return None;
         }
-        let Some(context) = self.required(native::range_context(range)) else {
-            return false;
-        };
+        let context = self.required(native::range_context(range))?;
         if !self.identity(
             &context,
             editing.identity.as_ref().map_or(0, Lease::address),
         ) {
-            return false;
+            return None;
         }
         drop(context);
-        self.writable(editing)
-            && self.ordinary_scope(editing, cookie, range, expected)
+        if !self.writable(editing) {
+            return None;
+        }
+        let scope = self.ordinary_scope(editing, cookie, range, expected)?;
+        let facts = self
+            .service
+            .capture_field(expected.identity.field, editing.authority.host_identity);
+        let permitted = self.exact(facts.call)
             && self.check(
-                self.fresh_field(editing) == Some(field) && self.alive(),
+                field::classify(&facts.value) == Some(field) && self.alive(),
                 Cause::Stale,
-            )
+            );
+        permitted.then_some(RangePermit {
+            range,
+            _scope: scope,
+        })
     }
 
     fn selection(
@@ -560,12 +593,10 @@ impl Frame {
             return None;
         }
         let range = selection.value.range?;
-        if !self.allowed_range(editing, cookie, &range, field) {
-            return None;
-        }
+        self.permit_range(editing, cookie, &range, field)?;
         let (start, length) = self.extent(editing, &range)?;
         if !self.check(!collapsed || length == 0, Cause::Predicate)
-            || !self.allowed_range(editing, cookie, &range, field)
+            || self.permit_range(editing, cookie, &range, field).is_none()
             || !self.check(
                 self.fresh_field(editing) == Some(field) && self.alive(),
                 Cause::Stale,
@@ -647,10 +678,10 @@ impl Frame {
         let Some(field) = self.field.get() else {
             return false;
         };
-        if !self.allowed_range(editing, cookie, range, field) || !self.alive() {
+        let Some(permit) = self.permit_range(editing, cookie, range, field) else {
             return false;
-        }
-        let text = native::text(range, cookie, 129);
+        };
+        let text = native::text(permit.range, cookie, 129);
         self.exact(text.call)
             && text.value.count as usize == expected.len()
             && text.value.units == expected
@@ -709,10 +740,10 @@ impl Frame {
         let Some(field) = self.field.get() else {
             return false;
         };
-        if !self.allowed_range(editing, cookie, &prefix, field) || !self.alive() {
+        let Some(permit) = self.permit_range(editing, cookie, &prefix, field) else {
             return false;
-        }
-        let text = native::text(&prefix, cookie, 2);
+        };
+        let text = native::text(permit.range, cookie, 2);
         if !self.exact(text.call) || text.value.count != 1 {
             return false;
         }
@@ -753,7 +784,10 @@ impl Frame {
         let Some(field) = self.field.get() else {
             return false;
         };
-        if !self.allowed_range(editing, cookie, &saved.carrier, field) {
+        if self
+            .permit_range(editing, cookie, &saved.carrier, field)
+            .is_none()
+        {
             return false;
         }
         let end = saved.original.start + saved.original.length;
@@ -767,7 +801,11 @@ impl Frame {
         let Some((start, length)) = self.extent(editing, &saved.carrier) else {
             return false;
         };
-        if start + length != end || !self.allowed_range(editing, cookie, &saved.carrier, field) {
+        if start + length != end
+            || self
+                .permit_range(editing, cookie, &saved.carrier, field)
+                .is_none()
+        {
             return false;
         }
         let amount = saved.original.start - start;
@@ -780,14 +818,16 @@ impl Frame {
         if self.extent(editing, &saved.carrier)
             != Some((saved.original.start, saved.original.length))
             || self.no_foreign(editing).is_none()
-            || !self.allowed_range(editing, cookie, &saved.carrier, field)
         {
             return false;
         }
+        let Some(permit) = self.permit_range(editing, cookie, &saved.carrier, field) else {
+            return false;
+        };
         self.exact(native::set_selection(
             &editing.context,
             cookie,
-            &saved.carrier,
+            permit.range,
             TF_SELECTIONSTYLE {
                 ase: saved.original.active_end,
                 fInterimChar: saved.original.interim,
@@ -823,9 +863,9 @@ impl Frame {
             let Some(field) = self.field.get() else {
                 return false;
             };
-            if !self.allowed_range(editing, cookie, &selection.range, field) {
+            let Some(permit) = self.permit_range(editing, cookie, &selection.range, field) else {
                 return false;
-            }
+            };
             let Some(composition) = self.required(native::start_composition(
                 &context,
                 cookie,
@@ -834,6 +874,10 @@ impl Frame {
             )) else {
                 return false;
             };
+            drop(permit);
+            if !self.alive() {
+                return false;
+            }
             let Some(composition_id) = self.queried(composition.query::<IUnknown>()) else {
                 return false;
             };
@@ -889,12 +933,12 @@ impl Frame {
         let Some(field) = self.field.get() else {
             return false;
         };
-        if !self.allowed_range(editing, cookie, &range, field) {
+        let Some(permit) = self.permit_range(editing, cookie, &range, field) else {
             return false;
-        }
+        };
         self.service.count(Counter::Attempted);
         self.effect.set(Effect::Attempted);
-        if !self.exact(native::set_text(&range, cookie, &plan.mark)) {
+        if !self.exact(native::set_text(permit.range, cookie, &plan.mark)) {
             return false;
         }
         let Some((start, length)) = self.extent(editing, &range) else {
@@ -922,18 +966,21 @@ impl Frame {
             let Some(caret) = self.required(native::clone_range(&actual)) else {
                 return false;
             };
-            if !self.exact(native::collapse(&caret, cookie, TF_ANCHOR_END))
-                || !self.allowed_range(editing, cookie, &caret, field)
-                || !self.exact(native::set_selection(
-                    &editing.context,
-                    cookie,
-                    &caret,
-                    TF_SELECTIONSTYLE {
-                        ase: TF_AE_NONE,
-                        fInterimChar: BOOL(0),
-                    },
-                ))
-            {
+            if !self.exact(native::collapse(&caret, cookie, TF_ANCHOR_END)) {
+                return false;
+            }
+            let Some(permit) = self.permit_range(editing, cookie, &caret, field) else {
+                return false;
+            };
+            if !self.exact(native::set_selection(
+                &editing.context,
+                cookie,
+                permit.range,
+                TF_SELECTIONSTYLE {
+                    ase: TF_AE_NONE,
+                    fInterimChar: BOOL(0),
+                },
+            )) {
                 return false;
             }
             let Some(selection) = self.selection(editing, cookie, true) else {
@@ -951,9 +998,9 @@ impl Frame {
             self.service
                 .verify_owned(editing.authority.guard, &owned.identity, &plan.mark)
         } else {
-            if !self.allowed_range(editing, cookie, &actual, field) {
+            let Some(_permit) = self.permit_range(editing, cookie, &actual, field) else {
                 return false;
-            }
+            };
             self.service.count(Counter::Attempted);
             self.service.lifecycle(
                 LifecycleKind::EndRequested,
@@ -1195,13 +1242,30 @@ impl Frame {
     }
 
     pub(crate) fn request(self: &Rc<Self>, context: &Lease<ITfContext>, client: u32) -> Request {
+        let mut watch = crate::admission_watch::Watch::new(Arc::clone(&self.admission_revoked));
+        if let Some(editing) = self.editing_work()
+            && !watch.install(context, &editing.authority.manager)
+        {
+            self.admission_revoked.store(true, Ordering::Release);
+        }
         let session: ITfEditSession = EditSession {
             frame: Rc::clone(self),
         }
         .into();
-        let (outer, callback) =
-            foreign::request(context, client, &session, TF_ES_SYNC.0 | TF_ES_READWRITE.0);
+        let (outer, callback) = if self.alive() {
+            foreign::request(context, client, &session, TF_ES_SYNC.0 | TF_ES_READWRITE.0)
+        } else {
+            (Call { result: E_FAIL }, E_FAIL)
+        };
+        watch.drain();
         let valid = self.alive();
+        if self.admission_revoked.load(Ordering::Acquire) {
+            self.invalidate(
+                watch.uncertain
+                    || self.effect.get() != Effect::Unattempted
+                    || self.service.owned().is_some(),
+            );
+        }
         self.expired.set(true);
         Request {
             outer,

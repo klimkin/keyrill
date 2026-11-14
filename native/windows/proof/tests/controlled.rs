@@ -1,6 +1,7 @@
 //! Independent document and native schedule tests against explicit DLL artifacts.
 #![cfg(windows)]
 mod scenarios_admission;
+mod scenarios_admission_watch;
 mod scenarios_advised_sink;
 mod scenarios_boundary;
 mod scenarios_commands;

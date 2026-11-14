@@ -634,6 +634,7 @@ fn command_observation_exclusions_and_lifecycle_anchors() {
                 }
                 if scenario == 5 {
                     facts.field.class_name = facts.proof_root.class_name;
+                    facts.focus = facts.root;
                 }
                 c.host.field_facts.replace(Some(facts));
             }

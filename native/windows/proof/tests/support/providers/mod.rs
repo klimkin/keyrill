@@ -71,6 +71,7 @@ pub struct AdvisedKeySink {
     pub sink: ITfKeyEventSink,
 }
 pub struct Manager {
+    pub thread_sink: RefCell<Option<IUnknown>>,
     pub key_sink: RefCell<Option<Rc<AdvisedKeySink>>>,
     pub diagnostic_advises: Cell<u32>,
     pub diagnostic_unadvises: Cell<u32>,
@@ -96,6 +97,7 @@ pub struct Manager {
 impl Manager {
     pub fn new(host: Rc<HostCapsule>, top: *mut c_void) -> Rc<Self> {
         Rc::new(Self {
+            thread_sink: RefCell::new(None),
             key_sink: RefCell::new(None),
             diagnostic_advises: Cell::new(0),
             diagnostic_unadvises: Cell::new(0),
@@ -231,6 +233,7 @@ impl Provider {
         let allowed = match &self.kind {
             Kind::Document(_) => [
                 ITfContext::IID,
+                ITfSource::IID,
                 ITfContextComposition::IID,
                 ITfContextView::IID,
                 ITfProperty::IID,
@@ -506,6 +509,8 @@ impl Drop for Provider {
     }
 }
 pub const BOUNDARIES: &[&str] = &[
+    "AdviseAdmission",
+    "UnadviseAdmission",
     "UnadviseThreadSink",
     "UnadviseProfileSink",
     "thread.GetCompartment",

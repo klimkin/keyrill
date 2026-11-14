@@ -18,7 +18,9 @@ Historical packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-compos
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
 Physical command checks covered conversion and held reversal within one focus interval.
-Other versions remain metadata-only and pass input. Application coverage, settings, and packaging remain later work.
+Other versions use the shared ordinary-scope path. Its implementation requires exact native
+identity, writable state, ordinary scope, owned-range verification, and status/compartment
+subscriptions. Application qualification, settings integration, and packaging remain in progress.
 No Linux adapter exists. An explicit-PID inspector supplies independent field evidence and
 named public-document checks. The evidence limits are recorded with
 [Windows admission](windows.md#bounded-notepad-admission-and-observation).

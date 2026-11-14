@@ -112,6 +112,22 @@ impl Client {
         }
         facts
     }
+    pub fn ordinary(class: &str) -> Self {
+        let c = Self::new();
+        let mut facts = c.captured_facts();
+        facts.proof_process = 0;
+        facts.host.process = facts.process;
+        facts.host.thread = facts.thread;
+        facts.host.started = 1;
+        facts.field.class_name.fill(0);
+        for (to, from) in facts.field.class_name.iter_mut().zip(class.encode_utf16()) {
+            *to = from;
+        }
+        facts.proof_root.class_name.fill(0);
+        facts.proof_root.class_name[0] = b'R' as u16;
+        c.host.field_facts.replace(Some(facts));
+        c
+    }
     pub fn notepad() -> Self {
         Self::notepad_version([11, 2607, 14, 0])
     }
@@ -153,6 +169,7 @@ impl Client {
                 field,
                 parent: node(2, "NotepadTextBox"),
                 grandparent: node(3, "Notepad"),
+                proof_root: node(3, "Notepad"),
                 ..Default::default()
             }));
         }
