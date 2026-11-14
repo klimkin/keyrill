@@ -3,6 +3,7 @@
 use keyrill_windows_build::{BuildConfig, Instrumentation, Target, identity, source_inputs};
 use std::path::Path;
 
+mod acceptance;
 mod cargo;
 mod cli;
 mod closure;
@@ -40,6 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         cli::Command::Check(architectures) => {
             closure::check(root)?;
+            acceptance::inventory(root)?;
             model::check(root)?;
             for &target in architectures.targets() {
                 windows::common_checks(root, target)?;
@@ -52,6 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         cli::Command::Sanitize => {
             closure::check(root)?;
+            acceptance::inventory(root)?;
             let mut build = windows::build(root, Target::X64, Instrumentation::Address)?;
             let mut executed = windows::controlled(&build)?;
             executed.extend(windows::native_tests(root, &mut build)?);
@@ -59,6 +62,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             coverage::check(root, &executed)?;
         }
         cli::Command::ModelCheck => model::check(root)?,
+        cli::Command::AcceptanceInventory => {
+            let inventory = acceptance::inventory(root)?;
+            println!(
+                "Validated {} acceptance obligations.",
+                inventory.requirements.len()
+            );
+            for (key, requirement) in inventory.requirements {
+                println!("{key}\t{}\t{}", requirement.mode, requirement.expected);
+            }
+        }
+        cli::Command::AcceptanceResults(path) => {
+            acceptance::validate_results(root, &path)?;
+            println!("Windows result-ledger consistency validated.");
+        }
         cli::Command::Inventory => {
             for path in source_inputs(root)? {
                 println!(

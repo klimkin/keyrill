@@ -701,6 +701,28 @@ wrong conversion, and wrong line endings. These checks leave Terminal applicatio
 pending. Actual Terminal source activation, composition, byte ordering, concurrent output,
 shortcuts, cancellation, and no-echo isolation still require the dedicated physical run.
 
+## Acceptance inventory and local results
+
+`native/windows/proof/acceptance.json` defines the approved application/control matrix and its
+controlled, generated-input, and physical-input obligations. Both native architecture tracks
+are required. Installed-application metadata supplies each actual application architecture.
+Historical C++ results retain their separate source and artifact identities.
+
+```powershell
+cargo xtask windows acceptance inventory
+cargo xtask windows acceptance results .audit/windows-final-results.json
+```
+
+The first command validates and prints the expanded matrix. Full check and sanitizer commands
+also validate its structure. The second checks a complete local ledger against the current
+source and both production identities, fresh publication, armed/observed client identity,
+required oracle records, and hashes of existing local evidence files. One session artifact can
+support several obligations. Pending, missing, stale, duplicate, or mismatched records fail.
+
+Ledger validation establishes record consistency. Independent artifact review and physical
+application observations establish the behavior claimed by those records. Keep completed ledgers
+and real desktop evidence under uncommitted `.audit/`.
+
 ## Shared model and personal vocabulary
 
 Windows captures a complete configuration at activation. `KEYRILL_WINDOWS_POLICY` accepts

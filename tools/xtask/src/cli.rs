@@ -1,5 +1,6 @@
 use crate::cargo::Result;
 use keyrill_windows_build::{Target, Variant};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Architectures {
@@ -28,6 +29,8 @@ pub(crate) enum Command {
     Sanitize,
     ModelCheck,
     Inventory,
+    AcceptanceInventory,
+    AcceptanceResults(PathBuf),
     Fingerprint {
         target: Target,
         variant: Variant,
@@ -36,7 +39,7 @@ pub(crate) enum Command {
 
 pub(crate) fn parse(arguments: &[String]) -> Result<Command> {
     let [platform, command, options @ ..] = arguments else {
-        return Err("usage: windows build|controlled|check [--arch x64|x86|all] | windows sanitize [--arch x64] | windows model-check|inventory | windows fingerprint production|test-api [--arch x64|x86]".into());
+        return Err("usage: windows build|controlled|check [--arch x64|x86|all] | windows sanitize [--arch x64] | windows model-check|inventory | windows fingerprint production|test-api [--arch x64|x86] | windows acceptance inventory|results PATH".into());
     };
     if platform != "windows" {
         return Err("expected windows command".into());
@@ -76,11 +79,25 @@ pub(crate) fn parse(arguments: &[String]) -> Result<Command> {
     if case.is_some() && command != "controlled" {
         return Err("--case is supported by windows controlled".into());
     }
-    if command != "fingerprint" && !positional.is_empty() {
+    if !matches!(command.as_str(), "fingerprint" | "acceptance") && !positional.is_empty() {
         return Err("unexpected command argument".into());
     }
     let architectures = architecture.unwrap_or(Architectures::One(Target::X64));
     match command.as_str() {
+        "acceptance" => {
+            if architecture.is_some() {
+                return Err(
+                    "acceptance validates the complete matrix and does not accept --arch".into(),
+                );
+            }
+            match positional.as_slice() {
+                ["inventory"] => Ok(Command::AcceptanceInventory),
+                ["results", path] if !path.is_empty() => {
+                    Ok(Command::AcceptanceResults(PathBuf::from(path)))
+                }
+                _ => Err("acceptance requires inventory or results PATH".into()),
+            }
+        }
         "build" => Ok(Command::Build(architectures)),
         "controlled" => Ok(Command::Controlled {
             architectures,
@@ -197,8 +214,28 @@ mod tests {
             "windows build --unknown",
             "windows sanitize --arch x86",
             "windows sanitize --arch all",
+            "windows acceptance",
+            "windows acceptance results",
+            "windows acceptance unknown",
+            "windows acceptance inventory extra",
+            "windows acceptance inventory --arch x64",
+            "windows acceptance inventory --case one",
         ] {
             assert!(parse_words(arguments).is_err(), "{arguments}");
         }
+    }
+
+    #[test]
+    fn acceptance_commands_preserve_the_exact_local_result_path() {
+        assert_eq!(
+            parse_words("windows acceptance inventory").unwrap(),
+            Command::AcceptanceInventory
+        );
+        let path = "C:\\Public Fixture\\results.json";
+        let arguments = ["windows", "acceptance", "results", path].map(str::to_owned);
+        assert_eq!(
+            parse(&arguments).unwrap(),
+            Command::AcceptanceResults(PathBuf::from(path))
+        );
     }
 }
