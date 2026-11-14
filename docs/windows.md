@@ -6,8 +6,10 @@ The Windows runner accepts `--arch x64`, `--arch x86` and `--arch all` for `buil
 `controlled` and `check`. Existing commands default to x64. Intel and AMD x64 use
 `x86_64-pc-windows-msvc`; 32-bit processes use `i686-pc-windows-msvc`. ARM64 is unsupported.
 Both architectures run from an x64 Windows host. Target installation requires maintainer
-approval. The x86 Rust standard library is currently unavailable on the verification machine,
-so actual x86 compilation, COM export loading, activation and native execution remain pending.
+approval. Commit `db42fa1` passed local full verification of actual x64 and x86 compilation,
+controlled COM execution, independent ABI checks, registration-free export loading, and
+activation. Final completion-candidate verification and installed mixed-bitness application
+acceptance remain separate gates.
 
 ```console
 cargo xtask windows build --arch all
@@ -24,13 +26,46 @@ target triple and feature domain. PE verification checks the selected machine an
 header pair before execution. Proof activation manifests use the selected client architecture.
 The experimental sanitizer supports x64 only and rejects x86 and all explicitly.
 
-This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
+This is an x64 and x86 Text Services Framework adapter with manual conversion and configurable automatic
 correction. The `keyrill-windows` package in `native/windows/rust/` implements the service and
 registrar with `windows` and `windows-core` 0.62.2. The proof editor, UIA inspectors,
 controlled COM providers, and build tools are also Rust. The service links the portable engine
 through [the C ABI](../include/keyrill.h). It has no replacement backend,
-hooks, input injection, clipboard transport, or runtime network access. Admission covers the
-proof editor and the tested version-bounded Notepad main document described below.
+hooks, input injection, clipboard transport, or runtime network access. Shared ordinary-field
+admission requires the [native admission contract](windows-admission-contract.md). The tested
+version-bounded Notepad unavailable-scope exception retains its separate requirements.
+The [completion plan](windows-completion-plan.md) defines the pending application acceptance matrix.
+
+Complete persisted preferences default automatic correction off. Automatic, Manual, and Off
+application policies restrict native admission. The on-demand Win32 Settings editor uses complete
+revision conflict detection. The [package guide](windows-package.md) describes production profiles,
+dual-architecture artifacts, explicit installation, and recovery. Actual installed application and
+package-lifecycle results must identify the candidate used.
+
+## Automatic source handoff
+
+When automatic correction and source switching are enabled, a verified converted word plus
+Space retains its original source while its owned reversal mark exists. Z, Escape, and manual
+conversion cancel pending source selection. The next qualifying letter must first obtain a
+verified natural FINISH. That FINISH expires the reversal receipt and releases the first edit
+session before native source selection.
+
+The source-only operation checks the actual target profile, exact standard substitute layout,
+loaded-layout list, enablement, current source, focus, field, keyboard state, and complete
+configuration identity. It requests one language change and at most one flags-zero profile
+activation. Fresh native readback precedes a new admission and edit session. The same synchronous
+input callback may continue once using the confirmed target layout. This changes the source
+indicator on the qualifying next letter.
+
+Every observed source change invalidates old document authority. Matching callback facts cannot
+establish who caused them. The source-only interval uses the scope last verified at FINISH and
+the supported host's coherent metadata and revocation notifications. A silent scope change can
+leave the OS source changed. Fresh second-session exclusion then prevents character inspection,
+composition start, and character writes. Failures stop further source mutations and expire
+continuation authority. Native host callback ordering and physical first-key behavior still
+require qualification against the final candidate.
+
+## Recorded runtime proof
 
 The historical desktop acceptance results below describe the C++ backend. Automated Rust
 editor and current Notepad checks have separate records below. Full Rust native execution and the
@@ -63,8 +98,8 @@ EN-to-RU experiment below also passed with fresh owned evidence and an independe
 document/caret oracle. This completes the controlled-editor proof, not general Windows support.
 Manual commands, shared model correction in both directions, and vocabulary reloads also passed
 automated real-editor acceptance as described below. Ordinary Notepad acceptance is recorded in
-the bounded admission section. Further application coverage, settings, and packaging remain later
-work. Unretained final destruction and complete callback drainage are not established
+the bounded admission section. Those historical runs preceded the completion work for broader
+application coverage, settings, and packaging. Unretained final destruction and complete callback drainage are not established
 by the bounded shutdown assertion.
 
 ## Automated Rust editor verification

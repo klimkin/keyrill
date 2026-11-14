@@ -136,10 +136,12 @@ These follow from the architecture and apply on every platform:
 The windows-rs implementation is in `native/windows/rust/`. Its build, maintainer-only
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
-termination on focus loss in the historical C++ backend. The Rust migration awaits renewed
-physical acceptance. The adapter admits proof controls and the tested version-bounded
-Notepad main document. Granted edit sessions, explicit contexts, and owned compositions satisfy
-the editing contract. [TSF design](adr/007-windows-tsf.md).
+termination on focus loss in the historical C++ backend. The Rust Notepad physical results are
+recorded separately from the pending completion-candidate matrix. Shared ordinary-field admission
+requires the [native contract](windows-admission-contract.md), including coherent metadata and
+revocation notifications. The version-bounded Notepad exception remains separate. Granted edit
+sessions, explicit contexts, and owned compositions provide the native editing mechanism.
+[TSF design](adr/007-windows-tsf.md).
 
 Exact version recognition includes 11.2607.14.0 and 11.2609.11.0. The updated version has matching
 live native-field and unavailable-scope evidence. The current Rust DLL passed the
@@ -182,7 +184,7 @@ existing executor. A command GUID supplies no modifier, repeat, or document-auth
 Historical C++ physical Notepad runs observed command delivery and retained ownership through
 modifier release, as described in
 [the command contract](windows.md#manual-conversion-and-reversal).
-The Windows host probe uses a separate protocol-3 command and modifier-release observation
+The Windows host probe uses a separate protocol-4 command and modifier-release observation
 window. Callback-local tickets preserve command identity through reentry. Lifecycle anchors
 order those content-free observations against owned termination. Dispatch records executor
 entry. Separate completion records distinguish verified manual MARK, no-write reservation,
@@ -216,7 +218,8 @@ sample is a reference for structure, not error handling: it reports keys eaten t
 a composition without checking it started, ends the current rather than the captured composition
 and translates keys inadequately. A sample that turns virtual keys into uppercase letters is not
 an EN/RU input method; verify Shift, Caps Lock, dead keys and the EN/RU layouts against real
-input. List x64 and ARM64 results separately.
+input. Intel/AMD x64 and x86 clients have separate artifacts and execution results. ARM64 is
+outside the current Windows scope.
 
 Acceptance for the first slice includes edit-session denial, a rejected composition, focus
 A→B→A, rapid continuation, read-only and password fields, a source change and service teardown,

@@ -1,9 +1,42 @@
 # Complete Windows support
 
-Status is planned. The implementation baseline is commit `4b3b611`.
+Status is implementation and candidate integration. The implementation baseline is commit `4b3b611`.
 This plan covers the missing Windows application integration, product configuration,
 installation, and validation. The Rust migration and its recorded desktop results are in
 [Windows TSF proof](windows.md).
+
+## Implementation record
+
+The following units are committed with focused checks, local full verification, and independent
+review. Their controlled results establish native behavior under the tested provider contracts.
+The required application and installation matrix still needs final-candidate evidence.
+
+| Unit | Commit |
+|---|---|
+| Exact controlled-case runner and executed-test accounting | `4c3e9db` |
+| Complete persisted preferences and revision conflicts | `7eba1fe` |
+| Bounded public Terminal child | `d030e92` |
+| Architecture-specific build and artifact validation | `1930594` |
+| Candidate-bound acceptance ledger validation | `2421436` |
+| Shared ordinary-field admission and revocation watches | `dd7b733` |
+| Native Settings editor | `285bd43` |
+| Actual x86 callback ABI and execution corrections | `db42fa1` |
+| Generic host diagnostics and public fixtures | `08f80d0` |
+| Complete runtime configuration adoption | `3079984` |
+| Recoverable machine installation and dual-architecture packaging | `b1b6823` |
+| Architecture, sanitizer, and reproducibility CI | `d46c738` |
+| Deferred automatic source handoff | `936b1b9` |
+| Owned-process native UIA verification | `1ad9eaa` |
+
+The source-handoff and UIA integration passed full local verification for x64 and x86, including
+213 controlled tests and 53 proof-library tests per architecture. The x64 AddressSanitizer gate
+passed with its required detected memory-error canary. Prebuilt std and Windows code remain
+uninstrumented. Hosted CI and installed application acceptance are separate gates.
+
+The Settings TSF entry, local readiness, and bounded native package-reader corrections are in
+final integration. Package assembly, reproducibility, final SDK-entry checks, and a prepared
+maintainer worksheet follow that integration. The first maintainer handoff installs the frozen
+candidate. The agent then resumes permitted application automation before physical acceptance.
 
 ## Completion criteria
 
@@ -52,8 +85,9 @@ remain narrowly tied to their independently verified facts.
 | Windows Terminal | A positively identified ordinary input context with an owned composition | Manual | Verify bytes delivered to a public test child, command-key order, output interference, and secret/no-echo exclusion |
 
 Manual defaults for editor, Office, and Terminal workflows follow the existing macOS product
-behavior. Windows uses the TSF owned-composition contract for those modes. Automatic mode for
-an application becomes selectable after its required automatic scenarios pass. Terminal's first
+behavior. Windows uses the TSF owned-composition contract for those modes. Application settings
+restrict behavior within native admission. Functional qualification comes from the required
+application scenarios. Terminal's first
 functional requirement is owned manual conversion and retained reversal. Its automatic mode is
 a separate capability to prove during the same feasibility work.
 

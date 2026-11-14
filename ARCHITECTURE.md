@@ -30,6 +30,7 @@ flowchart LR
 | `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, raw COM HRESULT calls and typed reference leases |
 | `native/windows/proof` | Rust proof editor, UIA inspectors, independent raw COM providers and controlled schedules |
 | `native/windows/build-support` | Rust source and artifact identities shared by runtime and proof tools |
+| `native/windows/setup` | Explicit machine installation, durable recovery, and dual-architecture package validation |
 | `tools/xtask` | Rust Windows build, model checker, scenario coverage and sanitizer runner |
 | `assets/model.bin` | Frozen EN/RU model, generated from `model/` by `tools/pack-model.py` |
 | `model/` | Hash-pinned model source, generator, evaluator and evaluation corpora |
@@ -55,7 +56,7 @@ Each input context has one engine handle and one word session. Its states are `I
 | Composing, manual command | Deterministic conversion with explicit intent; inference never undoes it |
 | Composing, Backspace | Remove only owned text; empty composition is its own native operation |
 | Escape | With a receipt, restore the original, finish and consume the key; otherwise finish the word as typed and pass Escape |
-| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The echo of a mode switch Keyrill requested keeps the boundary mark and its receipt |
+| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The macOS adapter preserves the boundary mark and receipt for its requested mode-switch echo |
 | Foreign mark, mismatch, exception, unknown outcome | Stop correction for that word; no speculative repair. After a failed readback check, commit the client's own marked text once so the next key can't replace it. A second unknown outcome in an activation, or one before any verified write, stops the session until reactivation |
 
 `propose` copies a latest-only token, expected text, desired text, operation and key disposition
