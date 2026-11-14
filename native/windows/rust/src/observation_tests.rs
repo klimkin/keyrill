@@ -18,9 +18,28 @@ fn identity() -> HostIdentity {
             GetCurrentThreadId(),
         )
     }
-    .expect("current x64 process identity");
+    .expect("current supported process identity");
     identity.thread = NEXT_THREAD.fetch_add(1, Ordering::SeqCst);
     identity
+}
+
+#[test]
+fn process_architecture_accepts_x64_and_wow64_only_on_intel_amd_hosts() {
+    for (machine, native, accepted) in [
+        (0, 0x8664, true),
+        (0x014c, 0x8664, true),
+        (0, 0x014c, false),
+        (0, 0xaa64, false),
+        (0x014c, 0xaa64, false),
+        (0x8664, 0xaa64, false),
+        (0xaa64, 0x8664, false),
+        (0xffff, 0x8664, false),
+    ] {
+        assert_eq!(
+            supported_process_architecture(IMAGE_FILE_MACHINE(machine), IMAGE_FILE_MACHINE(native)),
+            accepted
+        );
+    }
 }
 
 struct Mapping {

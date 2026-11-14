@@ -83,7 +83,7 @@ fn shutdown_window_close_direct_destroy_and_empty_capture() {
         };
         let transferred = Rc::into_raw(Rc::clone(&context));
         unsafe {
-            SetWindowLongPtrW(window, GWLP_USERDATA, transferred as isize);
+            set_window_long(window, GWLP_USERDATA, transferred as isize);
         }
         probe.observe(&context.manager);
         let captured_live = Rc::new(Cell::new(false));

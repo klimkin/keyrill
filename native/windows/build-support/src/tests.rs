@@ -143,6 +143,10 @@ fn feature_target_profile_and_instrumentation_have_distinct_domains() {
     assert_ne!(ordinary.production, ordinary.test_api);
     for changed in [
         BuildConfig {
+            target: Target::X86.triple(),
+            ..config()
+        },
+        BuildConfig {
             target: "x86_64-unknown-linux-gnu",
             ..config()
         },
@@ -158,6 +162,42 @@ fn feature_target_profile_and_instrumentation_have_distinct_domains() {
         let changed = identity(&fixture.0, changed).unwrap();
         assert_eq!(changed.source, ordinary.source);
         assert_ne!(changed.production, ordinary.production);
+    }
+}
+
+#[test]
+fn windows_targets_have_exact_native_and_manifest_metadata() {
+    for (target, name, triple, machine, magic, bits, manifest) in [
+        (
+            Target::X64,
+            "x64",
+            "x86_64-pc-windows-msvc",
+            0x8664,
+            0x20b,
+            64,
+            "amd64",
+        ),
+        (
+            Target::X86,
+            "x86",
+            "i686-pc-windows-msvc",
+            0x014c,
+            0x10b,
+            32,
+            "x86",
+        ),
+    ] {
+        assert_eq!(name.parse::<Target>(), Ok(target));
+        assert_eq!(triple.parse::<Target>(), Ok(target));
+        assert_eq!(target.name(), name);
+        assert_eq!(target.triple(), triple);
+        assert_eq!(target.pe_machine(), machine);
+        assert_eq!(target.pe_magic(), magic);
+        assert_eq!(target.pointer_bits(), bits);
+        assert_eq!(target.manifest_architecture(), manifest);
+    }
+    for unsupported in ["arm64", "aarch64-pc-windows-msvc", "all", "unknown"] {
+        assert!(unsupported.parse::<Target>().is_err());
     }
 }
 

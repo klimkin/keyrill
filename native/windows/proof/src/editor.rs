@@ -6,7 +6,7 @@ mod fixture_tests;
 #[path = "editor_shutdown_tests.rs"]
 mod shutdown_tests;
 use crate::diagnostics::{Poller, format_runtime, read_runtime};
-use crate::native::wide;
+use crate::native::{set_window_long, wide, window_long};
 use crate::options::FixtureMode;
 use crate::{routing, shutdown, source};
 use std::cell::{Cell, RefCell};
@@ -111,7 +111,7 @@ unsafe extern "system" fn window_proc(
     match result {
         Ok(value) => value,
         Err(_) => {
-            let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const Context;
+            let pointer = unsafe { window_long(window, GWLP_USERDATA) } as *const Context;
             if !pointer.is_null() {
                 unsafe { &*pointer }.panicked.set(true);
             }
@@ -123,7 +123,7 @@ unsafe extern "system" fn window_proc(
     }
 }
 fn window_message(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const Context;
+    let pointer = unsafe { window_long(window, GWLP_USERDATA) } as *const Context;
     let context = if pointer.is_null() {
         None
     } else {
@@ -157,7 +157,7 @@ fn window_message(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) ->
     }
     if message == WM_NCDESTROY && !pointer.is_null() {
         unsafe {
-            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            set_window_long(window, GWLP_USERDATA, 0);
             drop(Rc::from_raw(pointer));
         }
     }
@@ -272,7 +272,7 @@ fn create_fixture(manager: ITfThreadMgr, shutdown: Option<Rc<shutdown::Probe>>) 
     unsafe {
         SetLastError(ERROR_SUCCESS);
     }
-    let previous = unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, transferred as isize) };
+    let previous = unsafe { set_window_long(window, GWLP_USERDATA, transferred as isize) };
     if previous == 0 && unsafe { GetLastError() } != ERROR_SUCCESS {
         unsafe {
             drop(Rc::from_raw(transferred));

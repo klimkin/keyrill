@@ -465,8 +465,8 @@ pub fn runtime(
     value
 }
 const _: () = {
-    assert!(size_of::<Hooks>() == 104);
-    assert!(size_of::<RawReady>() == 72);
+    assert!(size_of::<Hooks>() == 13 * size_of::<usize>());
+    assert!(size_of::<RawReady>() == 40 + 4 * size_of::<usize>());
     assert!(size_of::<RuntimeSnapshot>() == 48);
 };
 

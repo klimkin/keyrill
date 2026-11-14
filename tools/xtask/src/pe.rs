@@ -1,10 +1,14 @@
+use keyrill_windows_build::Target;
 use std::collections::BTreeSet;
 use std::io::{self, ErrorKind};
 
 type Result<T> = io::Result<T>;
 
 fn invalid() -> io::Error {
-    io::Error::new(ErrorKind::InvalidData, "invalid x64 PE export table")
+    io::Error::new(
+        ErrorKind::InvalidData,
+        "invalid PE image or target architecture",
+    )
 }
 
 fn bytes(image: &[u8], offset: usize, length: usize) -> Result<&[u8]> {
@@ -73,7 +77,13 @@ impl Image<'_> {
     }
 }
 
-pub(crate) fn exports(image: &[u8]) -> Result<BTreeSet<String>> {
+struct Header {
+    optional: usize,
+    optional_bytes: usize,
+    export_directory: usize,
+}
+
+fn header(image: &[u8], target: Target) -> Result<Header> {
     if bytes(image, 0, 2)? != b"MZ" {
         return Err(invalid());
     }
@@ -82,17 +92,48 @@ pub(crate) fn exports(image: &[u8]) -> Result<BTreeSet<String>> {
         return Err(invalid());
     }
     let header = signature.checked_add(4).ok_or_else(invalid)?;
-    if word(image, header)? != 0x8664 {
+    bytes(image, header, 20)?;
+    if word(image, header)? != target.pe_machine() {
         return Err(invalid());
     }
-    let count = usize::from(word(image, header + 2)?);
     let optional_bytes = usize::from(word(image, header + 16)?);
     let optional = header + 20;
-    if optional_bytes < 120 || word(image, optional)? != 0x20b || dword(image, optional + 108)? == 0
-    {
+    let export_directory = match target {
+        Target::X64 => 112,
+        Target::X86 => 96,
+    };
+    if optional_bytes < export_directory + 8 || word(image, optional)? != target.pe_magic() {
         return Err(invalid());
     }
     bytes(image, optional, optional_bytes)?;
+    let count = usize::from(word(image, header + 2)?);
+    bytes(
+        image,
+        optional + optional_bytes,
+        count.checked_mul(40).ok_or_else(invalid)?,
+    )?;
+    Ok(Header {
+        optional,
+        optional_bytes,
+        export_directory,
+    })
+}
+
+pub(crate) fn validate(image: &[u8], target: Target) -> Result<()> {
+    header(image, target).map(|_| ())
+}
+
+pub(crate) fn exports(image: &[u8], target: Target) -> Result<BTreeSet<String>> {
+    let Header {
+        optional,
+        optional_bytes,
+        export_directory,
+    } = header(image, target)?;
+    if dword(image, optional + export_directory - 4)? == 0 {
+        return Err(invalid());
+    }
+    let signature = dword(image, 0x3c)? as usize;
+    let count = usize::from(word(image, signature + 6)?);
     let mut sections = Vec::new();
     let table = optional + optional_bytes;
     for index in 0..count {
@@ -110,8 +151,8 @@ pub(crate) fn exports(image: &[u8]) -> Result<BTreeSet<String>> {
         bytes: image,
         sections,
     };
-    let export_rva = dword(image, optional + 112)?;
-    let export_bytes = dword(image, optional + 116)?;
+    let export_rva = dword(image, optional + export_directory)?;
+    let export_bytes = dword(image, optional + export_directory + 4)?;
     if export_rva == 0 || export_bytes < 40 {
         return Err(invalid());
     }
@@ -157,18 +198,22 @@ mod tests {
     fn set32(image: &mut [u8], offset: usize, value: u32) {
         image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
-    fn fixture() -> Vec<u8> {
+    fn fixture(target: Target) -> Vec<u8> {
         let mut image = vec![0; 1024];
         image[..2].copy_from_slice(b"MZ");
         set32(&mut image, 0x3c, 64);
         image[64..68].copy_from_slice(b"PE\0\0");
-        set16(&mut image, 68, 0x8664);
+        set16(&mut image, 68, target.pe_machine());
         set16(&mut image, 70, 1);
         set16(&mut image, 84, 120);
-        set16(&mut image, 88, 0x20b);
-        set32(&mut image, 196, 1);
-        set32(&mut image, 200, 0x1000);
-        set32(&mut image, 204, 40);
+        set16(&mut image, 88, target.pe_magic());
+        let directory = match target {
+            Target::X64 => 200,
+            Target::X86 => 184,
+        };
+        set32(&mut image, directory - 4, 1);
+        set32(&mut image, directory, 0x1000);
+        set32(&mut image, directory + 4, 40);
         set32(&mut image, 220, 0x1000);
         set32(&mut image, 224, 512);
         set32(&mut image, 228, 512);
@@ -185,13 +230,45 @@ mod tests {
 
     #[test]
     fn reads_literal_x64_exports_and_rejects_truncation() {
-        let image = fixture();
+        let image = fixture(Target::X64);
         assert_eq!(
-            exports(&image).unwrap(),
+            exports(&image, Target::X64).unwrap(),
             BTreeSet::from(["DllCanUnload".to_owned()])
         );
         for length in 0..605 {
-            assert!(exports(&image[..length]).is_err(), "truncation {length}");
+            assert!(
+                exports(&image[..length], Target::X64).is_err(),
+                "truncation {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_both_machine_magic_pairs_and_rejects_cross_bitness() {
+        for target in [Target::X64, Target::X86] {
+            let image = fixture(target);
+            assert!(validate(&image, target).is_ok());
+            assert_eq!(
+                exports(&image, target).unwrap(),
+                BTreeSet::from(["DllCanUnload".to_owned()])
+            );
+            let other = if target == Target::X64 {
+                Target::X86
+            } else {
+                Target::X64
+            };
+            assert!(validate(&image, other).is_err());
+            assert!(exports(&image, other).is_err());
+            let mut wrong_magic = image.clone();
+            set16(&mut wrong_magic, 88, other.pe_magic());
+            assert!(validate(&wrong_magic, target).is_err());
+            assert!(exports(&wrong_magic, target).is_err());
+            for length in 0..605 {
+                assert!(
+                    exports(&image[..length], target).is_err(),
+                    "{target:?} truncation {length}"
+                );
+            }
         }
     }
 
@@ -209,13 +286,13 @@ mod tests {
             (580, 0),
             (584, 1),
         ] {
-            let mut image = fixture();
+            let mut image = fixture(Target::X64);
             set32(&mut image, offset, value);
-            assert!(exports(&image).is_err(), "offset {offset}");
+            assert!(exports(&image, Target::X64).is_err(), "offset {offset}");
         }
-        let mut image = fixture();
+        let mut image = fixture(Target::X64);
         set16(&mut image, 68, 0xaa64);
-        assert!(exports(&image).is_err());
+        assert!(exports(&image, Target::X64).is_err());
     }
 
     #[test]
@@ -227,7 +304,11 @@ mod tests {
         ] {
             let path = std::env::var_os(variable).expect("explicit DLL path required");
             let image = std::fs::read(path).unwrap();
-            let names = exports(&image).unwrap();
+            let target = std::env::var("KEYRILL_TARGET_ARCH")
+                .unwrap_or_else(|_| "x64".to_owned())
+                .parse()
+                .unwrap();
+            let names = exports(&image, target).unwrap();
             assert!(names.contains("DllCanUnloadNow"));
             assert!(names.contains("DllGetClassObject"));
             assert_eq!(

@@ -7,6 +7,83 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Supported Windows client process architectures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// Intel and AMD 64-bit processes.
+    X64,
+    /// Intel and AMD 32-bit processes.
+    X86,
+}
+
+impl Target {
+    /// Return the command-line architecture name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::X64 => "x64",
+            Self::X86 => "x86",
+        }
+    }
+
+    /// Return the authoritative MSVC Cargo target triple.
+    #[must_use]
+    pub const fn triple(self) -> &'static str {
+        match self {
+            Self::X64 => "x86_64-pc-windows-msvc",
+            Self::X86 => "i686-pc-windows-msvc",
+        }
+    }
+
+    /// Return the COFF machine value.
+    #[must_use]
+    pub const fn pe_machine(self) -> u16 {
+        match self {
+            Self::X64 => 0x8664,
+            Self::X86 => 0x014c,
+        }
+    }
+
+    /// Return the PE optional header magic.
+    #[must_use]
+    pub const fn pe_magic(self) -> u16 {
+        match self {
+            Self::X64 => 0x020b,
+            Self::X86 => 0x010b,
+        }
+    }
+
+    /// Return the native pointer width in bits.
+    #[must_use]
+    pub const fn pointer_bits(self) -> u32 {
+        match self {
+            Self::X64 => 64,
+            Self::X86 => 32,
+        }
+    }
+
+    /// Return the activation manifest's architecture name.
+    #[must_use]
+    pub const fn manifest_architecture(self) -> &'static str {
+        match self {
+            Self::X64 => "amd64",
+            Self::X86 => "x86",
+        }
+    }
+}
+
+impl std::str::FromStr for Target {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "x64" | "x86_64-pc-windows-msvc" => Ok(Self::X64),
+            "x86" | "i686-pc-windows-msvc" => Ok(Self::X86),
+            _ => Err("supported Windows architectures are x64 and x86"),
+        }
+    }
+}
+
 /// SHA-256 bytes with their content identity representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Digest([u8; 32]);

@@ -1,18 +1,18 @@
 use crate::{cargo, pe, sanitize, test_run::TestRun};
 use cargo::Result;
-use keyrill_windows_build::{BuildConfig, Digest, Identity, Instrumentation, identity};
+use keyrill_windows_build::{BuildConfig, Digest, Identity, Instrumentation, Target, identity};
 use serde_json::json;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const TARGET: &str = "x86_64-pc-windows-msvc";
 const PUBLIC_EXPORTS: [&str; 2] = ["DllCanUnloadNow", "DllGetClassObject"];
 
-pub(crate) fn common_checks(root: &Path) -> Result<()> {
+pub(crate) fn common_checks(root: &Path, target: Target) -> Result<()> {
+    require_target(target)?;
     for arguments in [
         vec!["fmt", "--all", "--", "--check"],
         vec!["fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"],
@@ -54,9 +54,14 @@ pub(crate) fn common_checks(root: &Path) -> Result<()> {
         vec!["build", "--locked", "--workspace", "--release"],
     ] {
         let mut command = Command::new("cargo");
+        if arguments.first() != Some(&"fmt") {
+            command.args([arguments[0], "--target", target.triple()]);
+        } else {
+            command.arg(arguments[0]);
+        }
         command
             .current_dir(root)
-            .args(arguments)
+            .args(&arguments[1..])
             .env("RUSTDOCFLAGS", "-D warnings");
         cargo::run(&mut command)?;
     }
@@ -64,6 +69,8 @@ pub(crate) fn common_checks(root: &Path) -> Result<()> {
 }
 
 pub(crate) struct Build {
+    pub(crate) target: Target,
+    binary_hashes: BTreeMap<PathBuf, Digest>,
     pub(crate) directory: PathBuf,
     pub(crate) identity: Identity,
     pub(crate) test_executable: PathBuf,
@@ -72,7 +79,29 @@ pub(crate) struct Build {
 }
 
 impl Build {
-    fn command(&self, executable: &Path) -> Command {
+    fn record_executable(
+        &mut self,
+        artifacts: &[cargo::Artifact],
+        name: &str,
+        test: bool,
+    ) -> Result<PathBuf> {
+        let path = cargo::executable(artifacts, name, test)?;
+        let digest = artifact_digest(&path, self.target)?;
+        record_artifact(&mut self.binary_hashes, &path, digest)?;
+        Ok(path)
+    }
+
+    fn command(&self, executable: &Path) -> Result<Command> {
+        if !self.binary_hashes.contains_key(executable) {
+            return Err("Windows executable has no recorded artifact identity".into());
+        }
+        for (path, expected) in &self.binary_hashes {
+            if *expected != artifact_digest(path, self.target)? {
+                return Err(
+                    "Windows artifact changed after its build identity was recorded".into(),
+                );
+            }
+        }
         let mut command = Command::new(executable);
         if let Some(path) = &self.runtime_path {
             command.env("PATH", path);
@@ -98,18 +127,55 @@ impl Build {
                     .map(|word| format!("{word:08x}"))
                     .join(","),
             );
-        command
+        command.env("KEYRILL_TARGET_ARCH", self.target.name());
+        Ok(command)
     }
 }
 
-fn copy(source: &Path, directory: &Path, name: &str) -> Result<PathBuf> {
+fn artifact_digest(path: &Path, target: Target) -> Result<Digest> {
+    let image = fs::read(path)?;
+    pe::validate(&image, target)?;
+    Ok(Digest::of_bytes(&image))
+}
+
+fn record_artifact(
+    binary_hashes: &mut BTreeMap<PathBuf, Digest>,
+    path: &Path,
+    digest: Digest,
+) -> Result<()> {
+    match binary_hashes.entry(path.to_owned()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(digest);
+            Ok(())
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if *entry.get() == digest => Ok(()),
+        _ => Err("Windows artifact changed after its build identity was recorded".into()),
+    }
+}
+
+fn copy(
+    source: &Path,
+    directory: &Path,
+    name: &str,
+    target: Target,
+    binary_hashes: &mut BTreeMap<PathBuf, Digest>,
+) -> Result<PathBuf> {
+    let actual = artifact_digest(source, target)?;
+    let expected = binary_hashes.get(source).copied().unwrap_or(actual);
+    if actual != expected {
+        return Err("Windows artifact changed after its build identity was recorded".into());
+    }
     let destination = directory.join(name);
     fs::copy(source, &destination)?;
+    if artifact_digest(&destination, target)? != expected {
+        return Err("Windows artifact copy differs from its recorded source".into());
+    }
+    record_artifact(binary_hashes, &destination, expected)?;
     Ok(destination)
 }
 
-fn validate_exports(path: &Path, private: bool) -> Result<()> {
-    let actual = pe::exports(&fs::read(path)?)?;
+fn validate_exports(path: &Path, target: Target, private: bool) -> Result<()> {
+    let actual = pe::exports(&fs::read(path)?, target)?;
     let required: BTreeSet<_> = PUBLIC_EXPORTS.into_iter().map(str::to_owned).collect();
     if !required.is_subset(&actual) {
         return Err("DLL is missing public COM exports".into());
@@ -124,12 +190,35 @@ fn validate_exports(path: &Path, private: bool) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Build> {
+fn require_target(target: Target) -> Result<()> {
+    let output = Command::new("rustc")
+        .args(["--print", "target-libdir", "--target", target.triple()])
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err("unable to locate the selected Rust target".into());
+    }
+    let directory = PathBuf::from(std::str::from_utf8(&output.stdout)?.trim());
+    if !directory.is_dir() {
+        return Err(format!("Rust standard library for {} is unavailable; target installation requires maintainer approval", target.triple()).into());
+    }
+    Ok(())
+}
+
+pub(crate) fn build(
+    root: &Path,
+    target: Target,
+    instrumentation: Instrumentation,
+) -> Result<Build> {
     if !cfg!(all(windows, target_arch = "x86_64")) {
         return Err("Windows artifacts require an x64 Windows host".into());
     }
+    if instrumentation == Instrumentation::Address && target != Target::X64 {
+        return Err("Windows AddressSanitizer supports x64 only".into());
+    }
+    require_target(target)?;
     let config = BuildConfig {
-        target: TARGET,
+        target: target.triple(),
         profile: "release",
         instrumentation,
     };
@@ -150,8 +239,12 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             Some(sanitize::prepare(root)?),
         ),
     };
-    let directory = root.join(directory_name);
+    let directory = root.join(match target {
+        Target::X64 => directory_name.to_owned(),
+        Target::X86 => format!("{directory_name}-x86"),
+    });
     fs::create_dir_all(directory.join("tests"))?;
+    let mut binary_hashes = BTreeMap::new();
     let target_directory = directory.join("cargo-production");
     let production = cargo::artifacts(
         root,
@@ -159,7 +252,7 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             "build",
             "--release",
             "--target",
-            TARGET,
+            target.triple(),
             "-p",
             "keyrill-windows",
             "--target-dir",
@@ -169,13 +262,21 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
         ],
         &environment,
     )?;
-    let production_dll = copy(&cargo::dll(&production)?, &directory, "KeyrillTsf.dll")?;
+    let production_dll = copy(
+        &cargo::dll(&production)?,
+        &directory,
+        "KeyrillTsf.dll",
+        target,
+        &mut binary_hashes,
+    )?;
     copy(
         &cargo::executable(&production, "KeyrillRegister", false)?,
         &directory,
         "KeyrillRegister.exe",
+        target,
+        &mut binary_hashes,
     )?;
-    validate_exports(&production_dll, false)?;
+    validate_exports(&production_dll, target, false)?;
 
     let target_directory = directory.join("cargo-test-api");
     let test_api = cargo::artifacts(
@@ -184,7 +285,7 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             "build",
             "--release",
             "--target",
-            TARGET,
+            target.triple(),
             "-p",
             "keyrill-windows",
             "--features",
@@ -196,8 +297,14 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
         ],
         &environment,
     )?;
-    let test_dll = copy(&cargo::dll(&test_api)?, &directory, "KeyrillTsfTest.dll")?;
-    validate_exports(&test_dll, true)?;
+    let test_dll = copy(
+        &cargo::dll(&test_api)?,
+        &directory,
+        "KeyrillTsfTest.dll",
+        target,
+        &mut binary_hashes,
+    )?;
+    validate_exports(&test_dll, target, true)?;
 
     let target_directory = directory.join("cargo-proof");
     let proof = cargo::artifacts(
@@ -206,7 +313,7 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             "build",
             "--release",
             "--target",
-            TARGET,
+            target.triple(),
             "-p",
             "keyrill-windows-proof",
             "--bins",
@@ -230,6 +337,8 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             &cargo::executable(&proof, name, false)?,
             &directory,
             &format!("{name}.exe"),
+            target,
+            &mut binary_hashes,
         )?;
     }
     let tests = cargo::artifacts(
@@ -239,7 +348,7 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
             "--no-run",
             "--release",
             "--target",
-            TARGET,
+            target.triple(),
             "-p",
             "keyrill-windows-proof",
             "--test",
@@ -257,39 +366,32 @@ pub(crate) fn build(root: &Path, instrumentation: Instrumentation) -> Result<Bui
         &cargo::executable(&tests, "controlled", true)?,
         &directory.join("tests"),
         "KeyrillProofEditor.exe",
+        target,
+        &mut binary_hashes,
     )?;
     let after = identity(root, config)?;
     if before != after {
         return Err("source inputs changed while Windows artifacts were built".into());
     }
     let mut hashes = serde_json::Map::new();
-    for entry in fs::read_dir(&directory)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file()
-            && matches!(
-                entry
-                    .path()
-                    .extension()
-                    .and_then(|extension| extension.to_str()),
-                Some("dll" | "exe")
-            )
-        {
-            hashes.insert(
-                entry.file_name().to_string_lossy().into_owned(),
-                json!(Digest::of_bytes(&fs::read(entry.path())?).to_string()),
-            );
+    for (path, digest) in &binary_hashes {
+        if artifact_digest(path, target)? != *digest {
+            return Err("Windows artifact changed after its build identity was recorded".into());
         }
+        let name = path
+            .strip_prefix(&directory)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        hashes.insert(name, json!(digest.to_string()));
     }
-    hashes.insert(
-        "tests/KeyrillProofEditor.exe".to_owned(),
-        json!(Digest::of_bytes(&fs::read(&test_executable)?).to_string()),
-    );
-    let manifest = json!({"schema": 2, "target": TARGET, "profile": "release", "instrumentation": match instrumentation { Instrumentation::None => "none", Instrumentation::Address => "address" }, "source": before.source.to_string(), "production": before.production.to_string(), "testApi": before.test_api.to_string(), "files": hashes});
+    let manifest = json!({"schema": 2, "target": target.triple(), "architecture": target.name(), "pointerBits": target.pointer_bits(), "peMachine": target.pe_machine(), "profile": "release", "instrumentation": match instrumentation { Instrumentation::None => "none", Instrumentation::Address => "address" }, "source": before.source.to_string(), "production": before.production.to_string(), "testApi": before.test_api.to_string(), "files": hashes});
     fs::write(
         directory.join("artifacts.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     Ok(Build {
+        target,
+        binary_hashes,
         directory,
         identity: before,
         test_executable,
@@ -328,7 +430,7 @@ fn execute_tests(
     decoder_identity: Option<Digest>,
     exact: Option<&str>,
 ) -> Result<BTreeSet<String>> {
-    let mut command = build.command(executable);
+    let mut command = build.command(executable)?;
     let listing = command
         .args(["--list", "--format", "terse"])
         .stdin(Stdio::null())
@@ -339,7 +441,7 @@ fn execute_tests(
     let tests = TestRun::enumerate(prefix, &listing.stdout, exact)?;
     let count = tests.count();
     println!("Running {count} independently enumerated tests from {prefix}.");
-    let mut command = build.command(executable);
+    let mut command = build.command(executable)?;
     command.args([
         "--test-threads=1",
         "--include-ignored",
@@ -366,7 +468,7 @@ fn execute_tests(
     tests.confirmed(&output.stdout)
 }
 
-pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String>> {
+pub(crate) fn native_tests(root: &Path, build: &mut Build) -> Result<BTreeSet<String>> {
     let mut executed = BTreeSet::new();
     for (variant, target_directory, features, digest) in [
         (
@@ -388,7 +490,7 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
             "--no-run",
             "--release",
             "--target",
-            TARGET,
+            build.target.triple(),
             "-p",
             "keyrill-windows",
             "--lib",
@@ -399,7 +501,7 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
             arguments.extend(["--features", features]);
         }
         let artifacts = cargo::artifacts(root, &arguments, &build.compiler_environment)?;
-        let executable = cargo::executable(&artifacts, "keyrill_windows", true)?;
+        let executable = build.record_executable(&artifacts, "keyrill_windows", true)?;
         executed.extend(run_tests(
             build,
             &executable,
@@ -415,7 +517,7 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
             "--no-run",
             "--release",
             "--target",
-            TARGET,
+            build.target.triple(),
             "-p",
             "keyrill-windows-proof",
             "--lib",
@@ -432,6 +534,8 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
         &cargo::executable(&artifacts, "keyrill_windows_proof", true)?,
         &directory,
         "KeyrillProofEditor.exe",
+        build.target,
+        &mut build.binary_hashes,
     )?;
     executed.extend(run_tests(build, &executable, "proof", None)?);
 
@@ -443,7 +547,7 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
             "--no-run",
             "--release",
             "--target",
-            TARGET,
+            build.target.triple(),
             "-p",
             "keyrill-ffi",
             "--test",
@@ -453,30 +557,209 @@ pub(crate) fn native_tests(root: &Path, build: &Build) -> Result<BTreeSet<String
         ],
         &build.compiler_environment,
     )?;
-    let executable = cargo::executable(&artifacts, "windows_abi", true)?;
+    let executable = build.record_executable(&artifacts, "windows_abi", true)?;
     executed.extend(run_tests(build, &executable, "abi", None)?);
     Ok(executed)
 }
 
-pub(crate) fn smoke_tests(build: &Build) -> Result<BTreeSet<String>> {
+pub(crate) fn smoke_tests(build: &mut Build) -> Result<BTreeSet<String>> {
     let executable = build.directory.join("KeyrillDllSmoke.exe");
     cargo::run(
         build
-            .command(&executable)
+            .command(&executable)?
             .arg("factory")
             .arg(build.directory.join("KeyrillTsf.dll")),
     )?;
-    cargo::run(build.command(&executable).arg("activate"))?;
+    cargo::run(build.command(&executable)?.arg("activate"))?;
     let negative = build.directory.join("missing-adjacent");
     fs::create_dir_all(&negative)?;
     if negative.join("KeyrillTsf.dll").try_exists()? {
         return Err("negative activation directory contains a DLL".into());
     }
-    let executable = copy(&executable, &negative, "KeyrillDllSmoke.exe")?;
-    cargo::run(build.command(&executable).arg("missing"))?;
+    let executable = copy(
+        &executable,
+        &negative,
+        "KeyrillDllSmoke.exe",
+        build.target,
+        &mut build.binary_hashes,
+    )?;
+    cargo::run(build.command(&executable)?.arg("missing"))?;
     Ok(BTreeSet::from([
         "smoke::factory".to_owned(),
         "smoke::activation".to_owned(),
         "smoke::missing-adjacent".to_owned(),
     ]))
+}
+
+#[cfg(all(test, windows, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            let base = std::env::temp_dir().join("keyrill-executable-binding-tests");
+            fs::create_dir_all(&base).unwrap();
+            loop {
+                let directory = base.join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&directory) {
+                    Ok(()) => return Self(directory),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => panic!("fixture directory failed: {error}"),
+                }
+            }
+        }
+
+        fn build(&self) -> Build {
+            let digest = Digest::of_bytes(b"binding fixture");
+            Build {
+                target: Target::X64,
+                binary_hashes: BTreeMap::new(),
+                directory: self.0.clone(),
+                identity: Identity {
+                    source: digest,
+                    production: digest,
+                    test_api: digest,
+                },
+                test_executable: self.0.join("controlled.exe"),
+                runtime_path: None,
+                compiler_environment: Vec::new(),
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let base = std::env::temp_dir().join("keyrill-executable-binding-tests");
+            assert_eq!(self.0.parent(), Some(base.as_path()));
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[test]
+    fn untracked_real_executable_is_refused_before_enumeration() {
+        let fixture = Fixture::new();
+        let build = fixture.build();
+        let executable = std::env::current_exe().unwrap();
+        pe::validate(&fs::read(&executable).unwrap(), Target::X64).unwrap();
+        assert_eq!(
+            build.command(&executable).unwrap_err().to_string(),
+            "Windows executable has no recorded artifact identity"
+        );
+        assert_eq!(
+            execute_tests(&build, &executable, "untracked", None, None)
+                .unwrap_err()
+                .to_string(),
+            "Windows executable has no recorded artifact identity"
+        );
+    }
+
+    fn cargo_executable(path: &Path) -> Vec<cargo::Artifact> {
+        vec![cargo::Artifact {
+            name: "bound_test".to_owned(),
+            executable: Some(path.to_owned()),
+            files: vec![path.to_owned()],
+            test: true,
+        }]
+    }
+
+    #[test]
+    fn native_executable_identity_is_immutable_after_cargo_acquisition() {
+        let fixture = Fixture::new();
+        let mut build = fixture.build();
+        let path = fixture.0.join("native.exe");
+        fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+        let artifacts = cargo_executable(&path);
+        let executable = build
+            .record_executable(&artifacts, "bound_test", true)
+            .unwrap();
+        let expected = build.binary_hashes[&executable];
+        build.command(&executable).unwrap();
+        let mut image = fs::read(&executable).unwrap();
+        image.push(0);
+        fs::write(&executable, image).unwrap();
+        pe::validate(&fs::read(&executable).unwrap(), Target::X64).unwrap();
+        assert_eq!(
+            execute_tests(&build, &executable, "swapped", None, None)
+                .unwrap_err()
+                .to_string(),
+            "Windows artifact changed after its build identity was recorded"
+        );
+        assert!(
+            build
+                .record_executable(&artifacts, "bound_test", true)
+                .is_err()
+        );
+        assert_eq!(build.binary_hashes[&executable], expected);
+    }
+
+    #[test]
+    #[ignore = "requires an explicit compiled x64 production DLL"]
+    fn compiled_same_architecture_swaps_are_refused_before_launch() {
+        let fixture = Fixture::new();
+        let mut build = fixture.build();
+        let dll = std::env::var_os("KEYRILL_PRODUCTION_DLL").expect("compiled DLL required");
+        let replacement = fs::read(dll).unwrap();
+        pe::validate(&replacement, Target::X64).unwrap();
+        let source = fixture.0.join("native.exe");
+        fs::copy(std::env::current_exe().unwrap(), &source).unwrap();
+        let artifacts = cargo_executable(&source);
+        let executable = build
+            .record_executable(&artifacts, "bound_test", true)
+            .unwrap();
+        let expected = build.binary_hashes[&executable];
+        let negative = fixture.0.join("missing-adjacent");
+        fs::create_dir(&negative).unwrap();
+        let copied = copy(
+            &executable,
+            &negative,
+            "negative.exe",
+            build.target,
+            &mut build.binary_hashes,
+        )
+        .unwrap();
+        assert_eq!(build.binary_hashes[&copied], expected);
+        build.command(&copied).unwrap();
+        fs::write(&copied, &replacement).unwrap();
+        assert_eq!(
+            build.command(&copied).unwrap_err().to_string(),
+            "Windows artifact changed after its build identity was recorded"
+        );
+        assert_eq!(build.binary_hashes[&copied], expected);
+        fs::copy(std::env::current_exe().unwrap(), &copied).unwrap();
+        fs::write(&executable, replacement).unwrap();
+        assert_eq!(
+            execute_tests(&build, &executable, "swapped", None, None)
+                .unwrap_err()
+                .to_string(),
+            "Windows artifact changed after its build identity was recorded"
+        );
+        assert!(build.command(&copied).is_err());
+        assert!(
+            build
+                .record_executable(&artifacts, "bound_test", true)
+                .is_err()
+        );
+        assert!(
+            copy(
+                &executable,
+                &negative,
+                "new-negative.exe",
+                build.target,
+                &mut build.binary_hashes,
+            )
+            .is_err()
+        );
+        assert!(!negative.join("new-negative.exe").exists());
+        assert_eq!(build.binary_hashes[&executable], expected);
+        assert_eq!(artifact_digest(&copied, Target::X64).unwrap(), expected);
+    }
 }

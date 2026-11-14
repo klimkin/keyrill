@@ -1,12 +1,11 @@
 use crate::field_contract::{Facts, HostIdentity, Window};
-use crate::foreign::win32::module_path;
+use crate::foreign::win32::{module_path, window_long};
 use windows::Win32::Foundation::{ERROR_SUCCESS, GetLastError, HWND, SetLastError};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
     ES_MULTILINE, ES_PASSWORD, ES_READONLY, GA_ROOT, GWL_STYLE, GetAncestor, GetDlgCtrlID,
-    GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindow,
-    WS_CHILD, WS_DISABLED,
+    GetForegroundWindow, GetParent, GetWindowThreadProcessId, IsWindow, WS_CHILD, WS_DISABLED,
 };
 
 #[repr(C)]
@@ -58,7 +57,7 @@ fn describe(handle: HWND) -> Window {
         result.thread = GetWindowThreadProcessId(handle, Some(&mut result.process));
         let count = crate::foreign::win32::class_name(handle, &mut result.class_name);
         SetLastError(ERROR_SUCCESS);
-        result.style = GetWindowLongPtrW(handle, GWL_STYLE);
+        result.style = window_long(handle, GWL_STYLE);
         let style_error = GetLastError();
         SetLastError(ERROR_SUCCESS);
         result.control = GetDlgCtrlID(handle);

@@ -1,5 +1,29 @@
 # Windows TSF proof
 
+## Client architecture builds
+
+The Windows runner accepts `--arch x64`, `--arch x86` and `--arch all` for `build`,
+`controlled` and `check`. Existing commands default to x64. Intel and AMD x64 use
+`x86_64-pc-windows-msvc`; 32-bit processes use `i686-pc-windows-msvc`. ARM64 is unsupported.
+Both architectures run from an x64 Windows host. Target installation requires maintainer
+approval. The x86 Rust standard library is currently unavailable on the verification machine,
+so actual x86 compilation, COM export loading, activation and native execution remain pending.
+
+```console
+cargo xtask windows build --arch all
+cargo xtask windows controlled --arch x86 --case scenarios_boundary::boundary_requests_complete_once_and_expire
+cargo xtask windows check --arch all
+cargo xtask windows fingerprint production --arch x86
+```
+
+Use an exact compiled test name with `--case`. The `--case` and `--arch` options can occur in
+either order. The x64 build stays in `target/windows-rust-check`, and x86 uses
+`target/windows-rust-check-x86`. Each contains separate production, test-API and proof Cargo
+directories and an architecture-specific artifact manifest. Artifact fingerprints include the
+target triple and feature domain. PE verification checks the selected machine and optional
+header pair before execution. Proof activation manifests use the selected client architecture.
+The experimental sanitizer supports x64 only and rejects x86 and all explicitly.
+
 This is an x64 Text Services Framework adapter with manual conversion and configurable automatic
 correction. The `keyrill-windows` package in `native/windows/rust/` implements the service and
 registrar with `windows` and `windows-core` 0.62.2. The proof editor, UIA inspectors,

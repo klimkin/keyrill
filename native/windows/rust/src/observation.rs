@@ -11,8 +11,8 @@ use windows::Win32::System::Memory::{
     UnmapViewOfFile,
 };
 use windows::Win32::System::SystemInformation::{
-    IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_UNKNOWN,
-    PROCESSOR_ARCHITECTURE_AMD64,
+    IMAGE_FILE_MACHINE, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386,
+    IMAGE_FILE_MACHINE_UNKNOWN, PROCESSOR_ARCHITECTURE_AMD64,
 };
 use windows::Win32::System::Threading::{
     GetProcessTimes, IsWow64Process2, PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
@@ -95,6 +95,14 @@ pub(crate) struct Metadata {
     pub(crate) acp: u32,
 }
 
+fn supported_process_architecture(machine: IMAGE_FILE_MACHINE, native: IMAGE_FILE_MACHINE) -> bool {
+    native == IMAGE_FILE_MACHINE_AMD64
+        && matches!(
+            machine,
+            IMAGE_FILE_MACHINE_UNKNOWN | IMAGE_FILE_MACHINE_I386
+        )
+}
+
 pub(crate) fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Option<HostIdentity> {
     let mut created = FILETIME::default();
     let mut exited = FILETIME::default();
@@ -107,7 +115,7 @@ pub(crate) fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Option
         GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user).ok()?;
         IsWow64Process2(process, &mut machine, Some(&mut native)).ok()?;
     }
-    if machine != IMAGE_FILE_MACHINE_UNKNOWN || native != IMAGE_FILE_MACHINE_AMD64 {
+    if !supported_process_architecture(machine, native) {
         return None;
     }
     let mut identity = HostIdentity {
@@ -135,7 +143,7 @@ pub(crate) fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Option
         identity.kind = Kind::ProofEditor as u32;
         return Some(identity);
     }
-    if !ascii_case_equal(basename, "Notepad.exe") {
+    if machine != IMAGE_FILE_MACHINE_UNKNOWN || !ascii_case_equal(basename, "Notepad.exe") {
         return Some(identity);
     }
     let mut family = [0u16; 66];

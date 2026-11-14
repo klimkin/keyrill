@@ -4,6 +4,34 @@ use windows::Win32::Foundation::{HANDLE, HMODULE, HWND};
 use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows_core::{BOOL, Error, PCWSTR, Result};
 
+#[cfg(target_pointer_width = "64")]
+pub(crate) use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowLongPtrW as window_long, SetWindowLongPtrW as set_window_long,
+};
+
+// The 32-bit SDK aliases use i32 where pointer-sized callers use isize.
+#[cfg(target_pointer_width = "32")]
+pub(crate) unsafe fn window_long(
+    window: HWND,
+    index: windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX,
+) -> isize {
+    // SAFETY: the caller preserves the native HWND and index contract.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(window, index) as isize }
+}
+
+#[cfg(target_pointer_width = "32")]
+pub(crate) unsafe fn set_window_long(
+    window: HWND,
+    index: windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX,
+    value: isize,
+) -> isize {
+    // SAFETY: the caller preserves the native contract and both signed word types are 32 bits.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetWindowLongW(window, index, value as i32)
+            as isize
+    }
+}
+
 // The pinned slice projections derive output pointers through as_ptr(). These bounded wrappers
 // keep the SDK ABI and pass as_mut_ptr() for every writable buffer.
 pub(crate) fn module_path(module: Option<HMODULE>, output: &mut [u16]) -> u32 {

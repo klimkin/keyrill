@@ -1,7 +1,7 @@
 //! Emit the shared Rust artifact identity and COM export directives.
 
 use keyrill_windows_build::{
-    BuildConfig, Instrumentation, Variant, identity, source_inputs, write_rust_identity,
+    BuildConfig, Instrumentation, Target, Variant, identity, source_inputs, write_rust_identity,
 };
 use std::path::PathBuf;
 
@@ -38,6 +38,11 @@ fn main() {
     let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
     write_rust_identity(&output.join("build_identity.rs"), digest).expect("write build identity");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let target: Target = target.parse().expect("supported Windows client target");
+        assert!(
+            instrumentation != Instrumentation::Address || target == Target::X64,
+            "Windows AddressSanitizer supports x64 only"
+        );
         println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllGetClassObject,PRIVATE");
         println!("cargo:rustc-cdylib-link-arg=/EXPORT:DllCanUnloadNow,PRIVATE");
     }

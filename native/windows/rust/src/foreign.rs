@@ -100,7 +100,11 @@ pub(crate) struct Dependencies {
     >,
 }
 
-const _: () = assert!(size_of::<Dependencies>() == 56);
+const _: () = {
+    assert!(size_of::<Dependencies>() == 8 + 6 * size_of::<usize>());
+    assert!(align_of::<Dependencies>() == align_of::<usize>());
+    assert!(std::mem::offset_of!(Dependencies, capture) == 8 + 5 * size_of::<usize>());
+};
 
 pub(crate) struct DependencyLease {
     pub(crate) table: Dependencies,

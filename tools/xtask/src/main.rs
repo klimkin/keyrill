@@ -1,9 +1,10 @@
 //! Rust commands for building and verifying the Windows port.
 
-use keyrill_windows_build::{BuildConfig, Instrumentation, Variant, identity, source_inputs};
+use keyrill_windows_build::{BuildConfig, Instrumentation, Target, identity, source_inputs};
 use std::path::Path;
 
 mod cargo;
+mod cli;
 mod closure;
 mod coverage;
 mod model;
@@ -18,43 +19,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .parent()
         .and_then(Path::parent)
         .ok_or("workspace root unavailable")?;
-    match arguments.as_slice() {
-        [platform, command] if platform == "windows" && command == "build" => {
-            let build = windows::build(root, Instrumentation::None)?;
-            println!("{}", build.directory.display());
+    match cli::parse(&arguments)? {
+        cli::Command::Build(architectures) => {
+            for &target in architectures.targets() {
+                let build = windows::build(root, target, Instrumentation::None)?;
+                println!("{}", build.directory.display());
+            }
         }
-        [platform, command] if platform == "windows" && command == "controlled" => {
-            let build = windows::build(root, Instrumentation::None)?;
-            windows::controlled(&build)?;
+        cli::Command::Controlled {
+            architectures,
+            case,
+        } => {
+            for &target in architectures.targets() {
+                let build = windows::build(root, target, Instrumentation::None)?;
+                match &case {
+                    Some(case) => windows::controlled_case(&build, case)?,
+                    None => windows::controlled(&build)?,
+                };
+            }
         }
-        [platform, command, option, case]
-            if platform == "windows" && command == "controlled" && option == "--case" =>
-        {
-            let build = windows::build(root, Instrumentation::None)?;
-            windows::controlled_case(&build, case)?;
-        }
-        [platform, command] if platform == "windows" && command == "check" => {
+        cli::Command::Check(architectures) => {
             closure::check(root)?;
             model::check(root)?;
-            windows::common_checks(root)?;
-            let build = windows::build(root, Instrumentation::None)?;
-            let mut executed = windows::controlled(&build)?;
-            executed.extend(windows::native_tests(root, &build)?);
-            executed.extend(windows::smoke_tests(&build)?);
-            coverage::check(root, &executed)?;
+            for &target in architectures.targets() {
+                windows::common_checks(root, target)?;
+                let mut build = windows::build(root, target, Instrumentation::None)?;
+                let mut executed = windows::controlled(&build)?;
+                executed.extend(windows::native_tests(root, &mut build)?);
+                executed.extend(windows::smoke_tests(&mut build)?);
+                coverage::check(root, &executed)?;
+            }
         }
-        [platform, command] if platform == "windows" && command == "sanitize" => {
+        cli::Command::Sanitize => {
             closure::check(root)?;
-            let build = windows::build(root, Instrumentation::Address)?;
+            let mut build = windows::build(root, Target::X64, Instrumentation::Address)?;
             let mut executed = windows::controlled(&build)?;
-            executed.extend(windows::native_tests(root, &build)?);
-            executed.extend(windows::smoke_tests(&build)?);
+            executed.extend(windows::native_tests(root, &mut build)?);
+            executed.extend(windows::smoke_tests(&mut build)?);
             coverage::check(root, &executed)?;
         }
-        [platform, command] if platform == "windows" && command == "model-check" => {
-            model::check(root)?;
-        }
-        [platform, command] if platform == "windows" && command == "inventory" => {
+        cli::Command::ModelCheck => model::check(root)?,
+        cli::Command::Inventory => {
             for path in source_inputs(root)? {
                 println!(
                     "{}",
@@ -64,23 +69,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        [platform, command, variant] if platform == "windows" && command == "fingerprint" => {
-            let variant = match variant.as_str() {
-                "production" => Variant::Production,
-                "test-api" => Variant::TestApi,
-                _ => return Err("expected production or test-api".into()),
-            };
+        cli::Command::Fingerprint { target, variant } => {
             let config = BuildConfig {
-                target: "x86_64-pc-windows-msvc",
+                target: target.triple(),
                 profile: "release",
                 instrumentation: Instrumentation::None,
             };
             println!("{}", identity(root, config)?.variant(variant));
-        }
-        _ => {
-            return Err(
-                "usage: windows build|check|sanitize|model-check|inventory | windows controlled [--case EXACT_NAME] | windows fingerprint production|test-api".into(),
-            );
         }
     }
     Ok(())

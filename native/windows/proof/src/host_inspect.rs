@@ -267,8 +267,9 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
     let id = target.identity;
     if !matches!(options.command, Command::PublicCase(_)) {
         println!(
-            "pid={} started={:016x} kind={} version={}.{}.{}.{} threads={}",
+            "pid={} architecture={} started={:016x} kind={} version={}.{}.{}.{} threads={}",
             id.process,
+            target.architecture.name(),
             id.started,
             id.kind,
             id.version[0],

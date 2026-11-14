@@ -1,7 +1,7 @@
 //! Give independent observers the production identity of the same source snapshot.
 
 use keyrill_windows_build::{
-    BuildConfig, Instrumentation, identity, source_inputs, write_rust_identity,
+    BuildConfig, Instrumentation, Target, identity, source_inputs, write_rust_identity,
 };
 use std::path::PathBuf;
 
@@ -34,12 +34,21 @@ fn main() {
     write_rust_identity(&output.join("build_identity.rs"), digest)
         .expect("write observer identity");
     if target.ends_with("-windows-msvc") {
+        let target: Target = target.parse().expect("supported Windows client target");
+        let template =
+            std::fs::read_to_string(root.join("native/windows/proof_activation.manifest"))
+                .expect("activation manifest template");
+        let activation = output.join("proof_activation.manifest");
+        std::fs::write(
+            &activation,
+            template.replace("@KEYRILL_ARCHITECTURE@", target.manifest_architecture()),
+        )
+        .expect("target activation manifest");
         for binary in ["KeyrillProofEditor", "KeyrillDllSmoke"] {
             println!("cargo:rustc-link-arg-bin={binary}=/MANIFEST:EMBED");
             println!(
                 "cargo:rustc-link-arg-bin={binary}=/MANIFESTINPUT:{}",
-                root.join("native/windows/proof_activation.manifest")
-                    .display()
+                activation.display()
             );
         }
     }

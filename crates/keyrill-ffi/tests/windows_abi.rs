@@ -191,9 +191,12 @@ impl Document {
 #[test]
 fn published_c_layouts_and_version_remain_exact() {
     assert_eq!(size_of::<Event>(), 32);
+    assert_eq!(align_of::<Event>(), 4);
     assert_eq!(size_of::<Plan>(), 536);
+    assert_eq!(align_of::<Plan>(), 8);
     assert_eq!(std::mem::offset_of!(Plan, expected), 24);
     assert_eq!(size_of::<CompatibilityPlan>(), 280);
+    assert_eq!(align_of::<CompatibilityPlan>(), 8);
     // SAFETY: the version query takes no pointers or mutable state.
     assert_eq!(unsafe { kr_abi_version() }, ABI);
     let mut rejected = null_mut();

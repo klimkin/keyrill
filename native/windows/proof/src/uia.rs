@@ -1,6 +1,6 @@
 //! Explicit-target UIA evidence. Character reads follow native and provider metadata.
 use crate::field::{self, Metadata, NativeFocus, Provider, ReadOnly, Refusal, WindowFacts};
-use crate::native::{Target, ThreadCheck, ThreadState, capture_thread, started};
+use crate::native::{Target, ThreadCheck, ThreadState, capture_thread, started, window_long};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Threading::*;
@@ -63,12 +63,12 @@ pub fn describe(handle: HWND) -> WindowFacts {
     unsafe {
         SetLastError(ERROR_SUCCESS);
     }
-    result.style = unsafe { GetWindowLongPtrW(handle, GWL_STYLE) };
+    result.style = unsafe { window_long(handle, GWL_STYLE) };
     let style_error = unsafe { GetLastError() };
     unsafe {
         SetLastError(ERROR_SUCCESS);
     }
-    result.exstyle = unsafe { GetWindowLongPtrW(handle, GWL_EXSTYLE) };
+    result.exstyle = unsafe { window_long(handle, GWL_EXSTYLE) };
     let exstyle_error = unsafe { GetLastError() };
     unsafe {
         SetLastError(ERROR_SUCCESS);

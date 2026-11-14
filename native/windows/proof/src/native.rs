@@ -7,6 +7,33 @@ use windows::Win32::System::SystemInformation::*;
 use windows::Win32::System::Threading::*;
 use windows::core::{PCWSTR, PWSTR, Result};
 
+#[cfg(target_pointer_width = "64")]
+pub(crate) use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowLongPtrW as window_long, SetWindowLongPtrW as set_window_long,
+};
+
+#[cfg(target_pointer_width = "32")]
+pub(crate) unsafe fn window_long(
+    window: windows::Win32::Foundation::HWND,
+    index: windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX,
+) -> isize {
+    // SAFETY: the caller supplies a valid native index and borrowed window.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowLongW(window, index) as isize }
+}
+
+#[cfg(target_pointer_width = "32")]
+pub(crate) unsafe fn set_window_long(
+    window: windows::Win32::Foundation::HWND,
+    index: windows::Win32::UI::WindowsAndMessaging::WINDOW_LONG_PTR_INDEX,
+    value: isize,
+) -> isize {
+    // SAFETY: the caller preserves the native contract and both word types are 32 bits.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetWindowLongW(window, index, value as i32)
+            as isize
+    }
+}
+
 /// Owned kernel handle closed on drop.
 pub struct Handle(pub HANDLE);
 impl Drop for Handle {
@@ -44,7 +71,50 @@ pub fn started(handle: HANDLE, thread: bool) -> Result<u64> {
     }
     Ok(filetime(creation))
 }
-/// Capture native architecture, process creation time, executable, and package identity.
+/// Supported process architecture observed from a retained native process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessArchitecture {
+    /// Native Intel or AMD 64-bit process.
+    X64,
+    /// Intel or AMD 32-bit process under WOW64.
+    X86,
+}
+
+impl ProcessArchitecture {
+    /// Return the architecture name used by the Windows build runner.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::X64 => "x64",
+            Self::X86 => "x86",
+        }
+    }
+}
+
+fn classify_architecture(
+    machine: IMAGE_FILE_MACHINE,
+    native: IMAGE_FILE_MACHINE,
+) -> Option<ProcessArchitecture> {
+    match (machine, native) {
+        (IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_AMD64) => Some(ProcessArchitecture::X64),
+        (IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64) => Some(ProcessArchitecture::X86),
+        _ => None,
+    }
+}
+
+/// Read the process architecture, rejecting unsupported native hosts and emulation.
+///
+/// # Errors
+/// Returns a native query failure or an unsupported architecture.
+pub fn process_architecture(process: HANDLE) -> Result<ProcessArchitecture> {
+    let (mut machine, mut native) = (IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_UNKNOWN);
+    unsafe {
+        IsWow64Process2(process, &mut machine, Some(&mut native))?;
+    }
+    classify_architecture(machine, native).ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))
+}
+
+/// Capture process creation time, executable, and package identity.
 ///
 /// # Errors
 /// Returns the first failed native operation or evidence predicate.
@@ -55,13 +125,7 @@ pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identi
         started: started(process, false)?,
         ..Identity::default()
     };
-    let (mut machine, mut native) = (IMAGE_FILE_MACHINE_UNKNOWN, IMAGE_FILE_MACHINE_UNKNOWN);
-    unsafe {
-        IsWow64Process2(process, &mut machine, Some(&mut native))?;
-    }
-    if machine != IMAGE_FILE_MACHINE_UNKNOWN || native != IMAGE_FILE_MACHINE_AMD64 {
-        return Err(windows::core::Error::from_hresult(E_FAIL));
-    }
+    let architecture = process_architecture(process)?;
     let mut image = vec![0; 32768];
     let mut length = image.len() as u32;
     unsafe {
@@ -81,7 +145,7 @@ pub fn capture_identity(process: HANDLE, pid: u32, thread: u32) -> Result<Identi
         identity.kind = 1;
         return Ok(identity);
     }
-    if !base.eq_ignore_ascii_case("Notepad.exe") {
+    if architecture != ProcessArchitecture::X64 || !base.eq_ignore_ascii_case("Notepad.exe") {
         return Ok(identity);
     }
     let mut family = [0; 66];
@@ -131,6 +195,8 @@ pub struct Target {
     pub process: Handle,
     /// Canonical retained provider or process identity.
     pub identity: Identity,
+    /// Actual client process architecture, independent of the observer's bitness.
+    pub architecture: ProcessArchitecture,
 }
 impl Target {
     /// Acquire the retained native identities required by this observer.
@@ -146,7 +212,12 @@ impl Target {
             )?
         });
         let identity = capture_identity(process.0, pid, 0)?;
-        Ok(Self { process, identity })
+        let architecture = process_architecture(process.0)?;
+        Ok(Self {
+            process,
+            identity,
+            architecture,
+        })
     }
     /// Recheck that the retained process is live and has its captured creation identity.
     pub fn current(&self) -> bool {
@@ -307,6 +378,37 @@ pub fn threads(pid: u32) -> Result<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn process_architecture_distinguishes_native_x64_and_wow64() {
+        for (machine, native, expected) in [
+            (0, 0x8664, Some(ProcessArchitecture::X64)),
+            (0x014c, 0x8664, Some(ProcessArchitecture::X86)),
+            (0, 0x014c, None),
+            (0, 0xaa64, None),
+            (0x014c, 0xaa64, None),
+            (0x8664, 0xaa64, None),
+            (0xaa64, 0x8664, None),
+            (0xffff, 0x8664, None),
+        ] {
+            assert_eq!(
+                classify_architecture(IMAGE_FILE_MACHINE(machine), IMAGE_FILE_MACHINE(native)),
+                expected
+            );
+        }
+        let actual = process_architecture(unsafe { GetCurrentProcess() }).unwrap();
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(actual, ProcessArchitecture::X64);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(actual, ProcessArchitecture::X86);
+        assert_eq!(
+            actual.name(),
+            if cfg!(target_pointer_width = "64") {
+                "x64"
+            } else {
+                "x86"
+            }
+        );
+    }
     #[test]
     fn thread_capture_retains_live_thread_and_rejects_wrong_process() {
         let process = unsafe { GetCurrentProcess() };

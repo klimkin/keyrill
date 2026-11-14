@@ -1,5 +1,6 @@
 //! Thread-owned maintenance window and its callback lifetime.
 
+use crate::foreign::win32::{set_window_long, window_long};
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -13,9 +14,8 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClassInfoW,
-    GetWindowLongPtrW, HWND_MESSAGE, IsWindow, KillTimer, RegisterClassW, SetTimer,
-    SetWindowLongPtrW, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY,
-    WM_TIMER, WNDCLASSW,
+    HWND_MESSAGE, IsWindow, KillTimer, RegisterClassW, SetTimer, UnregisterClassW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_NCCREATE, WM_NCDESTROY, WM_TIMER, WNDCLASSW,
 };
 use windows_core::{PCWSTR, w};
 
@@ -180,7 +180,7 @@ fn fenced<T>(call: impl FnOnce() -> T) -> Option<T> {
 
 unsafe fn detach(window: HWND) {
     // SAFETY: this native slot contains exactly one Rc retained by WM_NCCREATE.
-    let pointer = unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, 0) } as *const Callbacks;
+    let pointer = unsafe { set_window_long(window, GWLP_USERDATA, 0) } as *const Callbacks;
     if !pointer.is_null() {
         // SAFETY: clearing the slot transfers its one owner back to this scope.
         drop(unsafe { Rc::from_raw(pointer) });
@@ -197,7 +197,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
                 let pointer = create.lpCreateParams.cast::<Callbacks>();
                 Rc::increment_strong_count(pointer);
                 SetLastError(ERROR_SUCCESS);
-                SetWindowLongPtrW(window, GWLP_USERDATA, pointer as isize);
+                set_window_long(window, GWLP_USERDATA, pointer as isize);
                 if GetLastError() != ERROR_SUCCESS {
                     drop(Rc::from_raw(pointer));
                     return LRESULT(0);
@@ -206,7 +206,7 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, w: WPARAM, l: LP
             }
         }
         // SAFETY: the userdata owner is live until detach clears the slot, on this thread.
-        let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const Callbacks;
+        let pointer = unsafe { window_long(window, GWLP_USERDATA) } as *const Callbacks;
         let callbacks = if pointer.is_null() {
             None
         } else {

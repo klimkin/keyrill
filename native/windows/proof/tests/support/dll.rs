@@ -114,15 +114,30 @@ pub struct Probe {
 }
 const _: () = {
     assert!(size_of::<HostIdentity>() == 40);
-    assert!(size_of::<FieldWindow>() == 168);
-    assert!(size_of::<FieldFacts>() == 760);
-    assert!(size_of::<Dependencies>() == 56);
+    assert!(align_of::<HostIdentity>() == 8);
+    assert!(align_of::<FieldWindow>() == align_of::<usize>());
+    assert!(align_of::<FieldFacts>() == 8);
+    assert!(align_of::<Dependencies>() == align_of::<usize>());
+    assert!(align_of::<Probe>() == align_of::<usize>());
+    assert!(size_of::<Dependencies>() == 8 + 6 * size_of::<usize>());
     assert!(size_of::<Event>() == 32);
-    assert!(size_of::<Probe>() == 40);
-    assert!(std::mem::offset_of!(Dependencies, capture) == 48);
-    assert!(std::mem::offset_of!(FieldFacts, proof_process) == 752);
+    assert!(size_of::<Probe>() == 32 + size_of::<usize>());
+    assert!(std::mem::offset_of!(Dependencies, capture) == 8 + 5 * size_of::<usize>());
     assert!(std::mem::offset_of!(Probe, identity) == 32);
 };
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<FieldWindow>() == 168);
+    assert!(size_of::<FieldFacts>() == 760);
+    assert!(std::mem::offset_of!(FieldFacts, proof_process) == 752);
+};
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(size_of::<FieldWindow>() == 156);
+    assert!(size_of::<FieldFacts>() == 696);
+    assert!(std::mem::offset_of!(FieldFacts, proof_process) == 688);
+};
+
 pub struct Api {
     module: HMODULE,
     pub create: unsafe extern "system" fn(
@@ -209,19 +224,34 @@ pub struct FieldIdentity {
     pub root_thread: u32,
 }
 const _: () = {
-    assert!(size_of::<FieldIdentity>() == 48);
-    assert!(std::mem::offset_of!(FieldIdentity, field) == 8);
-    assert!(std::mem::offset_of!(FieldIdentity, root_thread) == 40);
+    assert!(align_of::<FieldIdentity>() == align_of::<usize>());
     assert!(std::mem::offset_of!(Event, text) == 16);
     assert!(std::mem::offset_of!(HostIdentity, started) == 8);
     assert!(std::mem::offset_of!(HostIdentity, version) == 20);
+    assert!(std::mem::offset_of!(Dependencies, profiles) == 8 + 3 * size_of::<usize>());
+    assert!(std::mem::offset_of!(Probe, reserved) == 16);
+};
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(size_of::<FieldIdentity>() == 48);
+    assert!(std::mem::offset_of!(FieldIdentity, field) == 8);
+    assert!(std::mem::offset_of!(FieldIdentity, root_thread) == 40);
     assert!(std::mem::offset_of!(FieldWindow, style) == 24);
     assert!(std::mem::offset_of!(FieldWindow, class_name) == 32);
     assert!(std::mem::offset_of!(FieldWindow, enabled) == 160);
     assert!(std::mem::offset_of!(FieldFacts, field) == 80);
-    assert!(std::mem::offset_of!(Dependencies, profiles) == 32);
-    assert!(std::mem::offset_of!(Probe, reserved) == 16);
 };
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(size_of::<FieldIdentity>() == 28);
+    assert!(std::mem::offset_of!(FieldIdentity, field) == 4);
+    assert!(std::mem::offset_of!(FieldIdentity, root_thread) == 24);
+    assert!(std::mem::offset_of!(FieldWindow, style) == 16);
+    assert!(std::mem::offset_of!(FieldWindow, class_name) == 20);
+    assert!(std::mem::offset_of!(FieldWindow, enabled) == 148);
+    assert!(std::mem::offset_of!(FieldFacts, field) == 64);
+};
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
