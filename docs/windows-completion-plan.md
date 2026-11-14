@@ -478,6 +478,9 @@ build-to-package identity chain throughout.
 
 ## Maintainer involvement
 
+Use the [maintainer checklist](windows-maintainer-checklist.md) for the setup and physical-test
+handoffs. The agent fills candidate-specific instructions and prepares a local worksheet for results.
+
 Automate implementation, builds, controlled providers, artifact verification, permitted desktop
 input, and independent UIA assertions. Batch installation and registration setup around validated
 candidates. Keep source selection instructions together with the relevant application sequence.
