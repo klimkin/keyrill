@@ -422,6 +422,52 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::package_fixture::Fixture;
+
+    #[test]
+    fn native_shortcut_round_trips_canonical_and_ordinary_targets() {
+        let fixture = Fixture::new();
+        let _com = super::super::tsf::Com::new().unwrap();
+        let root = fixture.0.join("Keyrill settings тест");
+        fs::create_dir_all(root.join("x64")).unwrap();
+        fs::write(root.join("x64/KeyrillSettings.exe"), b"fixture target").unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        for root in [&root, &canonical_root] {
+            let target = root.join("x64/KeyrillSettings.exe");
+            let value = shortcut(root, &target).unwrap();
+            assert!(!root.join("settings-link.next").exists());
+            let saved = root.join("settings.lnk");
+            write(&saved, &value).unwrap();
+            // SAFETY: this thread owns a live COM apartment and the returned SDK interface.
+            let link: IShellLinkW =
+                unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.unwrap();
+            let persist: IPersistFile = link.cast().unwrap();
+            let saved_wide = path_wide(&saved).unwrap();
+            let mut actual = [0u16; 260];
+            let mut description = [0u16; 260];
+            // SAFETY: the saved fixture and initialized bounded output buffers remain live.
+            unsafe {
+                persist
+                    .Load(PCWSTR(saved_wide.as_ptr()), STGM_READ)
+                    .unwrap();
+                link.GetPath(&mut actual, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
+                    .unwrap();
+                link.GetDescription(&mut description).unwrap();
+            }
+            let actual =
+                String::from_utf16(&actual[..actual.iter().position(|unit| *unit == 0).unwrap()])
+                    .unwrap();
+            assert_eq!(
+                Path::new(&actual).canonicalize().unwrap(),
+                target.canonicalize().unwrap()
+            );
+            let description = String::from_utf16(
+                &description[..description.iter().position(|unit| *unit == 0).unwrap()],
+            )
+            .unwrap();
+            assert_eq!(description, "Keyrill Settings");
+        }
+    }
+
     #[test]
     fn executable_manifest_explicitly_preserves_the_callers_privileges() {
         use windows::Win32::System::LibraryLoader::*;
