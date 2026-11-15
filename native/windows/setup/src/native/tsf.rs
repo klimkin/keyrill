@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 use std::path::Path;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Registry::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayoutList, HKL};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList, HKL};
 use windows::Win32::UI::TextServices::*;
+use windows_core::Interface;
 
 pub(super) struct Com;
 impl Com {
@@ -115,6 +116,132 @@ pub(super) fn profile_state(index: usize) -> Result<Value> {
 pub(super) fn profile_desired(index: usize, icon: &Path) -> Result<Value> {
     Ok(
         json!({"description":PROFILES[index].description,"icon":icon.to_str().ok_or("non-Unicode icon path")?,"index":0}),
+    )
+}
+pub(super) fn repair_snapshot(index: usize) -> Result<(Value, Value)> {
+    let mut raw = Vec::new();
+    let mut trees = Vec::new();
+    let mut com = Vec::new();
+    for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        let mut profile = serde_json::Map::new();
+        for name in ["Description", "IconFile", "IconIndex"] {
+            profile.insert(
+                name.into(),
+                registry::read(HKEY_LOCAL_MACHINE, view, &profile_path(index), name)?,
+            );
+        }
+        raw.push(Value::Object(profile));
+        for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+            let mut budget = 64;
+            let mut tree = registry_tree(hive, view, &tip(), 0, &mut budget)?;
+            if hive == HKEY_LOCAL_MACHINE {
+                let p = &PROFILES[index];
+                let values = tree["children"]["languageprofile"]["children"]
+                    [format!("0x{:08x}", p.language)]["children"]
+                    [format!("{{{:?}}}", p.id).to_lowercase()]["values"]
+                    .as_object_mut()
+                    .ok_or("repair target profile tree absent")?;
+                for name in ["description", "iconfile", "iconindex"] {
+                    values.remove(name);
+                }
+            }
+            trees.push(tree);
+            let mut budget = 64;
+            let class = super::com_path();
+            let class = class
+                .strip_suffix("\\InprocServer32")
+                .ok_or("COM class root absent")?;
+            com.push(registry_tree(hive, view, class, 0, &mut budget)?);
+        }
+    }
+    if raw[0] != raw[1] {
+        return Err("repair raw machine profile views differ".into());
+    }
+    let mut layouts = [HKL::default(); 256];
+    // SAFETY: the output slice is bounded and querying does not select a source.
+    let count = unsafe { GetKeyboardLayoutList(Some(&mut layouts)) };
+    if count <= 0 || count as usize >= layouts.len() {
+        return Err("repair loaded layouts unavailable".into());
+    }
+    let mut layouts: Vec<_> = layouts[..count as usize]
+        .iter()
+        .map(|layout| layout.0 as usize as u64)
+        .collect();
+    layouts.sort_unstable();
+    let manager: ITfInputProcessorProfileMgr = profiles()?.cast()?;
+    let mut active = TF_INPUTPROCESSORPROFILE::default();
+    // SAFETY: COM owns the profile manager and the output is an SDK value owned by this call.
+    let status = unsafe {
+        (manager.vtable().GetActiveProfile)(manager.as_raw(), &GUID_TFCAT_TIP_KEYBOARD, &mut active)
+    };
+    if status != windows::Win32::Foundation::S_OK && status != windows::Win32::Foundation::S_FALSE {
+        return Err("repair owner-thread active source unavailable".into());
+    }
+    // SAFETY: zero queries this owner thread and performs no source selection.
+    let keyboard = unsafe { GetKeyboardLayout(0) }.0 as usize as u64;
+    let source = json!({"scope":"setup-owner-thread","keyboard":keyboard,"status":status.0,
+        "type":active.dwProfileType,"language":active.langid,"service":format!("{:?}",active.clsid),
+        "profile":format!("{:?}",active.guidProfile),"category":format!("{:?}",active.catid),
+        "substitute":active.hklSubstitute.0 as usize as u64,"layout":active.hkl.0 as usize as u64,
+        "caps":active.dwCaps,"flags":active.dwFlags});
+    Ok((
+        json!(raw),
+        json!({"trees":trees,"com":com,"user":super::files::user_sid()?,"layouts":layouts,"source":source}),
+    ))
+}
+
+fn registry_tree(
+    hive: HKEY,
+    view: REG_SAM_FLAGS,
+    path: &str,
+    depth: usize,
+    budget: &mut usize,
+) -> Result<Value> {
+    registry_tree_bounded(hive, view, path, depth, budget, &mut (512 * 1024))
+}
+fn registry_tree_bounded(
+    hive: HKEY,
+    view: REG_SAM_FLAGS,
+    path: &str,
+    depth: usize,
+    budget: &mut usize,
+    bytes: &mut usize,
+) -> Result<Value> {
+    if depth > 8 || *budget == 0 {
+        return Err("repair registration tree exceeds bound".into());
+    }
+    *budget -= 1;
+    let mut values = serde_json::Map::new();
+    let mut value_names = registry::names(hive, view, path)?;
+    value_names.sort();
+    for name in &value_names {
+        let value = registry::read(hive, view, path, name)?;
+        *bytes = bytes
+            .checked_sub(serde_json::to_vec(&value)?.len() + 2 * name.len())
+            .ok_or("repair registry data exceeds snapshot bound")?;
+        values.insert(name.to_lowercase(), value);
+    }
+    let mut children = serde_json::Map::new();
+    let mut child_names = registry::children(hive, view, path)?;
+    child_names.sort();
+    for name in &child_names {
+        *bytes = bytes
+            .checked_sub(2 * name.len())
+            .ok_or("repair registry names exceed snapshot bound")?;
+        children.insert(
+            name.to_lowercase(),
+            registry_tree_bounded(
+                hive,
+                view,
+                &format!("{path}\\{name}"),
+                depth + 1,
+                budget,
+                bytes,
+            )?,
+        );
+    }
+    Ok(
+        json!({"present":registry::exists(hive, view, path)?,"value_names":value_names,"child_names":child_names,"values":values,"children":children}),
     )
 }
 pub(super) fn profile_write(index: usize, value: &Value) -> Result<()> {
@@ -258,6 +385,9 @@ fn only(actual: Vec<String>, expected: &[String]) -> Result<()> {
     Ok(())
 }
 pub(super) fn scope_preflight() -> Result<()> {
+    scope_preflight_except(None)
+}
+pub(super) fn scope_preflight_except(profile: Option<usize>) -> Result<()> {
     for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
         only(
             registry::children(HKEY_LOCAL_MACHINE, view, &tip())?,
@@ -348,7 +478,9 @@ pub(super) fn scope_preflight() -> Result<()> {
     service_state()?;
     category_state()?;
     for i in 0..2 {
-        profile_state(i)?;
+        if profile != Some(i) {
+            profile_state(i)?;
+        }
         layout_state(i)?;
     }
     Ok(())

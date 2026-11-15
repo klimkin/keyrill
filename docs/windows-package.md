@@ -88,6 +88,66 @@ A missing layout is a pre-mutation refusal with a Windows Settings instruction. 
 exact full native HKL for `SubstituteKeyboardLayout`. The native API requires a previously loaded
 layout handle. [SubstituteKeyboardLayout](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-substitutekeyboardlayout)
 
+## Bounded profile repair
+
+Ordinary recovery refuses a profile that differs from both original receipt states. A separately
+approved `repair-profile` command can attempt the next pending EN or RU profile once. Its only
+destination is that change's original `after` value, verified against the original staged package.
+The original journal schema, comparisons and cursor are unchanged.
+
+Run `inspect-profile-repair` from the corrected candidate's `x64/KeyrillSetup.exe` to print a JSON
+draft to standard output. Inspection requires no elevation, creates no installer files and grants
+no authority. Save the exact UTF-8 JSON bytes outside the protected installation root. Review the
+draft and compute the saved file's SHA-256. Inspection and mutation both verify the executing
+Setup against its complete candidate package. The approval pins its executable, package and
+production source identities, and requires a package distinct from the original defective one.
+
+The draft binds the original receipt bytes, package, previous identity, cursor and profile. It
+contains raw profile type/data in both machine views, exact observations of every other owned
+resource, both machine and user TSF and COM trees, raw Enable data, registry descendant names,
+the user SID, loaded layouts and the installed receipt's identity or absence. The owner-thread
+source is a separate observation. Different inspection and repair processes need not share that
+source. Each repair checks that its own source remains unchanged around the native call.
+
+After disposable native qualification and approval review, the maintainer can run these explicit
+administrator commands from the corrected candidate. The agent must not run them.
+
+```console
+KeyrillSetup.exe repair-profile --scope machine APPROVAL_JSON APPROVAL_SHA256
+KeyrillSetup.exe recover --scope machine
+KeyrillSetup.exe install --scope machine CORRECTED_CANDIDATE_DIRECTORY
+```
+
+Repair archives the exact original receipt and approval under the protected root. It publishes
+`prepared`, then a durable `attempted` marker before its one native `AddLanguageProfile` call.
+Every native result gets a full readback. Exact destination and protected-state agreement can
+verify convergence even after a native HRESULT failure. The outcome retains native and readback
+errors. No compensating write is permitted.
+
+After a crash, `prepared` may continue after fresh checks. `attempted` with exact destination
+can publish `verified` without another native call. `attempted` with unchanged source cannot
+replay. A durable `stopped` record never reopens through repetition, even if later observations
+appear repaired. Another attempt requires a fresh reviewed draft explicitly linking the previous
+attempt, and its source must still be an exact third state. Protected-resource conflicts require
+inspection and remain a stop. This command does not promise recovery from every unknown effect.
+
+`verified` certifies the profile and stable protected state. The attempt marker also retains its
+owner-thread source observation. A restart cannot observe that terminated thread again. Its
+outcome retains the original observation, records the new thread's observation separately, and
+reports source preservation as unavailable after restart. Repeated verification retains that
+limitation. Physical source preservation remains an independent maintainer check.
+
+Ordinary mutation refuses unresolved repair history. Verified history retains the original
+receipt and package through recovery, upgrade and cleanup. After moving to another installed
+package, corrected Setup refuses to select the defective original package through install,
+repair or rollback. The retained old executable cannot enforce this restriction and must not
+be invoked. A repair history permits at most sixteen explicitly linked approvals.
+
+Provider tests cover authorization, checkpoint failures and no replay. They do not establish
+that native TSF preserves Enable, source selection or service metadata on a real host. Disposable
+native qualification, final independent installation readback and the physical package matrix
+remain maintainer gates.
+
 COM values are owned in both explicit HKLM views. TSF definitions use native profile/category
 APIs with fresh registry readback in both views. HKCU profile Enable values are observed
 separately and preserved during installation. Scope checks reject unexpected owned descendants,

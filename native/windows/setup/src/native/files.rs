@@ -96,6 +96,40 @@ pub(super) fn require_elevated() -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn user_sid() -> Result<Vec<u8>> {
+    use windows::Win32::Security::{GetLengthSid, IsValidSid, TOKEN_USER, TokenUser};
+    let mut token = HANDLE::default();
+    // SAFETY: the process pseudo-handle is valid and token output is writable.
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }?;
+    let mut storage = [0usize; 1024];
+    let mut length = 0;
+    // SAFETY: aligned storage has the complete advertised writable capacity.
+    let read = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(storage.as_mut_ptr().cast()),
+            size_of_val(&storage) as u32,
+            &mut length,
+        )
+    };
+    // SAFETY: this function owns the successful token handle and closes it exactly once.
+    unsafe { CloseHandle(token) }?;
+    read?;
+    if (length as usize) < size_of::<TOKEN_USER>() {
+        return Err("repair user identity unavailable".into());
+    }
+    // SAFETY: successful TokenUser returned its SID in the retained aligned buffer.
+    let sid = unsafe { (*storage.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    // SAFETY: the SID belongs to the successful native TokenUser result.
+    if !unsafe { IsValidSid(sid) }.as_bool() {
+        return Err("repair user SID invalid".into());
+    }
+    // SAFETY: IsValidSid established a complete SID in retained storage.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(sid.0.cast::<u8>(), GetLengthSid(sid) as usize) };
+    Ok(bytes.to_vec())
+}
 pub(super) fn ordinary(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink()

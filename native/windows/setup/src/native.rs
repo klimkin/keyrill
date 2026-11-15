@@ -1,5 +1,6 @@
 //! Native machine-scope installer. Every mutation is behind an explicit maintainer command.
 mod files;
+mod profile_repair;
 mod registry;
 mod tsf;
 
@@ -245,13 +246,16 @@ impl Installation {
         Ok(())
     }
     fn preflight(&self) -> Result<()> {
+        self.preflight_profile(None)
+    }
+    fn preflight_profile(&self, profile: Option<usize>) -> Result<()> {
         files::require_elevated()?;
         files::ordinary_ancestors(&self.root)?;
         for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
             registry::require_write(HKEY_LOCAL_MACHINE, view, "SOFTWARE\\Classes\\CLSID")?;
             registry::require_write(HKEY_LOCAL_MACHINE, view, "SOFTWARE\\Microsoft\\CTF\\TIP")?;
         }
-        tsf::scope_preflight()?;
+        tsf::scope_preflight_except(profile)?;
         Ok(())
     }
     fn stage(&self, package: &Package) -> Result<PathBuf> {
@@ -397,6 +401,7 @@ impl Installation {
             tsf::loaded_layout(index)?;
         }
         let _lock = files::lock(&self.root)?;
+        self.repair_gate(Some(package.digest()))?;
         if let Some(mut pending) = self.pending()? {
             if pending.desired != package.digest() {
                 return Err("another installation is pending; use recover".into());
@@ -505,6 +510,7 @@ impl Installation {
     fn recover(&mut self) -> Result<()> {
         self.preflight()?;
         let _lock = files::lock(&self.root)?;
+        self.repair_gate(None)?;
         let mut operation = self
             .receipt("operation.json")?
             .ok_or("no installation operation to recover")?;
@@ -515,6 +521,7 @@ impl Installation {
     fn uninstall(&mut self) -> Result<()> {
         self.preflight()?;
         let _lock = files::lock(&self.root)?;
+        self.repair_gate(None)?;
         if self.pending()?.is_some() {
             return Err("pending installation must be recovered before uninstall".into());
         }
@@ -559,6 +566,8 @@ impl Installation {
     fn cleanup(&mut self) -> Result<()> {
         self.preflight()?;
         let _lock = files::lock(&self.root)?;
+        self.repair_gate(None)?;
+        let retained = self.repair_packages()?;
         if self.pending()?.is_some() {
             return Err("recover pending operation before cleanup".into());
         }
@@ -573,6 +582,7 @@ impl Installation {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name == installed.desired
+                || retained.contains(&name)
                 || (installed.desired != "absent" && installed.previous.as_ref() == Some(&name))
             {
                 continue;
@@ -613,10 +623,17 @@ pub fn run() -> Result<()> {
     if args.len() == 1 && args[0] == "status" {
         return installation.status();
     }
+    if args.len() == 1 && args[0] == "inspect-profile-repair" {
+        return installation.inspect_profile_repair();
+    }
     if args.len() < 3 || args[1] != "--scope" || args[2] != "machine" {
-        return Err("Maintainer only. KeyrillSetup status | verify PACKAGE | install|repair --scope machine PACKAGE | migrate-proof --scope machine PACKAGE PROOF_DLL | recover|rollback|uninstall|cleanup --scope machine. No automatic elevation; run explicitly as administrator for machine changes.".into());
+        return Err("Maintainer only. KeyrillSetup status | inspect-profile-repair | verify PACKAGE | install|repair --scope machine PACKAGE | migrate-proof --scope machine PACKAGE PROOF_DLL | repair-profile --scope machine APPROVAL SHA256 | recover|rollback|uninstall|cleanup --scope machine. No automatic elevation; run explicitly as administrator for machine changes.".into());
     }
     match args[0].to_str() {
+        Some("repair-profile") if args.len() == 5 => installation.repair_profile(
+            Path::new(&args[3]),
+            args[4].to_str().ok_or("approval digest is not Unicode")?,
+        ),
         Some("install" | "repair") if args.len() == 4 => {
             installation.install(&Package::open(Path::new(&args[3]))?, None)
         }
