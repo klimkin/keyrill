@@ -7,6 +7,45 @@ use windows::Win32::Foundation::E_FAIL;
 use windows_core::{BOOL, BSTR, GUID, PCWSTR, implement};
 
 #[test]
+fn machine_service_accepts_exact_native_enable_metadata() {
+    let path = format!(
+        "Software\\KeyrillTests\\ServiceMetadata-{}",
+        std::process::id()
+    );
+    assert!(!registry::exists(HKEY_CURRENT_USER, KEY_WOW64_64KEY, &path).unwrap());
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &path,
+        "Enable",
+        &registry::string("1"),
+    )
+    .unwrap();
+    let observed = service_metadata_at(HKEY_CURRENT_USER, KEY_WOW64_64KEY, &path);
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &path,
+        "Enable",
+        &Value::Null,
+    )
+    .unwrap();
+    let wide = registry::wide(&path);
+    // SAFETY: this uniquely named disposable key has no values or descendants.
+    unsafe {
+        RegDeleteKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(wide.as_ptr()),
+            KEY_WOW64_64KEY.0,
+            None,
+        )
+    }
+    .ok()
+    .unwrap();
+    assert_eq!(observed.unwrap(), registry::string("1"));
+}
+
+#[test]
 fn standard_layout_requires_the_complete_native_handle_identity() {
     let expected = HKL(0x04090409usize as *mut _);
     assert_eq!(standard_layout(&[expected], 0x0409), Some(expected));

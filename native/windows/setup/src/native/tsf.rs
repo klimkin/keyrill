@@ -42,6 +42,10 @@ fn both(mut inspect: impl FnMut(REG_SAM_FLAGS) -> Result<Value>) -> Result<Value
 pub(super) fn service_state() -> Result<Value> {
     both(|view| Ok(json!(registry::exists(HKEY_LOCAL_MACHINE, view, &tip())?)))
 }
+fn service_metadata_at(hive: HKEY, view: REG_SAM_FLAGS, path: &str) -> Result<Value> {
+    only(registry::names(hive, view, path)?, &[])?;
+    Ok(Value::Null)
+}
 pub(super) fn service_write(value: &Value) -> Result<()> {
     let enabled = value.as_bool().ok_or("invalid service desired state")?;
     scope_preflight()?;
@@ -225,7 +229,7 @@ pub(super) fn scope_preflight() -> Result<()> {
             registry::children(HKEY_LOCAL_MACHINE, view, &tip())?,
             &["Category".into(), "LanguageProfile".into()],
         )?;
-        only(registry::names(HKEY_LOCAL_MACHINE, view, &tip())?, &[])?;
+        service_metadata_at(HKEY_LOCAL_MACHINE, view, &tip())?;
         let languages = format!("{}\\LanguageProfile", tip());
         only(registry::names(HKEY_LOCAL_MACHINE, view, &languages)?, &[])?;
         only(registry::names(HKEY_CURRENT_USER, view, &tip())?, &[])?;
