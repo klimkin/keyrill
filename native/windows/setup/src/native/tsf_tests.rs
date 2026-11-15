@@ -7,6 +7,49 @@ use windows::Win32::Foundation::E_FAIL;
 use windows_core::{BOOL, BSTR, GUID, PCWSTR, implement};
 
 #[test]
+fn profile_string_storage_terminates_descriptions_and_icon_paths() {
+    for (value, expected) in [
+        ("Keyrill English", "Keyrill English\0"),
+        ("Keyrill Русский", "Keyrill Русский\0"),
+        ("", "\0"),
+        ("Я🔑", "Я🔑\0"),
+        (r"C:\Keyrill\Русский🔑.ico", "C:\\Keyrill\\Русский🔑.ico\0"),
+    ] {
+        assert_eq!(
+            profile_buffer(value),
+            expected.encode_utf16().collect::<Vec<_>>(),
+            "unterminated TSF profile storage for {value:?}"
+        );
+    }
+}
+
+#[test]
+fn profile_native_character_counts_preserve_exact_utf16_text() {
+    let state = Rc::new(State {
+        value: RefCell::new(Value::Null),
+        layout: RefCell::new(Value::Null),
+        writes: Cell::new(0),
+        layout_writes: Cell::new(0),
+        failure: Cell::new(Failure::None),
+        layout_failure: Cell::new(Failure::None),
+        service: None,
+    });
+    let provider: ITfInputProcessorProfiles = Provider(state.clone()).into();
+    let mut writes = 0;
+    for (index, profile) in PROFILES.iter().enumerate() {
+        for description in [profile.description, "", "Я🔑"] {
+            for icon in ["public-english.ico", "", r"C:\Keyrill\Русский🔑.ico"] {
+                let desired = json!({"description":description,"icon":icon,"index":0});
+                profile_write_with(&provider, index, &desired).unwrap();
+                writes += 1;
+                assert_eq!(*state.value.borrow(), desired);
+                assert_eq!(state.writes.get(), writes);
+            }
+        }
+    }
+}
+
+#[test]
 fn machine_service_accepts_exact_native_enable_metadata() {
     let path = format!(
         "Software\\KeyrillTests\\ServiceMetadata-{}",
@@ -101,8 +144,8 @@ impl ITfInputProcessorProfiles_Impl for Provider_Impl {
             )
         };
         assert_eq!(class, SERVICE_ID);
-        assert_eq!(language, PROFILES[0].language);
-        assert_eq!(profile, PROFILES[0].id);
+        let expected = PROFILES.iter().find(|p| p.language == language).unwrap();
+        assert_eq!(profile, expected.id);
         assert_eq!(index, 0);
         if matches!(self.0.failure.get(), Failure::Before) {
             return Err(E_FAIL.into());

@@ -121,6 +121,9 @@ pub(super) fn profile_write(index: usize, value: &Value) -> Result<()> {
     let manager = profiles()?;
     profile_write_with(&manager, index, value)
 }
+fn profile_buffer(value: &str) -> Vec<u16> {
+    value.encode_utf16().collect()
+}
 fn profile_write_with(
     manager: &ITfInputProcessorProfiles,
     index: usize,
@@ -133,16 +136,12 @@ fn profile_write_with(
             manager.RemoveLanguageProfile(&SERVICE_ID, profile.language, &profile.id)?;
         }
     } else {
-        let description: Vec<_> = value["description"]
-            .as_str()
-            .ok_or("profile description missing")?
-            .encode_utf16()
-            .collect();
-        let icon: Vec<_> = value["icon"]
-            .as_str()
-            .ok_or("profile icon missing")?
-            .encode_utf16()
-            .collect();
+        let description = profile_buffer(
+            value["description"]
+                .as_str()
+                .ok_or("profile description missing")?,
+        );
+        let icon = profile_buffer(value["icon"].as_str().ok_or("profile icon missing")?);
         if value["index"] != 0 {
             return Err("profile icon index invalid".into());
         }
