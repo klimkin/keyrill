@@ -75,6 +75,7 @@ struct State {
     layout_writes: Cell<usize>,
     failure: Cell<Failure>,
     layout_failure: Cell<Failure>,
+    service: Option<Rc<ServiceState>>,
 }
 #[implement(ITfInputProcessorProfiles)]
 struct Provider(Rc<State>);
@@ -128,11 +129,23 @@ impl ITfInputProcessorProfiles_Impl for Provider_Impl {
         self.0.writes.set(self.0.writes.get() + 1);
         Ok(())
     }
-    fn Register(&self, _: *const GUID) -> windows_core::Result<()> {
-        panic!("unexpected Register")
+    fn Register(&self, class: *const GUID) -> windows_core::Result<()> {
+        // SAFETY: the typed SDK caller retains the GUID for this call.
+        assert_eq!(unsafe { *class }, SERVICE_ID);
+        self.0
+            .service
+            .as_ref()
+            .expect("unexpected Register")
+            .apply(true)
     }
-    fn Unregister(&self, _: *const GUID) -> windows_core::Result<()> {
-        panic!("unexpected Unregister")
+    fn Unregister(&self, class: *const GUID) -> windows_core::Result<()> {
+        // SAFETY: the typed SDK caller retains the GUID for this call.
+        assert_eq!(unsafe { *class }, SERVICE_ID);
+        self.0
+            .service
+            .as_ref()
+            .expect("unexpected Unregister")
+            .apply(false)
     }
     fn EnumInputProcessorInfo(&self) -> windows_core::Result<IEnumGUID> {
         panic!("unexpected enumeration")
@@ -293,6 +306,7 @@ fn injected_native_profile_hresult_is_not_an_installation_acknowledgement() {
             layout_writes: Cell::new(0),
             failure: Cell::new(failure),
             layout_failure: Cell::new(Failure::None),
+            service: None,
         });
         let provider: ITfInputProcessorProfiles = Provider(state.clone()).into();
         let mut backend = Fixture {
@@ -349,6 +363,7 @@ fn profile_checkpoint_and_substitute_layout_failures_recover_without_replaying_p
             layout_writes: Cell::new(0),
             failure: Cell::new(Failure::None),
             layout_failure: Cell::new(failure),
+            service: None,
         });
         let provider: ITfInputProcessorProfiles = Provider(state.clone()).into();
         let mut backend = Fixture {
@@ -395,5 +410,382 @@ fn profile_checkpoint_and_substitute_layout_failures_recover_without_replaying_p
         }
         assert_eq!(state.writes.get(), 1);
         assert_eq!(state.layout_writes.get(), 1);
+    }
+}
+
+struct ServiceRoots([String; 2]);
+impl ServiceRoots {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let paths = [64, 32].map(|view| {
+            let path = format!(
+                "Software\\KeyrillTests\\Service-{}-{id}-{view}",
+                std::process::id()
+            );
+            assert!(!registry::exists(HKEY_CURRENT_USER, KEY_WOW64_64KEY, &path).unwrap());
+            path
+        });
+        Self(paths)
+    }
+    fn read(&self) -> Result<Value> {
+        service_state_with(|view| {
+            let path = &self.0[usize::from(view == KEY_WOW64_32KEY)];
+            Ok((
+                registry::exists(HKEY_CURRENT_USER, view, path)?,
+                service_metadata_at(HKEY_CURRENT_USER, view, path)?,
+            ))
+        })
+    }
+    fn set(&self, present: bool, metadata: &Value) {
+        for path in &self.0 {
+            Self::remove(path);
+            if present {
+                registry::write(
+                    HKEY_CURRENT_USER,
+                    KEY_WOW64_64KEY,
+                    path,
+                    "Enable",
+                    &registry::string("1"),
+                )
+                .unwrap();
+                registry::write(HKEY_CURRENT_USER, KEY_WOW64_64KEY, path, "Enable", metadata)
+                    .unwrap();
+            }
+        }
+    }
+    fn remove(path: &str) {
+        for name in registry::names(HKEY_CURRENT_USER, KEY_WOW64_64KEY, path).unwrap() {
+            registry::write(
+                HKEY_CURRENT_USER,
+                KEY_WOW64_64KEY,
+                path,
+                &name,
+                &Value::Null,
+            )
+            .unwrap();
+        }
+        if registry::exists(HKEY_CURRENT_USER, KEY_WOW64_64KEY, path).unwrap() {
+            let wide = registry::wide(path);
+            // SAFETY: only this fixture's unique childless HKCU key is removed.
+            unsafe {
+                RegDeleteKeyExW(
+                    HKEY_CURRENT_USER,
+                    PCWSTR(wide.as_ptr()),
+                    KEY_WOW64_64KEY.0,
+                    None,
+                )
+            }
+            .ok()
+            .unwrap();
+        }
+    }
+}
+impl Drop for ServiceRoots {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            Self::remove(path);
+        }
+    }
+}
+
+#[test]
+fn service_readback_rejects_unrecognized_raw_metadata_and_view_drift() {
+    for metadata in [
+        json!({"type":1,"data":[49,0]}),
+        json!({"type":1,"data":[49,0,0]}),
+        json!({"type":1,"data":[]}),
+    ] {
+        assert!(
+            validate_service_metadata("malformed raw fixture", &["Enable".into()], &metadata)
+                .is_err()
+        );
+    }
+    let roots = ServiceRoots::new();
+    assert_eq!(roots.read().unwrap(), false);
+    for metadata in [Value::Null, registry::string("1")] {
+        roots.set(true, &metadata);
+        assert_eq!(roots.read().unwrap(), true);
+    }
+    for metadata in [
+        registry::dword(1),
+        registry::string("0"),
+        registry::string(""),
+        json!({"type":1,"data":[49,0,0,0,0,0]}),
+        json!({"type":1,"data":[49,0,0,0,65,0,0,0]}),
+        json!({"type":1,"data":[0,216,0,0]}),
+    ] {
+        roots.set(true, &metadata);
+        for path in &roots.0 {
+            assert_eq!(
+                registry::read(HKEY_CURRENT_USER, KEY_WOW64_64KEY, path, "Enable").unwrap(),
+                metadata
+            );
+        }
+        let observed = roots.read();
+        assert!(
+            observed.is_err(),
+            "accepted malformed fixture {metadata:?}: {observed:?}"
+        );
+        let error = observed.unwrap_err().to_string();
+        assert!(error.contains("Enable has invalid type or data"), "{error}");
+    }
+    roots.set(true, &Value::Null);
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &roots.0[0],
+        "Unknown",
+        &registry::dword(1),
+    )
+    .unwrap();
+    assert!(
+        roots
+            .read()
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected value name")
+    );
+    roots.set(true, &Value::Null);
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &roots.0[1],
+        "Enable",
+        &registry::string("1"),
+    )
+    .unwrap();
+    assert!(
+        roots
+            .read()
+            .unwrap_err()
+            .to_string()
+            .contains("differs between registry views")
+    );
+    ServiceRoots::remove(&roots.0[0]);
+    assert!(roots.read().is_err());
+    roots.set(true, &Value::Null);
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &roots.0[0],
+        "eNaBlE",
+        &registry::string("1"),
+    )
+    .unwrap();
+    registry::write(
+        HKEY_CURRENT_USER,
+        KEY_WOW64_64KEY,
+        &roots.0[1],
+        "eNaBlE",
+        &registry::string("1"),
+    )
+    .unwrap();
+    assert_eq!(roots.read().unwrap(), true);
+}
+
+#[test]
+fn service_view_query_failures_propagate_before_boolean_projection() {
+    for failing_view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+        let error = service_state_with(|view| {
+            if view == failing_view {
+                Err("injected service registry query failure".into())
+            } else {
+                Ok((true, Value::Null))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected service registry query failure");
+    }
+    assert!(service_state_with(|_| Ok((false, registry::string("1")))).is_err());
+}
+
+struct ServiceState {
+    roots: ServiceRoots,
+    metadata: Value,
+    failure: Cell<Failure>,
+    writes: Cell<usize>,
+}
+impl ServiceState {
+    fn apply(&self, present: bool) -> windows_core::Result<()> {
+        if matches!(self.failure.get(), Failure::Before) {
+            return Err(E_FAIL.into());
+        }
+        self.writes.set(self.writes.get() + 1);
+        let metadata = if matches!(self.failure.get(), Failure::Partial) {
+            registry::dword(1)
+        } else {
+            self.metadata.clone()
+        };
+        self.roots.set(
+            present || matches!(self.failure.get(), Failure::Partial),
+            &metadata,
+        );
+        if matches!(self.failure.get(), Failure::After | Failure::Partial) {
+            Err(E_FAIL.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+struct ServiceFixture {
+    provider: ITfInputProcessorProfiles,
+    state: Rc<ServiceState>,
+    saved: Option<Journal>,
+    calls: usize,
+    fail_at: usize,
+}
+impl ServiceFixture {
+    fn new(metadata: Value, failure: Failure) -> Self {
+        let service = Rc::new(ServiceState {
+            roots: ServiceRoots::new(),
+            metadata,
+            failure: Cell::new(failure),
+            writes: Cell::new(0),
+        });
+        let state = Rc::new(State {
+            value: RefCell::new(Value::Null),
+            layout: RefCell::new(Value::Null),
+            writes: Cell::new(0),
+            layout_writes: Cell::new(0),
+            failure: Cell::new(Failure::None),
+            layout_failure: Cell::new(Failure::None),
+            service: Some(service.clone()),
+        });
+        Self {
+            provider: Provider(state).into(),
+            state: service,
+            saved: None,
+            calls: 0,
+            fail_at: usize::MAX,
+        }
+    }
+    fn tick(&mut self) -> Result<()> {
+        self.calls += 1;
+        if self.calls == self.fail_at {
+            return Err("injected service interruption".into());
+        }
+        Ok(())
+    }
+}
+impl Backend for ServiceFixture {
+    fn read(&mut self, resource: &str) -> Result<Value> {
+        assert_eq!(resource, "service");
+        self.tick()?;
+        self.state.roots.read()
+    }
+    fn write(&mut self, resource: &str, value: &Value) -> Result<()> {
+        assert_eq!(resource, "service");
+        self.tick()?;
+        service_write_with(&self.provider, value.as_bool().unwrap())?;
+        self.tick()
+    }
+    fn persist(&mut self, journal: &Journal) -> Result<()> {
+        self.tick()?;
+        self.saved = Some(journal.clone());
+        self.tick()
+    }
+}
+fn service_journal(before: bool, after: bool) -> Journal {
+    Journal {
+        desired: "a".repeat(64),
+        previous: None,
+        completed: 0,
+        changes: vec![Change {
+            resource: "service".into(),
+            before: json!(before),
+            after: json!(after),
+        }],
+    }
+}
+
+#[test]
+fn service_native_effects_recover_from_every_checkpoint_without_replay() {
+    for metadata in [Value::Null, registry::string("1")] {
+        for before in [false, true] {
+            for fail_at in 1..=10 {
+                let mut backend = ServiceFixture::new(metadata.clone(), Failure::None);
+                backend.state.roots.set(before, &metadata);
+                backend.fail_at = fail_at;
+                let original = service_journal(before, !before);
+                let mut journal = original.clone();
+                let _ = journal.reconcile(&mut backend);
+                backend.fail_at = usize::MAX;
+                let saved = backend.saved.clone().unwrap_or(original);
+                let mut recovered =
+                    Journal::parse(&serde_json::to_vec(&saved.value()).unwrap()).unwrap();
+                recovered.reconcile(&mut backend).unwrap();
+                assert_eq!(backend.state.roots.read().unwrap(), !before);
+                assert_eq!(backend.state.writes.get(), 1, "interruption {fail_at}");
+                recovered.reconcile(&mut backend).unwrap();
+                assert_eq!(backend.state.writes.get(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn service_hresult_acknowledgement_requires_fresh_valid_metadata() {
+    for metadata in [Value::Null, registry::string("1")] {
+        for before in [false, true] {
+            for failure in [Failure::Before, Failure::After, Failure::Partial] {
+                let mut backend = ServiceFixture::new(metadata.clone(), failure);
+                backend.state.roots.set(before, &metadata);
+                let mut journal = service_journal(before, !before);
+                let outcome = journal.reconcile(&mut backend);
+                assert_eq!(outcome.is_ok(), matches!(failure, Failure::After));
+                if matches!(failure, Failure::Partial) {
+                    assert_eq!(
+                        outcome.unwrap_err().to_string(),
+                        "installation unknown effect: readback unavailable; receipt retained"
+                    );
+                    assert_eq!(backend.saved.as_ref().unwrap().completed, 0);
+                }
+                backend.state.failure.set(Failure::None);
+                let mut recovered = backend.saved.clone().unwrap();
+                assert_eq!(
+                    recovered.reconcile(&mut backend).is_err(),
+                    matches!(failure, Failure::Partial)
+                );
+                assert_eq!(backend.state.writes.get(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn existing_service_boolean_receipt_skips_register_and_refuses_later_metadata_drift() {
+    for metadata in [Value::Null, registry::string("1")] {
+        let mut backend = ServiceFixture::new(metadata.clone(), Failure::None);
+        backend.state.roots.set(true, &metadata);
+        let original = service_journal(true, true);
+        let mut old_receipt =
+            Journal::parse(&serde_json::to_vec(&original.value()).unwrap()).unwrap();
+        old_receipt.reconcile(&mut backend).unwrap();
+        assert_eq!(backend.state.writes.get(), 0);
+        let equivalent = if metadata.is_null() {
+            registry::string("1")
+        } else {
+            Value::Null
+        };
+        backend.state.roots.set(true, &equivalent);
+        let mut recovered = backend.saved.clone().unwrap();
+        recovered.reconcile(&mut backend).unwrap();
+        assert_eq!(backend.state.writes.get(), 0);
+        backend.state.roots.set(true, &registry::dword(1));
+        let mut recovered = backend.saved.clone().unwrap();
+        assert!(recovered.reconcile(&mut backend).is_err());
+        assert_eq!(backend.state.writes.get(), 0);
+        backend.state.roots.set(true, &metadata);
+        registry::write(
+            HKEY_CURRENT_USER,
+            KEY_WOW64_64KEY,
+            &backend.state.roots.0[0],
+            "Unknown",
+            &registry::dword(1),
+        )
+        .unwrap();
+        assert!(recovered.reconcile(&mut backend).is_err());
+        assert_eq!(backend.state.writes.get(), 0);
     }
 }

@@ -40,16 +40,51 @@ fn both(mut inspect: impl FnMut(REG_SAM_FLAGS) -> Result<Value>) -> Result<Value
     Ok(first)
 }
 pub(super) fn service_state() -> Result<Value> {
-    both(|view| Ok(json!(registry::exists(HKEY_LOCAL_MACHINE, view, &tip())?)))
+    service_state_with(|view| {
+        Ok((
+            registry::exists(HKEY_LOCAL_MACHINE, view, &tip())?,
+            service_metadata_at(HKEY_LOCAL_MACHINE, view, &tip())?,
+        ))
+    })
+}
+fn service_state_with(
+    mut inspect: impl FnMut(REG_SAM_FLAGS) -> Result<(bool, Value)>,
+) -> Result<Value> {
+    let first = inspect(KEY_WOW64_64KEY)?;
+    if inspect(KEY_WOW64_32KEY)? != first {
+        return Err(format!("machine TSF service root {} Enable or presence differs between registry views; no mutation permitted", tip()).into());
+    }
+    if !first.0 && !first.1.is_null() {
+        return Err("machine TSF service root disappeared during Enable readback".into());
+    }
+    Ok(json!(first.0))
 }
 fn service_metadata_at(hive: HKEY, view: REG_SAM_FLAGS, path: &str) -> Result<Value> {
-    only(registry::names(hive, view, path)?, &[])?;
-    Ok(Value::Null)
+    let names = registry::names(hive, view, path)?;
+    let enable = registry::read(hive, view, path, "Enable")?;
+    validate_service_metadata(path, &names, &enable)?;
+    Ok(enable)
+}
+fn validate_service_metadata(path: &str, names: &[String], enable: &Value) -> Result<()> {
+    if names
+        .iter()
+        .any(|name| !name.eq_ignore_ascii_case("Enable"))
+    {
+        return Err(format!("machine TSF service root {path} has an unexpected value name; only optional Enable is recognized; no mutation permitted").into());
+    }
+    if (names.is_empty() && enable.is_null())
+        || (names.len() == 1 && *enable == registry::string("1"))
+    {
+        return Ok(());
+    }
+    Err(format!("machine TSF service root {path} Enable has invalid type or data, or changed during readback; expected absent or exact REG_SZ 1; no mutation permitted").into())
 }
 pub(super) fn service_write(value: &Value) -> Result<()> {
     let enabled = value.as_bool().ok_or("invalid service desired state")?;
     scope_preflight()?;
-    let manager = profiles()?;
+    service_write_with(&profiles()?, enabled)
+}
+fn service_write_with(manager: &ITfInputProcessorProfiles, enabled: bool) -> Result<()> {
     // SAFETY: only Keyrill's stable service is changed; preflight excludes foreign descendants.
     unsafe {
         if enabled {

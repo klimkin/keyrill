@@ -95,6 +95,17 @@ profile metadata in HKCU, divergent machine views, and unrecognized preexisting 
 These registry observations define the tested installation contract. An unsupported shape causes
 an explicit scope refusal.
 
+The machine TIP service root permits either no values or one case-insensitive `Enable` value
+whose type and bytes are exactly `REG_SZ` `1` with one UTF-16 terminator. This bounded recognition
+comes from observed native registration metadata. Its origin and semantics remain undocumented.
+Every service read validates those names and bytes and compares root presence and the raw optional
+value across both views before returning the receipt's existing boolean. A mismatch refuses
+mutation. The boolean treats a present root with either accepted representation as the same
+service state, so receipts do not preserve absence versus string `1`. Unexpected values stop
+recovery with its receipt retained. Native TSF calls retain exclusive ownership of service
+registration changes. Current-user profile `Enable` values retain their separate exact-value
+checks.
+
 Stable class/profile GUIDs survive the proof-to-product transition. Explicit proof migration
 accepts only the caller-selected production proof DLL, matching proof names/icon paths, and the
 exact current user's shadow COM path and Apartment value.
