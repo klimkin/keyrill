@@ -40,8 +40,10 @@ The integrated implementation passed full local verification for x64 and x86, in
 passed with its required detected memory-error canary. Prebuilt std and Windows code remain
 uninstrumented. Hosted CI and installed application acceptance are separate gates.
 
-The replacement source closure is committed at `84ee321`. The maintainer handoff installs its
-verified dual-architecture candidate. The agent then resumes permitted application automation
+The current replacement source closure is committed at `4471d61`. Its string-buffer repair,
+bounded recovery and disposable cleanup evidence are recorded in
+[profile repair validation](windows-profile-repair-validation.md). The maintainer handoff must
+qualify and install this verified dual-architecture candidate. The agent then resumes application automation
 before physical acceptance. Candidate identities, executable commands, current machine metadata,
 verification reports, and remaining result cells belong in the prepared local worksheet.
 

@@ -3,23 +3,25 @@
 The maintainer's migration stopped after the EN profile description acquired an unexpected
 suffix. The original operation remains at its profile write. This change corrects the string
 storage and supplies an explicitly approved single-profile recovery path. Actual native
-qualification has stopped at disposable cleanup. Installation remains pending.
+qualification stopped at disposable cleanup. The corrected cleanup candidate has passed local
+verification and awaits a fresh maintainer qualification. Installation remains pending.
 
 The buffer regression is committed as `aa65701`, its correction as `eba8195`, and the bounded
 repair as `4fe3846`. The separately gated native qualification is in `bfc073b` and `863607b`.
-The frozen candidate was built at `e3bcddbddc73a934b0535923b0c845b4a7c1edd5`.
+The cleanup regression is committed as `d187dc9` and its correction as `4471d61`.
+The frozen replacement was built at `4471d61fc0f233212ab1d44ac306c1df3174e7a5`.
 Later documentation does not change its immutable bytes or source inputs.
 
 ## Frozen candidate
 
 | Identity | SHA-256 |
 |---|---|
-| Package | `deb2dc1bdb4ff7ce6044355342f0794161354c8eac67bfa9cb66a9ba23f9b454` |
-| Source inputs | `0b6493e7c5626e4083d675e76227b71c060c07e480de1926ff2d7ef7fb1dfee9` |
-| x64 production build | `feb2eda9094fa3e5512bab375176ff228400d9f52de544d4f71df4e7f3d48d8e` |
-| x86 production build | `dafcd6456a245fd350a8fe3f768db7979d5d93d8b7d5216c65aaf9a4a9312167` |
-| x64 DLL bytes | `0fde566da0d770f79c0a0e75b92dbdb4c64dd1a63389de8f06ee209ab78da595` |
-| x86 DLL bytes | `6e1602066a0df067dd3ad6dd91fea3bd9f725b0d83f55ab1527da25b5c99479a` |
+| Package | `adafb276a84af1fb86828849d2616b5664b9c006b33a043a852a691bd940306e` |
+| Source inputs | `cd57f456678d733a2ac6b6263f1a59bd4ec0d91346a71d8baa9a1317826ed9ea` |
+| x64 production build | `0d3892e11e410a00ca4de4d80fdbdf25bb7644dfe66cefa74ad7c5cb7d068dce` |
+| x86 production build | `2eba79e11a8003448b162a897719a3d1b2dc10e6d25c8b9b187d94516ae41bbf` |
+| x64 DLL bytes | `20eb6d3a55af71f9833119060d5e6ab754f7c41f6d4073dd542d885c036efbb2` |
+| x86 DLL bytes | `2b733b4d39cd9c74fc84c8cf6cc783e5e12fa15c2dbfd3857c6f4e9120bea9c2` |
 | x64 Setup bytes | `8dc6f1ec21f239dd912d35bd7d2d6f0db45a8b2e767934086c9b5ebd547f2ae7` |
 
 ## Implemented behavior
@@ -43,17 +45,26 @@ Three recovery designs were compared. The selected design avoids the broader unj
 legacy registrar batch and the extra EN rewrite of restoration to the original before-state.
 Independent design and actual-diff reviews found no remaining actionable issue in this scope.
 
+Qualification cleanup now consumes ownership of a fresh, initially absent test identity.
+After native removal, it accepts only the case's exact user Enable DWORD and the fixed English
+profile chain. Both views are checked before deletion. Unexpected values or branches stop
+cleanup. It removes the exact value and checks each empty key before deleting it bottom-up.
+The original final absence and protected-state comparisons remain mandatory. Retained identities
+from older failed runs cannot be supplied to this cleanup. Registry inspection and deletion are
+separate operations; this test-only mechanism does not exclude a concurrent writer atomically.
+
 ## Completed checks
 
 | Check | Result |
 |---|---|
-| Focused Setup tests | 41 passed on x64 and x86 |
+| Setup tests | 48 passed on x64 and x86 |
+| Isolated native registry cleanup regression | Failed before correction; seven cleanup tests passed after correction |
 | Clippy with warnings denied | Passed on x64 and x86 |
 | `cargo xtask windows check --arch all` | Exit 0 |
 | `cargo xtask windows sanitize` | Exit 0, required use-after-free canary detected |
 | Controlled TSF suite | 214 passed per normal architecture and under x64 ASan |
 | Runtime suites | 80 production and 81 test-API cases passed per native run |
-| Setup, proof and ABI suites | 41, 53 and 3 passed per native run |
+| Setup, proof and ABI suites | 48, 53 and 3 passed per native run |
 | Clean dual-architecture package rebuild | All 119 paths and file hashes identical |
 | Native package verification and read-only status | Passed on both architectures |
 | Default test isolation | Maintainer qualification entries absent from both test lists and normal runs |
@@ -61,6 +72,18 @@ Independent design and actual-diff reviews found no remaining actionable issue i
 | Real read-only qualification observer | Passed on x64 and x86 under an ordinary token |
 | Final package's read-only repair inspection | Exit 0, original cursor and 25 protected resources bound |
 | Local handoff checks | Exact test enumeration rejects zero-test success; PowerShell 5.1 and 7 syntax, SID and file checks passed |
+
+The feature-enabled executables each passed 48 ordinary tests with the two explicit native
+entries ignored. Their absent-token refusals passed. An initial read-only observer attempt
+failed because no foreground window was available. A separate read-only probe confirmed
+successful TSF queries and valid layouts, but a null foreground window and thread. After a
+diagnostic editor supplied a foreground window, the exact read-only test passed on both
+architectures. The failed observations were retained separately.
+
+The isolated cleanup tests cover wrong values, bytes and types, unexpected branches, empty
+prefixes, second-view preflight, late content, evidence failure and preservation of an older
+fixture. They do not establish independent WOW64 views on this host or inject native removal,
+value-deletion and enumeration failures. Those schedules received code review only.
 
 The ASan configuration is experimental. Prebuilt standard libraries and Windows code remain
 uninstrumented. The native qualification binary is separate from production packaging and
@@ -75,11 +98,11 @@ profile update, then failed the final cleanup assertion. Reaching that assertion
 that native profile removal and service unregistration returned success, but the disposable EN profile's explicit user `Enable=0`
 preference remained. Read-only inspection confirmed the machine registration was absent and
 the user preference remained in both registry views. The original installation receipt is
-unchanged. The recovery handoff is disabled until fixture cleanup is corrected and verified.
+unchanged. These results belong to the earlier candidate, not the corrected frozen package.
 
 The passing cases had no user preference tree. They do not prove that deleting the retained
-value alone will remove its ancestor keys. Full thirteen-case qualification remains required;
-the partial results do not establish complete native preservation or cleanup. Failed fixtures
+value alone will remove its ancestor keys. Full thirteen-case qualification remains required on
+each architecture. The partial results do not establish complete native preservation or cleanup. Failed fixtures
 and their evidence remain retained without retry or guessed cleanup.
 
 After that qualification, the maintainer must execute the approved profile repair, ordinary
