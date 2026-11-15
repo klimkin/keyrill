@@ -27,16 +27,27 @@ The required application and installation matrix still needs final-candidate evi
 | Architecture, sanitizer, and reproducibility CI | `d46c738` |
 | Deferred automatic source handoff | `936b1b9` |
 | Owned-process native UIA verification | `1ad9eaa` |
+| Packaged TSF Settings entry, local readiness, bounded native package I/O | `54381b5` |
+| Writable native keyboard snapshots in proof fixtures | `4b06e8b` |
+| Deferred-source acceptance and late-reversal assertions | `f79a3eb` |
 
-The source-handoff and UIA integration passed full local verification for x64 and x86, including
-213 controlled tests and 53 proof-library tests per architecture. The x64 AddressSanitizer gate
+The integrated implementation passed full local verification for x64 and x86, including
+214 controlled tests and 53 proof-library tests per architecture. The x64 AddressSanitizer gate
 passed with its required detected memory-error canary. Prebuilt std and Windows code remain
 uninstrumented. Hosted CI and installed application acceptance are separate gates.
 
-The Settings TSF entry, local readiness, and bounded native package-reader corrections are in
-final integration. Package assembly, reproducibility, final SDK-entry checks, and a prepared
-maintainer worksheet follow that integration. The first maintainer handoff installs the frozen
-candidate. The agent then resumes permitted application automation before physical acceptance.
+The final source closure is committed at `f79a3eb`. The first maintainer handoff installs its
+verified dual-architecture candidate. The agent then resumes permitted application automation
+before physical acceptance. Candidate identities, executable commands, current machine metadata,
+verification reports, and remaining result cells belong in the prepared local worksheet.
+
+An earlier final debug run timed out in worker-readiness and publication tests. Six fresh runs
+of that same executable passed. Its historical cause remains inconclusive. An earlier sanitizer
+run exposed a keyboard-fixture case mismatch. The fixture now binds output to a mutable native
+buffer and restores its declared state before each synthetic callback. The complete matching
+normal and sanitizer runs passed after that correction. These results establish the controlled
+provider contract. The installed application, physical keyboard, and package-lifecycle matrix
+remains open until the final candidate is installed and tested.
 
 ## Completion criteria
 

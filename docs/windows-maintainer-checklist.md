@@ -10,9 +10,9 @@ The full implementation and acceptance requirements are in
 
 ## Current readiness
 
-The full Windows candidate is awaiting implementation. The existing Notepad proof is historical
-evidence. All results below start as Pending. The agent fills candidate-specific fields before
-marking a stage Ready.
+This template starts with unassigned candidate fields and Pending results. The existing Notepad
+proof is historical evidence. Use the prepared local worksheet for the current candidate,
+commands, automated evidence, and stage readiness.
 
 | Prepared field | Value filled by agent |
 |---|---|
@@ -86,7 +86,8 @@ These actions belong to the maintainer under `AGENTS.md`.
 - [ ] Handle its documented elevation or permission prompt when required.
 - [ ] Run the prepared read-only status command.
 - [ ] Confirm both EN and RU profiles have the expected names and enabled state.
-- [ ] Launch the prepared public fixture and select the EN profile through Windows' source UI.
+- [ ] Report installation success so the agent can launch the fixture and arm its observer.
+- [ ] After the agent confirms the observer is armed, select EN through Windows' source UI.
 - [ ] Leave the prepared application available for the agent's automated checks.
 
 | Setup observation | Your result or public error |
