@@ -148,6 +148,32 @@ that native TSF preserves Enable, source selection or service metadata on a real
 native qualification, final independent installation readback and the physical package matrix
 remain maintainer gates.
 
+The disposable native test is compiled only with the off-by-default
+`maintainer-native-qualification` Cargo feature. Ordinary verification uses `--include-ignored`,
+so an ignored annotation alone does not isolate a registration test. Default Setup test binaries
+exclude both qualification entries. The feature-enabled mutation test also refuses before any
+platform work unless the maintainer explicitly sets
+`KEYRILL_MAINTAINER_NATIVE_PROFILE_QUALIFICATION` to `disposable-profile-qualification-v1`.
+Do not set that variable in an automated verification environment.
+
+The exact mutation test is
+`native::tsf::tests::disposable_native_profile_repair_preserves_protected_state`.
+It uses fresh, absence-checked service and profile GUIDs. Its forwarding provider preserves
+the production writer's string pointers and counts while replacing only the validated identity
+tuple. Thirteen cases check raw metadata, Enable states, substitute layouts, the RU sibling,
+production registration, installation files and observed sources. Valid public icon fixtures and
+an append-only evidence file use a unique temporary directory. A failure stops without retry or
+cleanup. Native cleanup runs only after verified results and must establish exact absence.
+Retained test registrations require maintainer inspection. This test has not yet qualified the
+host merely because its executable builds.
+
+The separate exact test
+`native::tsf::tests::read_only_native_profile_qualification_preflight` needs the same build feature
+but no mutation token or elevation. It checks the actual observer and loaded-layout prerequisites
+without creating fixtures or registering profiles. A handoff must pin the feature executable's
+hash, enumerate the exact mutation test and require a one-test passing result. A zero-test run
+does not qualify native behavior.
+
 COM values are owned in both explicit HKLM views. TSF definitions use native profile/category
 APIs with fresh registry readback in both views. HKCU profile Enable values are observed
 separately and preserved during installation. Scope checks reject unexpected owned descendants,
