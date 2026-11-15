@@ -226,6 +226,24 @@ pub(super) fn names(hive: HKEY, view: REG_SAM_FLAGS, path: &str) -> Result<Vec<S
 }
 
 #[cfg(test)]
+pub(super) fn remove_empty_key(hive: HKEY, view: REG_SAM_FLAGS, path: &str) -> Result<()> {
+    if !names(hive, view, path)?.is_empty() || !children(hive, view, path)?.is_empty() {
+        return Err("disposable registry key is not empty".into());
+    }
+    let terminated = wide(path);
+    // SAFETY: the caller owns this exact fresh test path. The preceding empty-key
+    // inspection is separate from deletion and cannot exclude concurrent writers.
+    let status = unsafe { RegDeleteKeyExW(hive, PCWSTR(terminated.as_ptr()), view.0, None) };
+    if status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND {
+        status.ok()?;
+    }
+    if exists(hive, view, path)? {
+        return Err("disposable registry key remains after deletion".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

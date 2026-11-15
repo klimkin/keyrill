@@ -6,6 +6,9 @@ use std::rc::Rc;
 use windows::Win32::Foundation::E_FAIL;
 use windows_core::{BOOL, BSTR, GUID, PCWSTR, implement};
 
+#[path = "tsf_qualification_cleanup.rs"]
+mod qualification_cleanup;
+
 #[cfg(feature = "maintainer-native-qualification")]
 #[path = "tsf_native_qualification.rs"]
 mod qualification;
