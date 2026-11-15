@@ -121,6 +121,12 @@ known-folder result where available. An embedded `asInvoker` manifest preserves 
 explicit privilege context. An exclusively opened file serializes installers across sessions
 and bitness. Normal application and Settings use runs under the user's ordinary token.
 
+The Settings shortcut passes an ordinary absolute drive path to `IShellLinkW::SetPath` after
+requiring that it canonicalizes to the exact installed target. Filesystem paths use canonical
+form. Native ShellLink probes on the test host accepted 260 UTF-16 units including the terminator
+and refused 261. Setup refuses longer Shell targets and representations that change target identity
+before writing shortcut scratch data.
+
 Complete verified files are staged before COM points at an immutable `versions/CANDIDATE_HASH`
 directory. `operation.json` durably records every exact before/after resource and the last
 verified acknowledgement. `installed.json` records the completed result. Cleanup requires the

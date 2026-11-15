@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicU64, Ordering};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree, MAX_PATH};
 use windows::Win32::Security::Authorization::*;
 use windows::Win32::Security::*;
 use windows::Win32::Storage::FileSystem::*;
@@ -289,14 +289,32 @@ pub(super) fn write(path: &Path, value: &Value) -> Result<()> {
     atomic(path, &bytes)
 }
 pub(super) fn shortcut(root: &Path, target: &Path) -> Result<Value> {
+    let canonical = target.canonicalize()?;
+    let mut components = canonical.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err("settings shortcut target has no drive prefix".into());
+    };
+    let Prefix::VerbatimDisk(drive) = prefix.kind() else {
+        return Err("settings shortcut target requires an ordinary drive path".into());
+    };
+    // ShellLink rejects verbatim paths. Keep the filesystem identity in canonical form.
+    let mut shell_target = PathBuf::from(format!("{}:", char::from(drive)));
+    shell_target.extend(components);
+    let target = path_wide(&shell_target)?;
+    if target.len() > MAX_PATH as usize {
+        return Err("settings shortcut target exceeds the Shell path bound".into());
+    }
+    if shell_target.canonicalize()? != canonical {
+        return Err("settings shortcut target identity changes in Shell path form".into());
+    }
     let path = root.join("settings-link.next");
     ordinary_ancestors(&path)?;
     // SAFETY: COM apartment is initialized and ShellLink returns an owned SDK interface.
     let link: IShellLinkW = unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }?;
-    let target = path_wide(target)?;
     // SAFETY: the explicitly installed executable path is live and terminated.
     unsafe {
-        link.SetPath(PCWSTR(target.as_ptr()))?;
+        link.SetPath(PCWSTR(target.as_ptr()))
+            .map_err(|error| format!("settings shortcut IShellLinkW::SetPath failed: {error}"))?;
         link.SetDescription(windows_core::w!("Keyrill Settings"))?;
     }
     let persist: IPersistFile = link.cast()?;
@@ -466,6 +484,39 @@ mod tests {
             .unwrap();
             assert_eq!(description, "Keyrill Settings");
         }
+    }
+
+    #[test]
+    fn native_shortcut_refuses_shell_path_identity_changes() {
+        let fixture = Fixture::new();
+        let _com = super::super::tsf::Com::new().unwrap();
+        let root = fixture.0.canonicalize().unwrap();
+        fs::write(root.join("KeyrillSettings.exe"), b"different target").unwrap();
+        let target = root.join("KeyrillSettings.exe ");
+        fs::write(&target, b"exact target").unwrap();
+        let error = shortcut(&root, &target).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "settings shortcut target identity changes in Shell path form"
+        );
+        assert!(!root.join("settings-link.next").exists());
+    }
+
+    #[test]
+    fn native_shortcut_refuses_targets_beyond_the_shell_path_bound() {
+        let fixture = Fixture::new();
+        let _com = super::super::tsf::Com::new().unwrap();
+        let root = fixture.0.canonicalize().unwrap();
+        let directory = root.join("x".repeat(160)).join("y".repeat(80));
+        fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("KeyrillSettings.exe");
+        fs::write(&target, b"exact target").unwrap();
+        let error = shortcut(&root, &target).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "settings shortcut target exceeds the Shell path bound"
+        );
+        assert!(!root.join("settings-link.next").exists());
     }
 
     #[test]
