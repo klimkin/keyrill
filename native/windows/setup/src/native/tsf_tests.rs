@@ -6,6 +6,24 @@ use std::rc::Rc;
 use windows::Win32::Foundation::E_FAIL;
 use windows_core::{BOOL, BSTR, GUID, PCWSTR, implement};
 
+#[cfg(feature = "maintainer-native-qualification")]
+#[path = "tsf_native_qualification.rs"]
+mod qualification;
+
+#[cfg(feature = "maintainer-native-qualification")]
+#[test]
+#[ignore = "maintainer-only elevated native TSF registration qualification"]
+fn disposable_native_profile_repair_preserves_protected_state() {
+    qualification::run().unwrap();
+}
+
+#[cfg(feature = "maintainer-native-qualification")]
+#[test]
+#[ignore = "explicit read-only native qualification observer preflight"]
+fn read_only_native_profile_qualification_preflight() {
+    qualification::read_only_preflight().unwrap();
+}
+
 #[test]
 fn profile_string_storage_terminates_descriptions_and_icon_paths() {
     for (value, expected) in [

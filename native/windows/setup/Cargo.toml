@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+maintainer-native-qualification = []
+
 [[bin]]
 name = "KeyrillSetup"
 path = "src/main.rs"
