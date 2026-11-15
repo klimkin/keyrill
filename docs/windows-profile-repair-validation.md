@@ -3,7 +3,7 @@
 The maintainer's migration stopped after the EN profile description acquired an unexpected
 suffix. The original operation remains at its profile write. This change corrects the string
 storage and supplies an explicitly approved single-profile recovery path. Actual native
-qualification and installation remain pending maintainer execution.
+qualification has stopped at disposable cleanup. Installation remains pending.
 
 The buffer regression is committed as `aa65701`, its correction as `eba8195`, and the bounded
 repair as `4fe3846`. The separately gated native qualification is in `bfc073b` and `863607b`.
@@ -69,9 +69,18 @@ executes its registration cases.
 
 ## Remaining maintainer gates
 
-The thirteen disposable native registration cases and their cleanup have not run. Their
-compiled code and read-only observer do not establish native preservation. A failure retains
-the disposable identity and evidence without retry or guessed cleanup.
+The maintainer's first qualification run stopped when foreground focus changed during a
+protected-state comparison. A second run passed four complete cases and verified the fifth
+profile update, then failed the final cleanup assertion. Reaching that assertion establishes
+that native profile removal and service unregistration returned success, but the disposable EN profile's explicit user `Enable=0`
+preference remained. Read-only inspection confirmed the machine registration was absent and
+the user preference remained in both registry views. The original installation receipt is
+unchanged. The recovery handoff is disabled until fixture cleanup is corrected and verified.
+
+The passing cases had no user preference tree. They do not prove that deleting the retained
+value alone will remove its ancestor keys. Full thirteen-case qualification remains required;
+the partial results do not establish complete native preservation or cleanup. Failed fixtures
+and their evidence remain retained without retry or guessed cleanup.
 
 After that qualification, the maintainer must execute the approved profile repair, ordinary
 recovery and corrected installation. Independent final receipt and registration readback,
