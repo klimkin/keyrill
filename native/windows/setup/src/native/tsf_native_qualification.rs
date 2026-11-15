@@ -1,5 +1,6 @@
 use super::super::super::profile_repair::Profile;
 use super::super::super::{Installation, files};
+use super::qualification_cleanup::PreferencePaths;
 use super::*;
 use keyrill_windows_build::Digest;
 use std::fs::{self, File, OpenOptions};
@@ -55,6 +56,120 @@ impl Disposable {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+struct FreshDisposable {
+    ids: Disposable,
+    preference: PreferencePaths,
+}
+
+impl FreshDisposable {
+    fn new() -> Result<Self> {
+        let ids = Disposable::new()?;
+        ids.require_absent()?;
+        Ok(Self {
+            ids,
+            preference: PreferencePaths::for_fresh_tsf(ids.service, ids.profiles[0]),
+        })
+    }
+
+    fn cleanup(
+        self,
+        enable: Option<bool>,
+        verified: &Value,
+        protected: &Value,
+        installation: &mut Installation,
+        manager: &ITfInputProcessorProfiles,
+        evidence: &mut Evidence,
+    ) -> Result<()> {
+        let before =
+            evidence.readback("before-cleanup", disposable_observation(self.ids, manager))?;
+        let current = evidence.readback(
+            "before-cleanup-protected",
+            protected_observation(installation, manager),
+        )?;
+        if before != *verified || current != *protected {
+            return Err("qualification state changed before cleanup; fixture retained".into());
+        }
+        evidence.record(
+            "cleanup-start",
+            &json!({"service":format!("{:?}",self.ids.service)}),
+        )?;
+        for (index, profile) in PROFILES.iter().enumerate() {
+            // SAFETY: this consuming owner carries the current invocation's initial absence.
+            let result = unsafe {
+                (manager.vtable().RemoveLanguageProfile)(
+                    manager.as_raw(),
+                    &self.ids.service,
+                    profile.language,
+                    &self.ids.profiles[index],
+                )
+            };
+            evidence.record(
+                "cleanup-remove-profile",
+                &json!({"index":index,"hresult":result.0}),
+            )?;
+            if result.is_err() {
+                let _ = evidence.readback(
+                    "failed-cleanup-readback",
+                    disposable_observation(self.ids, manager),
+                );
+                let _ = evidence.readback(
+                    "failed-cleanup-protected",
+                    protected_observation(installation, manager),
+                );
+                return Err(windows_core::Error::from_hresult(result).into());
+            }
+        }
+        // SAFETY: this service is the same fresh disposable owner, with no teardown retry.
+        let result = unsafe { (manager.vtable().Unregister)(manager.as_raw(), &self.ids.service) };
+        evidence.record("cleanup-unregister", &json!({"hresult":result.0}))?;
+        let removed = evidence.readback(
+            "after-native-cleanup",
+            disposable_observation(self.ids, manager),
+        );
+        let current = evidence.readback(
+            "after-native-cleanup-protected",
+            protected_observation(installation, manager),
+        );
+        result.ok()?;
+        let removed = removed?;
+        if current? != *protected {
+            return Err("production or source state changed during native cleanup".into());
+        }
+        for tree in removed["trees"].as_array().unwrap() {
+            if tree["com"]["present"] != false
+                || (tree["hive"] == HKEY_LOCAL_MACHINE.0 as usize
+                    && tree["tip"]["present"] != false)
+            {
+                return Err(
+                    "unexpected disposable registration remains after native cleanup".into(),
+                );
+            }
+        }
+        let cleanup = self
+            .preference
+            .remove(enable, &mut |label, value| evidence.record(label, value));
+        let disposable = evidence.readback(
+            "after-cleanup-disposable",
+            disposable_observation(self.ids, manager),
+        );
+        let cleaned = evidence.readback(
+            "after-cleanup",
+            protected_observation(installation, manager),
+        );
+        cleanup?;
+        disposable?;
+        self.ids.require_absent()?;
+        if *protected != cleaned? {
+            return Err("production or source state changed after disposable cleanup".into());
+        }
+        evidence.record(
+            "case-passed",
+            &json!({"service":format!("{:?}",self.ids.service),"disposable_absent":true}),
+        )?;
         Ok(())
     }
 }
@@ -142,6 +257,11 @@ impl Evidence {
         writeln!(self.0, "{}", json!({"cut":label,"observation":value}))?;
         self.0.sync_all()?;
         Ok(())
+    }
+
+    fn readback(&mut self, label: &str, result: Result<Value>) -> Result<Value> {
+        self.record(label, &json!({"readback":result.as_ref().ok(),"error":result.as_ref().err().map(ToString::to_string)}))?;
+        result
     }
 }
 
@@ -521,11 +641,11 @@ pub(super) fn run() -> Result<()> {
     }
     cases.push((Some(true), true, true, "Keyrill public 🔑"));
     for (enable, machine, substitute, description) in cases {
-        let ids = Disposable::new()?;
+        let fresh = FreshDisposable::new()?;
+        let ids = fresh.ids;
         evidence.record("case",&json!({"service":format!("{:?}",ids.service),
             "profiles":ids.profiles.map(|id|format!("{id:?}")),"enable":enable,"machine_enable":machine,
             "substitute":substitute,"description":description}))?;
-        ids.require_absent()?;
         let protected = protected_observation(&mut installation, &manager)?;
         evidence.record("before-setup", &protected)?;
         let setup = setup_case(&manager, ids, enable, machine, substitute, original_path);
@@ -585,30 +705,13 @@ pub(super) fn run() -> Result<()> {
             return Err("native profile qualification mismatch; disposable registration retained without retry or cleanup".into());
         }
         require_native_observations(&after)?;
-        evidence.record(
-            "cleanup-start",
-            &json!({"service":format!("{:?}",ids.service)}),
-        )?;
-        // SAFETY: cleanup is reachable only after a fully verified case, and uses its disposable GUIDs.
-        unsafe {
-            for (index, profile) in PROFILES.iter().enumerate() {
-                manager.RemoveLanguageProfile(
-                    &ids.service,
-                    profile.language,
-                    &ids.profiles[index],
-                )?;
-            }
-            manager.Unregister(&ids.service)?;
-        }
-        ids.require_absent()?;
-        let cleaned = protected_observation(&mut installation, &manager)?;
-        evidence.record("after-cleanup", &cleaned)?;
-        if protected != cleaned {
-            return Err("production or source state changed after disposable cleanup".into());
-        }
-        evidence.record(
-            "case-passed",
-            &json!({"service":format!("{:?}",ids.service),"disposable_absent":true}),
+        fresh.cleanup(
+            enable,
+            &after,
+            &protected,
+            &mut installation,
+            &manager,
+            &mut evidence,
         )?;
     }
     fs::remove_file(original_icon)?;

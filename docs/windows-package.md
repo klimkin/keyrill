@@ -162,8 +162,19 @@ It uses fresh, absence-checked service and profile GUIDs. Its forwarding provide
 the production writer's string pointers and counts while replacing only the validated identity
 tuple. Thirteen cases check raw metadata, Enable states, substitute layouts, the RU sibling,
 production registration, installation files and observed sources. Valid public icon fixtures and
-an append-only evidence file use a unique temporary directory. A failure stops without retry or
-cleanup. Native cleanup runs only after verified results and must establish exact absence.
+an append-only evidence file use a unique temporary directory. A failure stops without retry.
+Setup and update failures retain the fixture. Cleanup starts only after fresh disposable and
+protected observations match the verified case. Each native removal runs once, with its HRESULT
+recorded before failure propagation. Native cleanup must leave all COM roots and all machine
+TIP roots absent in both views. For an explicitly enabled or disabled case, the fixture owner
+then permits only the exact original HKCU EN `Enable` DWORD and its four empty ancestor or
+profile keys. Both views must match this fixed chain before any registry deletion. The
+absent-Enable case requires HKCU TIP absence. Exact value deletion and bottom-up empty-key
+checks stop on unexpected content. Final TIP and COM absence remains mandatory across both
+hives and views, with unchanged protected observations. Readbacks and operation errors remain
+in the evidence on cleanup failure. The consuming fresh owner accepts no retained identity.
+Empty-key inspection and deletion are separate Win32 operations, so they cannot exclude a
+concurrent writer between those calls.
 Retained test registrations require maintainer inspection. This test has not yet qualified the
 host merely because its executable builds.
 
