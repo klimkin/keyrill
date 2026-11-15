@@ -3,8 +3,9 @@
 The maintainer's migration stopped after the EN profile description acquired an unexpected
 suffix. The original operation remains at its profile write. This change corrects the string
 storage and supplies an explicitly approved single-profile recovery path. Actual native
-qualification stopped at disposable cleanup. The corrected cleanup candidate has passed local
-verification and awaits a fresh maintainer qualification. Installation remains pending.
+qualification initially stopped at disposable cleanup. The corrected candidate passed all
+thirteen native cases on each architecture, followed by approved recovery and installation.
+Installed application acceptance remains pending.
 
 The buffer regression is committed as `aa65701`, its correction as `eba8195`, and the bounded
 repair as `4fe3846`. The separately gated native qualification is in `bfc073b` and `863607b`.
@@ -90,7 +91,7 @@ uninstrumented. The native qualification binary is separate from production pack
 requires both its explicit build feature and maintainer token. Normal verification never
 executes its registration cases.
 
-## Remaining maintainer gates
+## Native qualification and installation
 
 The maintainer's first qualification run stopped when foreground focus changed during a
 protected-state comparison. A second run passed four complete cases and verified the fifth
@@ -100,14 +101,18 @@ preference remained. Read-only inspection confirmed the machine registration was
 the user preference remained in both registry views. The original installation receipt is
 unchanged. These results belong to the earlier candidate, not the corrected frozen package.
 
-The passing cases had no user preference tree. They do not prove that deleting the retained
-value alone will remove its ancestor keys. Full thirteen-case qualification remains required on
-each architecture. The partial results do not establish complete native preservation or cleanup. Failed fixtures
-and their evidence remain retained without retry or guessed cleanup.
+Those partial results did not establish complete native preservation or cleanup. Earlier failed
+fixtures and their evidence remain retained without retry or guessed cleanup.
 
-After that qualification, the maintainer must execute the approved profile repair, ordinary
-recovery and corrected installation. Independent final receipt and registration readback,
-installed application checks, physical input, account/integrity cases, reboot and lifecycle
+The corrected candidate's first attempt passed three cases, then stopped when only the foreground
+window and thread changed. All four fresh service identities were independently confirmed absent.
+A subsequent maintainer run passed all thirteen cases on x64 and all thirteen on x86. Both evidence
+journals end with qualification-passed. The approved profile repair, ordinary recovery and corrected
+installation then completed. Independent readback verified the installed package's identity and
+integrity, matching installation and operation receipts with 22 of 22 changes complete, both machine
+COM registrations, and absence of the former user COM registrations.
+
+Installed application checks, physical input, account/integrity cases, reboot and lifecycle
 acceptance remain open. Hosted cross-platform checks were not run in this local pass.
 See [package recovery](windows-package.md#bounded-profile-repair) and the
 [maintainer checklist](windows-maintainer-checklist.md).
