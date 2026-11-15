@@ -32,13 +32,15 @@ The required application and installation matrix still needs final-candidate evi
 | Deferred-source acceptance and late-reversal assertions | `f79a3eb` |
 | Native service-root metadata migration regression | `f7437ec` |
 | Exact service metadata validation before migration and recovery | `b1bc606` |
+| Canonical Settings shortcut target regression | `78696be` |
+| Verified ordinary Shell path for the Settings shortcut | `84ee321` |
 
 The integrated implementation passed full local verification for x64 and x86, including
 214 controlled tests and 53 proof-library tests per architecture. The x64 AddressSanitizer gate
 passed with its required detected memory-error canary. Prebuilt std and Windows code remain
 uninstrumented. Hosted CI and installed application acceptance are separate gates.
 
-The replacement source closure is committed at `b1bc606`. The maintainer handoff installs its
+The replacement source closure is committed at `84ee321`. The maintainer handoff installs its
 verified dual-architecture candidate. The agent then resumes permitted application automation
 before physical acceptance. Candidate identities, executable commands, current machine metadata,
 verification reports, and remaining result cells belong in the prepared local worksheet.
@@ -48,6 +50,13 @@ The first maintainer migration of the `f79a3eb` candidate refused an existing ma
 compares the raw observations across registry views, and retains the existing boolean service
 receipt. Native registry fixtures and injected lifecycle schedules cover the refusal and recovery.
 Actual machine migration remains a maintainer acceptance step.
+
+The next attempt staged the complete package, then failed before registration changes because
+ShellLink rejected the canonical verbatim Settings target with `0x80070057`. The corrected
+shortcut boundary supplies an ordinary drive path only after verifying canonical target identity.
+Native tests reload the saved shortcut and check its target and description. The corrected source
+passed full verification on both architectures, x64 sanitizer checks, independent review, and
+byte-identical clean package rebuilds. Actual migration remains pending maintainer acceptance.
 
 An earlier final debug run timed out in worker-readiness and publication tests. Six fresh runs
 of that same executable passed. Its historical cause remains inconclusive. An earlier sanitizer
