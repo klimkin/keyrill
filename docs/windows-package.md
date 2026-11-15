@@ -95,6 +95,15 @@ profile metadata in HKCU, divergent machine views, and unrecognized preexisting 
 These registry observations define the tested installation contract. An unsupported shape causes
 an explicit scope refusal.
 
+Setup retains NUL-terminated UTF-16 storage for both profile descriptions and icon paths through
+`AddLanguageProfile`. Its explicit character counts exclude the terminators and count UTF-16
+units, including surrogate pairs. The earlier registrar fix `2e5fafb` addressed persisted suffix
+garbage from unterminated description storage. The setup path now applies the same storage rule
+to both strings. Safe buffer regressions cover EN, RU, empty strings and surrogate pairs, and
+in-process COM tests check exact counted readback and interrupted-operation recovery. Actual
+machine registration remains a separate maintainer gate.
+[AddLanguageProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-addlanguageprofile)
+
 The machine TIP service root permits either no values or one case-insensitive `Enable` value
 whose type and bytes are exactly `REG_SZ` `1` with one UTF-16 terminator. This bounded recognition
 comes from observed native registration metadata. Its origin and semantics remain undocumented.

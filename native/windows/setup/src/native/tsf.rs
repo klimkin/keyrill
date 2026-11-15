@@ -122,7 +122,7 @@ pub(super) fn profile_write(index: usize, value: &Value) -> Result<()> {
     profile_write_with(&manager, index, value)
 }
 fn profile_buffer(value: &str) -> Vec<u16> {
-    value.encode_utf16().collect()
+    value.encode_utf16().chain(Some(0)).collect()
 }
 fn profile_write_with(
     manager: &ITfInputProcessorProfiles,
@@ -145,14 +145,14 @@ fn profile_write_with(
         if value["index"] != 0 {
             return Err("profile icon index invalid".into());
         }
-        // SAFETY: GUIDs and bounded slices remain live; this call neither enables nor activates.
+        // SAFETY: GUIDs and NUL-terminated storage stay live. SDK slice lengths exclude the NUL.
         unsafe {
             manager.AddLanguageProfile(
                 &SERVICE_ID,
                 profile.language,
                 &profile.id,
-                &description,
-                &icon,
+                &description[..description.len() - 1],
+                &icon[..icon.len() - 1],
                 0,
             )?;
         }
