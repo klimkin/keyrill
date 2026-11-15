@@ -431,14 +431,6 @@ fn setup_case(
     Ok(())
 }
 
-fn command(program: &str, args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new(program).args(args).output()?;
-    if !output.status.success() {
-        return Err("qualification identity command failed".into());
-    }
-    Ok(String::from_utf8(output.stdout)?)
-}
-
 pub(super) fn read_only_preflight() -> Result<()> {
     let elevation = files::require_elevated();
     println!(
@@ -494,9 +486,9 @@ pub(super) fn run() -> Result<()> {
     evidence.record(
         "identity",
         &json!({"elevated":true,"bitness":usize::BITS,
-        "user":command("whoami",&["/user","/fo","csv","/nh"])?,
-        "os_build":command("cmd",&["/c","ver"])?,"compiler":command("rustc",&["-Vv"])?,
-        "observed_checkout_head":command("git",&["rev-parse","HEAD"])?,
+        "user_sid":files::user_sid()?,
+        "runtime_os_build":registry::read(HKEY_LOCAL_MACHINE,KEY_WOW64_64KEY,r"SOFTWARE\Microsoft\Windows NT\CurrentVersion","CurrentBuildNumber")?,
+        "runtime_os_revision":registry::read(HKEY_LOCAL_MACHINE,KEY_WOW64_64KEY,r"SOFTWARE\Microsoft\Windows NT\CurrentVersion","UBR")?,
         "executable_sha256":Digest::of_bytes(&fs::read(std::env::current_exe()?)?).to_string()}),
     )?;
     let icon_directory =
