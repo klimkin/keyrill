@@ -989,10 +989,12 @@
       "disposition": "ported",
       "rustTests": [
         "controlled::scenarios_finish::finish_post_end_exclusion_stops_reads_and_continuation",
-        "controlled::scenarios_finish::finish_unchanged_range_preserves_moved_or_selected_caret"
+        "controlled::scenarios_finish::finish_unchanged_range_preserves_moved_or_selected_caret",
+        "controlled::scenarios_finish::unchanged_end_unknown_never_writes_retries_or_replans",
+        "controlled::scenarios_finish::unchanged_end_precondition_refusal_has_no_effect"
       ],
       "reconciliations": [
-        "Three moved/selected caret spans preserve unchanged finish authority. The post-end matrix covers proof and Notepad targets with scope failure, readonly, and disabled policy."
+        "Three moved/selected caret spans preserve unchanged finish authority with zero text writes and one EndComposition. Fourteen attempted-unknown end cases and five pre-effect refusal cases stop without replay or recovery writes. The post-end matrix covers proof and Notepad targets with scope failure, readonly, and disabled policy."
       ]
     },
     {
@@ -1029,7 +1031,7 @@
         "controlled::scenarios_finish::finish_selection_failures_stop_without_replan_or_retry"
       ],
       "reconciliations": [
-        "Thirty-one cases cover capture/clone, shift truncation/HRESULT, exact selection/style/caret/mark failures, exclusion and reentry. Assertions distinguish prewrite refusal from attempted unknown and forbid later repair."
+        "Thirty-one cases cover capture/clone, shift truncation/HRESULT, exact selection/style/caret/mark failures, exclusion and reentry. Assertions distinguish pre-effect refusal from attempted unknown and forbid later repair."
       ]
     },
     {
@@ -1101,7 +1103,7 @@
         "controlled::scenarios_finish::finish_replacement_failures_stop_after_one_write"
       ],
       "reconciliations": [
-        "Ten postwrite cases, exact unknown count, no second write/start, and no further reads when excluded."
+        "Ten changed-finish postwrite cases, exact unknown count, no second write/start, and no further reads when excluded."
       ]
     },
     {
@@ -1218,7 +1220,7 @@
         "controlled::scenarios_finish::finish_continuation_replans_with_one_write_per_composition"
       ],
       "reconciliations": [
-        "Ordered old-mark finish and new-mark acquisition with exactly two character writes."
+        "Ordered unchanged old-mark finish with zero text writes and new-mark acquisition with exactly one character write."
       ]
     },
     {
@@ -2407,6 +2409,7 @@
         "controlled::scenarios_configuration::persisted_invalid_and_rebound_dictionary_keep_complete_revision",
         "controlled::scenarios_configuration::persisted_preparation_latest_save_wins_and_revoked_worker_cannot_publish",
         "controlled::scenarios_configuration::persisted_off_waits_for_verified_owned_finish_and_reentrant_deactivate_wins",
+        "controlled::scenarios_configuration::restrictive_retirement_replaces_unchanged_text_and_unknown_end_blocks_retirement",
         "controlled::scenarios_configuration::explicit_policy_validates_only_its_dictionary_bindings",
         "controlled::scenarios_configuration::pending_off_survives_exact_host_termination",
         "controlled::scenarios_configuration::pending_off_survives_focus_invalidation",

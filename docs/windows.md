@@ -953,15 +953,15 @@ An owned mark retains canonical context and composition identities, exact ACP ex
 bounded verified UTF-16 text. Each update checks active composition membership, generation,
 expected text, returned extent, and caret. It verifies the returned range, composition range,
 text, and caret after the one permitted `SetText` call. Each MARK and changed FINISH that reaches
-replacement performs one exact owned-range `SetText`. Ordinary unchanged FINISH performs zero text writes and one
-`EndComposition`. Its expected and desired UTF-16 text must equal the owned composition's last
+replacement performs one exact owned-range `SetText`. Ordinary unchanged FINISH performs zero
+text writes and one `EndComposition`. Its expected and desired UTF-16 text must equal the owned composition's last
 verified text. Retirement retains the unchanged replacement path. `EndComposition` removes the
 composing property and counts as an attempted effect before the native call, including when
 there was no text write. Unchanged finish requires no expected end caret and preserves the
 full selection. It captures the selection's exact ACP start, length, and style and refuses
 preparation drift without recapturing. After verified range extent, text and composition end,
-it compares the actual full selection with that immutable value. If necessary, it reconstructs a private
-range clone using checked `ShiftEnd` and `ShiftStart` metadata operations, then calls `SetSelection`
+it compares the actual full selection with that immutable value. If necessary, it reconstructs
+a private range clone using checked `ShiftEnd` and `ShiftStart` metadata operations, then calls `SetSelection`
 once. The clone grants no character access. Partial shifts or failed verification stop with an
 Unknown outcome and no retry. Fresh policy guards the exact owned text range and each selection
 effect separately. Changing finish retains its caret checks and verified end-caret update.
