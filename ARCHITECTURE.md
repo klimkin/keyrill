@@ -64,6 +64,13 @@ without changing confirmed state. `acknowledge` advances state only on a verifie
 A refused or unknown outcome invalidates the session; reset expires tokens and receipts; a
 panic poisons the handle permanently. A plan permits at most one native write.
 
+Ordinary Windows finalization can end an unchanged owned TSF composition without a text write.
+The native executor requires exact equality with its last verified text and checks context,
+generation, composition identity, range extent, text and full selection around termination.
+It marks the effect attempted before `EndComposition`. Failed or unknown termination stops
+correction without replay, another termination attempt or a recovery write. Changed finishes,
+retirement and platform-requested focus-loss commits retain their replacement protocols.
+
 When a write was attempted and its result is unknown, the key that carried it is consumed and
 not replayed, because it may already be in the document. An unknown finish passes the next
 ordinary key once, since the finish did not include it. Reserved commands stay consumed. This

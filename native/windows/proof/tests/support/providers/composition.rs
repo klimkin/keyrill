@@ -64,6 +64,15 @@ unsafe extern "system" fn ITfComposition_EndComposition(
             if !d.keep_composition.get() {
                 d.active.borrow_mut().take();
             }
+            if d.move_clones.get() {
+                let end = d.text.borrow().len() as i32;
+                for clone in d.clones.borrow().iter().filter_map(|s| s.upgrade()) {
+                    clone.set(Span {
+                        start: end,
+                        length: 0,
+                    });
+                }
+            }
             p.hit("EndComposition.after");
             p.result("EndComposition")
         })

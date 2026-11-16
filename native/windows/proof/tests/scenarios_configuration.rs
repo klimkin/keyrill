@@ -424,6 +424,36 @@ fn persisted_off_waits_for_verified_owned_finish_and_reentrant_deactivate_wins()
 }
 
 #[test]
+fn restrictive_retirement_replaces_unchanged_text_and_unknown_end_blocks_retirement() {
+    for unknown in [false, true] {
+        let settings = Settings::new();
+        let _keyboard = Keyboard::new();
+        settings.save(true, "en.add", None);
+        let c = Client::new();
+        until(&c, |status| status.effective == 2);
+        type_text(&c, "gh");
+        let before = (c.a.writes.get(), c.a.ends.get());
+        if unknown {
+            c.a.results.borrow_mut().insert("EndComposition", E_FAIL);
+            assert!(!c.event(crate::support::dll::Event::command(6)));
+            assert_eq!((c.a.writes.get(), c.a.ends.get()), (before.0, before.1 + 1));
+            c.a.results.borrow_mut().remove("EndComposition");
+        }
+        settings.save(true, "en.add", Some(2));
+        until(&c, |status| {
+            status.requested == 0 && (unknown || status.effective == 0)
+        });
+        assert_eq!(
+            (c.a.writes.get(), c.a.ends.get()),
+            (before.0 + u32::from(!unknown), before.1 + 1)
+        );
+        assert!(c.a.active.borrow().is_none());
+        oracle::document(&c, "gh", 9);
+        c.host.drained();
+    }
+}
+
+#[test]
 fn explicit_policy_validates_only_its_dictionary_bindings() {
     let _policy = Environment::set("KEYRILL_WINDOWS_POLICY", "fixture");
     let _keyboard = Keyboard::new();

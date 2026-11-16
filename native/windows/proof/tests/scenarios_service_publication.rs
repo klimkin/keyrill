@@ -246,11 +246,7 @@ fn shutdown_service_requires_exact_terminal_evidence_before_deactivation() {
         );
         assert_eq!(
             (c.a.writes.get(), c.a.starts.get(), c.a.ends.get()),
-            (
-                effects.1 + u32::from(case == 2),
-                effects.2,
-                effects.3 + u32::from(case == 2)
-            )
+            (effects.1, effects.2, effects.3 + u32::from(case == 2))
         );
         oracle::document(&c, "ghbdtn", 13);
     }

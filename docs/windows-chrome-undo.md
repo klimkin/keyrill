@@ -18,9 +18,9 @@ These sequences use generated individual keyboard events. Physical confirmation 
 Fresh service counters were unavailable during these comparisons. Earlier observations establish
 verified owned writes in this Chrome process, while the comparisons establish document behavior.
 
-Ctrl+Z maps to Finish and then passes to the application. Unchanged Finish currently replaces
-the exact owned range with its verified text before ending composition. An extra replacement
-Undo unit is a possible explanation. Native call-level causality remains unproved.
+Ctrl+Z maps to Finish and then passes to the application. The installed candidate replaces the
+exact owned range with its verified text before ending composition. An extra replacement Undo
+unit is a possible explanation. Native call-level causality remains unproved.
 
 Microsoft documents `TF_ST_CORRECTION` as preserving text properties. The documented contract
 provides no Undo grouping guarantee. Pinned Chromium source ignores the SetText flags and
@@ -29,8 +29,14 @@ not been matched to the installed Chrome executable.
 [Microsoft SetText documentation](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfrange-settext)
 and [pinned Chromium implementation](https://chromium.googlesource.com/chromium/src/+/17ba7a0067e02c76f95b74344571788981ce0138/ui/base/ime/win/tsf_text_store.cc).
 
-The current engineering contract requires unchanged Finish to replace its exact range. A design
-that omits that write requires an explicit contract decision. Design review must retain owned
-composition authority, exact preconditions, callback and generation checks, verified native
-results and stop-on-unknown behavior. Acceptance requires ordinary-source comparisons of text,
-caret and selection through Undo and Redo in the actual target controls.
+The approved Windows experiment ends ordinary unchanged owned compositions without `SetText`.
+It requires exact verified text, range extent, context, generation and full selection around
+`EndComposition`, and marks the effect attempted before termination. A failed or unknown end
+stops correction without replay, retry or recovery writes. Changed finalization and retirement
+retain their replacement paths. Platform-requested focus-loss and unknown-effect readback
+commits retain their existing protocols.
+
+Controlled providers test native call counts and failure handling. Chrome Undo remains open
+until the experimental artifact passes ordinary-source comparisons of complete text, caret and
+selection through Undo and Redo in the actual target controls. Cross-host and physical
+acceptance remain pending.

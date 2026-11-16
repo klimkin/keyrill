@@ -116,6 +116,13 @@ struct FinishSelection {
     carrier: Lease<ITfRange>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnedOperation {
+    Mark,
+    ReplaceAndEnd,
+    EndVerifiedUnchanged,
+}
+
 impl Frame {
     fn with_work(
         service: Rc<Service>,
@@ -926,6 +933,11 @@ impl Frame {
 
     fn apply(&self, editing: &Editing, cookie: u32, plan: &Plan) -> bool {
         let _observe = self.observe(Stage::Apply);
+        let operation = match (plan.action, plan.mark == plan.expected, &self.owner) {
+            (1, _, _) => OwnedOperation::Mark,
+            (2, true, FrameOwner::Incoming(_)) => OwnedOperation::EndVerifiedUnchanged,
+            _ => OwnedOperation::ReplaceAndEnd,
+        };
         if plan.action == 2 {
             self.service.revoke_release_if(editing.authority.guard);
         }
@@ -1025,13 +1037,15 @@ impl Frame {
         let Some(field) = self.field.get() else {
             return false;
         };
-        let Some(permit) = self.permit_range(editing, cookie, &range, field) else {
-            return false;
-        };
-        self.service.count(Counter::Attempted);
-        self.effect.set(Effect::Attempted);
-        if !self.exact(native::set_text(permit.range, cookie, &plan.mark)) {
-            return false;
+        if operation != OwnedOperation::EndVerifiedUnchanged {
+            let Some(permit) = self.permit_range(editing, cookie, &range, field) else {
+                return false;
+            };
+            self.service.count(Counter::Attempted);
+            self.effect.set(Effect::Attempted);
+            if !self.exact(native::set_text(permit.range, cookie, &plan.mark)) {
+                return false;
+            }
         }
         let Some((start, length)) = self.extent(editing, &range) else {
             return false;
@@ -1090,6 +1104,13 @@ impl Frame {
             self.service
                 .verify_owned(editing.authority.guard, &owned.identity, &plan.mark)
         } else {
+            if operation == OwnedOperation::EndVerifiedUnchanged
+                && original
+                    .as_ref()
+                    .is_none_or(|saved| !self.selection_matches(editing, cookie, saved.original))
+            {
+                return false;
+            }
             let Some(_permit) = self.permit_range(editing, cookie, &actual, field) else {
                 return false;
             };
@@ -1100,6 +1121,8 @@ impl Frame {
                 LifecycleCause::None,
                 Unresolved::None,
             );
+            // Termination is the first native effect for an unchanged ordinary finish.
+            self.effect.set(Effect::Attempted);
             if !self.exact(native::end_composition(&composition, cookie))
                 || self.extent(editing, &actual) != Some((start, length))
                 || !self.read(editing, cookie, &actual, &plan.mark)

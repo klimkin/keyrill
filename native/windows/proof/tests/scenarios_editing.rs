@@ -238,7 +238,7 @@ fn unknown_finish_passes_ordinary_keys_without_replan() {
             c.key(b'x' as u16, false)
         };
         assert!(!eaten);
-        assert_eq!(c.a.writes.get(), writes + 1);
+        assert_eq!(c.a.writes.get(), writes);
         assert!(stopped(&c));
         oracle::document(
             &c,

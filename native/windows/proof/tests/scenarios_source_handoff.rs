@@ -158,11 +158,7 @@ fn source_preexisting_target_binding_refuses_before_source_mutation() {
             );
             assert_eq!(fixture.source_calls(), (0, 0), "mode={mode}/{failure}");
             assert!(!eaten, "mode={mode}/{failure}");
-            assert_eq!(
-                fixture.c.a.writes.get(),
-                before + 1,
-                "mode={mode}/{failure}"
-            );
+            assert_eq!(fixture.c.a.writes.get(), before, "mode={mode}/{failure}");
             assert!(fixture.c.a.active.borrow().is_none());
             oracle::document(
                 &fixture.c,
@@ -209,11 +205,7 @@ fn source_target_metadata_callbacks_revoke_before_source_mutation() {
             assert!(!down(&fixture.c, b'G' as u16), "mode={mode}/cut={cut}");
             assert!(injected.get(), "mode={mode}/cut={cut}");
             assert_eq!(fixture.source_calls(), (0, 0), "mode={mode}/cut={cut}");
-            assert_eq!(
-                fixture.c.a.writes.get(),
-                before + 1,
-                "mode={mode}/cut={cut}"
-            );
+            assert_eq!(fixture.c.a.writes.get(), before, "mode={mode}/cut={cut}");
             oracle::document(
                 &fixture.c,
                 fixture.word(),
@@ -238,7 +230,7 @@ fn source_both_directions_defer_until_verified_finish_and_retranslate_same_key()
         assert!(down(&fixture.c, b'G' as u16));
         let text = format!("{}{}", fixture.word(), if mode == 1 { "п" } else { "g" });
         oracle::document(&fixture.c, &text, 7 + text.encode_utf16().count() as i32);
-        assert_eq!(fixture.c.a.writes.get(), before + 2);
+        assert_eq!(fixture.c.a.writes.get(), before + 1);
         assert_eq!(fixture.source_calls(), (1, 1));
         assert_eq!(source_status(&fixture.c), 3);
         assert_eq!(runtime(&fixture.c.service).revision, configuration);
@@ -379,7 +371,12 @@ fn source_first_finish_denial_unknown_and_request_mismatch_never_authorize_sourc
                     .insert("session", TF_E_SYNCHRONOUS);
             }
             "unknown" => {
-                fixture.c.a.results.borrow_mut().insert("SetText", E_FAIL);
+                fixture
+                    .c
+                    .a
+                    .results
+                    .borrow_mut()
+                    .insert("EndComposition", E_FAIL);
             }
             "session" => {
                 fixture.c.a.results.borrow_mut().insert("session", E_FAIL);
@@ -404,7 +401,7 @@ fn source_first_finish_denial_unknown_and_request_mismatch_never_authorize_sourc
         }
         assert!(!down(&fixture.c, b'G' as u16));
         assert_eq!(fixture.source_calls(), (0, 0));
-        assert!(fixture.c.a.writes.get() <= before + 1);
+        assert_eq!(fixture.c.a.writes.get(), before);
         oracle::document(&fixture.c, fixture.word(), 14);
     }
     println!("scenario source.handoff.first-lock-denial.unknown.invalid-ack");
@@ -503,7 +500,7 @@ fn source_failures_stop_without_retry_rollback_or_new_mark() {
             }
         }
         assert!(!down(&fixture.c, b'G' as u16), "{failure}");
-        assert_eq!(fixture.c.a.writes.get(), before + 1, "{failure}");
+        assert_eq!(fixture.c.a.writes.get(), before, "{failure}");
         assert!(fixture.source_calls().0 <= 1 && fixture.source_calls().1 <= 1);
         assert!(fixture.c.a.active.borrow().is_none());
         oracle::document(&fixture.c, fixture.word(), 14);
@@ -738,7 +735,7 @@ fn source_pending_disable_vetoes_before_mutation_and_during_language_call() {
             }
             let before = fixture.c.a.writes.get();
             assert!(!down(&fixture.c, b'G' as u16));
-            assert_eq!(fixture.c.a.writes.get(), before + 1);
+            assert_eq!(fixture.c.a.writes.get(), before, "{during}/{preference}");
             assert_eq!(fixture.source_calls(), (u32::from(during), 0));
             assert_eq!(source_status(&fixture.c), 4);
             oracle::document(&fixture.c, fixture.word(), 14);
@@ -785,7 +782,7 @@ fn source_second_lock_denial_and_attempted_unknown_keep_effect_derived_dispositi
         fixture.boundary();
         let document = Rc::clone(&fixture.c.a);
         if unknown {
-            fixture.c.host.on("SetText.before", 1, move || {
+            fixture.c.host.on("SetText.before", 0, move || {
                 document.results.borrow_mut().insert("SetText", E_FAIL);
             });
         } else {
@@ -800,10 +797,7 @@ fn source_second_lock_denial_and_attempted_unknown_keep_effect_derived_dispositi
         let before = fixture.c.a.writes.get();
         assert_eq!(down(&fixture.c, b'G' as u16), unknown);
         assert_eq!(fixture.source_calls(), (1, 1));
-        assert_eq!(
-            fixture.c.a.writes.get(),
-            before + if unknown { 2 } else { 1 }
-        );
+        assert_eq!(fixture.c.a.writes.get(), before + u32::from(unknown));
         oracle::document(
             &fixture.c,
             if unknown {
@@ -1165,7 +1159,7 @@ fn source_pc_oem_letters_use_actual_finish_and_target_translation() {
                     &expected,
                     7 + expected.encode_utf16().count() as i32,
                 );
-                assert_eq!(fixture.c.a.writes.get(), before + 2);
+                assert_eq!(fixture.c.a.writes.get(), before + 1);
                 assert_eq!(
                     fixture.source_calls(),
                     if mode == 1 { (1, 1) } else { (0, 0) }

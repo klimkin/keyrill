@@ -34,6 +34,12 @@ unsafe extern "system" fn ITfContext_RequestEditSession(
             assert_eq!(a3, p.document().request_flags.get());
             let d = p.document();
             d.request.set(d.request.get() + 1);
+            d.finish_selection.set(
+                d.active
+                    .borrow()
+                    .as_ref()
+                    .map(|_| (d.request.get(), d.selection.get(), d.style.get())),
+            );
             let session = IUnknown::from_raw(retain(a2));
             if d.retain_callback.get() || !d.invoke.get() {
                 replace_reference(&d.retained, Some(session.clone()));

@@ -347,9 +347,9 @@ Controlled native facts and COM schedules establish these branches, including ze
 composition/write before failed admission. Separate live runs loaded the reviewed DLL in fresh
 unmodified Notepad processes and checked owned operations against independent full-document
 and end-caret UIA predicates. Those runs passed the bounded behavior checks below with zero
-Unknown effects. Unchanged FINISH performs one exact owned-range replacement before ending
-the composition and preserves the original full selection. Actual checks include whole-document
-selection and native Undo. Controlled tests additionally cover clone gravity, noncollapsed
+Unknown effects. That historical unchanged FINISH performed one exact owned-range replacement
+before ending the composition and preserved the original full selection. Actual checks include
+whole-document selection and native Undo. Controlled tests additionally cover clone gravity, noncollapsed
 selection movement by either native effect, and active-end style. The complete selection-style
 matrix has controlled coverage. Mapping a separately requested saved-text focus-loss commit
 remains a live gate.
@@ -952,13 +952,15 @@ and reset order during normal and partial teardown.
 An owned mark retains canonical context and composition identities, exact ACP extent, and
 bounded verified UTF-16 text. Each update checks active composition membership, generation,
 expected text, returned extent, and caret. It verifies the returned range, composition range,
-text, and caret after the one permitted `SetText` call. Each MARK or FINISH that reaches
-replacement performs one exact owned-range `SetText`, including an unchanged finish.
-`EndComposition` removes the composing property and is a separate effect, not a second character
-write. Unchanged finish requires no expected end caret and does not force selection collapse.
-It captures the selection's exact ACP start, length, and style before replacement, and refuses
-preparation drift without recapturing. After verified replacement and composition end, it compares
-the actual full selection with that immutable value. If necessary, it reconstructs a private
+text, and caret after the one permitted `SetText` call. Each MARK and changed FINISH that reaches
+replacement performs one exact owned-range `SetText`. Ordinary unchanged FINISH performs zero text writes and one
+`EndComposition`. Its expected and desired UTF-16 text must equal the owned composition's last
+verified text. Retirement retains the unchanged replacement path. `EndComposition` removes the
+composing property and counts as an attempted effect before the native call, including when
+there was no text write. Unchanged finish requires no expected end caret and preserves the
+full selection. It captures the selection's exact ACP start, length, and style and refuses
+preparation drift without recapturing. After verified range extent, text and composition end,
+it compares the actual full selection with that immutable value. If necessary, it reconstructs a private
 range clone using checked `ShiftEnd` and `ShiftStart` metadata operations, then calls `SetSelection`
 once. The clone grants no character access. Partial shifts or failed verification stop with an
 Unknown outcome and no retry. Fresh policy guards the exact owned text range and each selection
@@ -966,9 +968,9 @@ effect separately. Changing finish retains its caret checks and verified end-car
 Finish checks the retained exact range's text and extent and verifies that no composition remains
 after selection callbacks, then verifies the final selection before acknowledging Rust. A replan
 reacquires the actual caret and boundary, rather than inheriting the finished mark's boundary.
-FINISH followed by a replanned MARK may perform two character writes in one request, each in a
-distinct plan and composition. Controlled operation traces attribute both writes by request
-ordinal, composition-start serial, operation, and exact span.
+Ordinary unchanged FINISH followed by a replanned MARK performs one character write on the new
+composition. Controlled operation traces attribute effects by request ordinal,
+composition-start serial, operation, and exact span.
 
 If scope or writability excludes the field after an attempted character write, the guard refuses
 further character reads. The result is Unknown, correction stops, and the executor performs no replan,

@@ -162,15 +162,16 @@ suite have passed. The ASan memory-error canary and byte-for-byte Rust model reg
 have passed. UIA supplies test and diagnostic observations. Unsupported, secure, excluded, and
 uncertain controls pass input. A hook or SendInput backend requires a separate decision.
 
-The Windows executor replaces the exact owned range once for each MARK or FINISH that reaches
-replacement. An unchanged FINISH has no expected end-caret requirement and does not force
-selection collapse. `EndComposition` is a separate composing-property effect. A FINISH followed
-by a replanned MARK may write twice in one request while preserving one character write per
-plan. An unchanged FINISH captures immutable selection coordinates and style before its write,
-then verifies and, if needed, restores that complete selection after replacement and composition
-end. Restoration uses a metadata-only range clone and at most one `SetSelection`; failed checks
-stop without retry or another character write. Controlled doubles cover selection movement by
-either native effect, clone gravity, exact selection styles, and fresh policy refusal.
+The Windows executor replaces the exact owned range once for each MARK or changed FINISH.
+Ordinary unchanged FINISH ends the exact verified composition without `SetText`. Retirement
+retains its unchanged replacement protocol. Unchanged FINISH has no expected end-caret
+requirement and does not force selection collapse. It captures immutable selection coordinates
+and style, verifies range extent and UTF-16 text before and after `EndComposition`, and checks
+that no composition remains. After those checks succeed, it preserves the complete selection
+using a metadata-only range clone and at most one `SetSelection`. Failed checks stop without
+retry or another character write. A FINISH followed by a replanned MARK writes once on the new
+composition. Controlled providers cover selection movement, clone gravity, exact selection
+styles, fresh policy refusal, and attempted-unknown termination without replay or recovery.
 Historical C++ Notepad checks cover rapid continuation, native Undo, caret movement, and
 whole-document selection. The complete selection-style matrix has controlled coverage.
 

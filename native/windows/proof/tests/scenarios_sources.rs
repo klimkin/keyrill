@@ -1045,7 +1045,7 @@ fn source_service_exact_termination_and_interfering_finish() {
         } else {
             assert_eq!(result.0[0], 3, "{result:?}");
         }
-        assert_eq!(c.a.writes.get(), before.0 + u32::from(input));
+        assert_eq!(c.a.writes.get(), before.0);
         assert_eq!(c.a.starts.get(), before.2);
         assert_eq!(c.a.ends.get(), before.3 + u32::from(input));
         if !input {

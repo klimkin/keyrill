@@ -126,7 +126,7 @@ fn lifecycle_identity_reentry_replaces_only_the_captured_serial() {
         assert_eq!(after.base.stopped, 0);
         assert_eq!(
             (c.a.writes.get(), c.a.starts.get(), c.a.ends.get()),
-            (effects.0 + 2, effects.1 + 1, effects.2 + 1)
+            (effects.0 + 1, effects.1 + 1, effects.2 + 1)
         );
         if reentry {
             assert_eq!(&after.last()[1..], &[7, before.lifecycle[5], 0, 3]);
@@ -223,7 +223,7 @@ fn lifecycle_end_reentry_cannot_publish_verified_finish_or_new_acquisition() {
             if reentry { &[2, 4][..] } else { &[2, 3, 1][..] }
         );
         assert_eq!(c.a.ends.get(), 1);
-        assert_eq!(c.a.writes.get(), writes + if reentry { 1 } else { 2 });
+        assert_eq!(c.a.writes.get(), writes + u32::from(!reentry));
         oracle::document(
             &c,
             if reentry {
