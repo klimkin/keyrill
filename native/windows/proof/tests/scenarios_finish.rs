@@ -51,7 +51,7 @@ fn finish_unchanged_range_preserves_moved_or_selected_caret() {
         let ends = c.a.ends.get();
         assert!(!c.event(Event::command(6)));
         oracle::selection(&c, "hello", span, c.a.style.get());
-        assert_eq!(c.a.writes.get(), writes + 1);
+        assert_eq!(c.a.writes.get(), writes);
         assert_eq!(c.a.ends.get(), ends + 1);
         assert!(c.a.active.borrow().is_none());
         assert!(!stopped(&c));
