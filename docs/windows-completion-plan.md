@@ -42,9 +42,10 @@ uninstrumented. Hosted CI and installed application acceptance are separate gate
 
 The current replacement source closure is committed at `4471d61`. Its string-buffer repair,
 bounded recovery and disposable cleanup evidence are recorded in
-[profile repair validation](windows-profile-repair-validation.md). The maintainer handoff must
-qualify and install this verified dual-architecture candidate. The agent then resumes application automation
-before physical acceptance. Candidate identities, executable commands, current machine metadata,
+[profile repair validation](windows-profile-repair-validation.md). The maintainer completed
+thirteen native qualification cases on each architecture, approved profile recovery and installation.
+Independent installed package verification and receipt readback passed. Application automation
+and physical acceptance are in progress. Candidate identities, executable commands, current machine metadata,
 verification reports, and remaining result cells belong in the prepared local worksheet.
 
 The first maintainer migration of the `f79a3eb` candidate refused an existing machine service-root
