@@ -230,6 +230,72 @@ mod tests {
         }
     }
     #[test]
+    fn word_provider_names_accept_exact_public_representations() {
+        for name in [
+            "keyrill-public-fixture-v1.rtf",
+            "keyrill-public-fixture-v1.rtf  -  Compatibility Mode",
+        ] {
+            assert!(Fixture::Word.control_name_matches(name), "control {name:?}");
+            assert!(
+                Fixture::Word.document_name_matches(name),
+                "document {name:?}"
+            );
+        }
+    }
+    #[test]
+    fn word_provider_names_reject_unrecognized_representations() {
+        for name in [
+            "",
+            "Page 1",
+            "keyrill-public-fixture-v1.rtf - Word",
+            "keyrill-public-fixture-v1.rtf - Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf  - Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf -  Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf-Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf  -  Compatibility Mode - Word",
+            "keyrill-public-fixture-v1.rtf  -  Compatibility Mode extra",
+            "keyrill-public-fixture-v1.rtf.backup  -  Compatibility Mode",
+            "private-document.rtf  -  Compatibility Mode",
+            "keyrill-public-fixture-v1  -  Compatibility Mode",
+            "keyrill-public-fixture-v1.txt  -  Compatibility Mode",
+            " keyrill-public-fixture-v1.rtf",
+            "keyrill-public-fixture-v1.rtf ",
+            " keyrill-public-fixture-v1.rtf  -  Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf  -  Compatibility Mode ",
+            "Keyrill-public-fixture-v1.rtf  -  Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf  -  compatibility mode",
+            "keyrill-public-fixture-v1.rtf  -  Режим совместимости",
+            "keyrill-public-fixture-v1.rtf\0",
+            "keyrill-public-fixture-v1.rtf  -  Compatibility Mode\0",
+            "keyrill-public-fixture-v1.rtf\u{a0}\u{a0}-  Compatibility Mode",
+            "keyrill-public-fixture-v1.rtf  \u{2013}  Compatibility Mode",
+        ] {
+            assert!(
+                !Fixture::Word.control_name_matches(name),
+                "control {name:?}"
+            );
+            assert!(
+                !Fixture::Word.document_name_matches(name),
+                "document {name:?}"
+            );
+        }
+    }
+    #[test]
+    fn word_provider_names_are_rejected_by_other_fixtures() {
+        let name = "keyrill-public-fixture-v1.rtf  -  Compatibility Mode";
+        for fixture in [
+            Fixture::Input,
+            Fixture::Textarea,
+            Fixture::Plain,
+            Fixture::Rich,
+            Fixture::FieldB,
+            Fixture::VsCode,
+        ] {
+            assert!(!fixture.control_name_matches(name), "control {fixture:?}");
+            assert!(!fixture.document_name_matches(name), "document {fixture:?}");
+        }
+    }
+    #[test]
     fn wrong_field_tab_and_private_document_names_refuse_public_identity() {
         for fixture in [
             Fixture::Input,
