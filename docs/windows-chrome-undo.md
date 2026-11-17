@@ -21,6 +21,13 @@ These observations rule out generated shortcut delivery and finalization during 
 keystroke as sufficient explanations. The experiment remains unsuccessful. Chromium's own
 composition-confirmation replacement and Blink Undo registration require further investigation.
 
+A minimal rich fixture with the same prefix, suffix and initial caret, but no input,
+composition or selection-change listeners, changed the result. First Undo removed `x`, while
+the exact selection oracle still failed because the following space was selected. The original
+reporting fixture retained selected `x`. This comparison establishes that the fixture affects
+the observed text outcome. Synchronous report DOM updates during composition are under review.
+The remaining selection discrepancy requires a separate explanation.
+
 The installed candidate built from `4471d61` reproduces different native Undo behavior in
 Chrome 157.0.8103.52 x64 rich contenteditable. The public fixture contains a fixed prefix,
 including an astral character, and a suffix. Its compiled UIA oracle checks exact UTF-16 text
