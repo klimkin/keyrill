@@ -28,6 +28,25 @@ reporting fixture retained selected `x`. This comparison establishes that the fi
 the observed text outcome. Synchronous report DOM updates during composition are under review.
 The remaining selection discrepancy requires a separate explanation.
 
+The corrected fixture keeps event counters and checkpoint progress in memory. Its explicit
+Refresh results button publishes the report after composition closes and preserves pointer
+focus. Node tests exercise the common and Windows observation callbacks and reject report
+DOM writes during input, composition and selection events.
+
+The final corrected fixture reproduced the bare-page result in Chrome 157.0.8103.79 with the
+experimental candidate. First Undo removed `x` and selected the following suffix space at
+UTF-16 offsets 19 through 20. In a separate trial, `xy`, Escape and native-menu Undo restored
+the original text and selected offsets 19 through 21. Keyrill had released ownership before
+the menu command. Its attempted and verified effect counters stayed unchanged during Undo.
+Explicit Refresh preserved field focus in both trials. The full automatic-correction scenario
+was not part of these isolated comparisons.
+
+The selected extent tracks the completed composition length. This supports a Blink mechanism
+in which composition confirmation replaces a typing command's stored starting selection with
+the composition range. Chromium also updates stored selections during composition updates.
+The private command identity and branch conditions remain unmeasured. Chrome acceptance stays
+open until text, caret and selection pass Undo and Redo comparisons.
+
 The installed candidate built from `4471d61` reproduces different native Undo behavior in
 Chrome 157.0.8103.52 x64 rich contenteditable. The public fixture contains a fixed prefix,
 including an astral character, and a suffix. Its compiled UIA oracle checks exact UTF-16 text
