@@ -60,21 +60,36 @@ const observerBoundary = script.indexOf('// The only programmatic edit or caret 
 assert.ok(observerBoundary > boundary, 'observer boundary missing');
 for (const scenario of SCENARIOS) {
   const listeners = {};
+  const refreshListeners = {};
+  let reportWrites = 0;
+  const reportNode = () => new Proxy({}, {
+    set(target, property, value) {
+      reportWrites++;
+      target[property] = value;
+      return true;
+    },
+  });
   const field = {
     value: PREFIX + SUFFIX, selectionStart: PREFIX.length, selectionEnd: PREFIX.length,
     addEventListener(type, listener) { listeners[type] = listener; },
   };
-  const nodes = {field, scenario: {}, summary: {}, report: {}};
+  const nodes = {field, scenario: {}, summary: reportNode(), report: reportNode(),
+    refresh: {addEventListener(type, listener) { refreshListeners[type] = listener; }}};
   const document = {
     getElementById(id) { return nodes[id]; },
     addEventListener(type, listener) { listeners[type] = listener; },
   };
   const observed = vm.runInNewContext(script.slice(0, observerBoundary) +
-    '\n({setScenario(id) {scenario = SCENARIOS.find(s => s.id === id); run = newRun();}})',
+    '\n({setScenario(id) {scenario = SCENARIOS.find(s => s.id === id); run = newRun();}, ' +
+    'result() {return evaluate(scenario, run, field.value, field.selectionStart, field.selectionEnd);}})',
     {document});
   observed.setScenario(scenario.id);
-  const event = (type, inputType) => listeners[type]({type, inputType, isTrusted: true});
-  const report = () => JSON.parse(nodes.report.textContent);
+  const event = (type, inputType) => {
+    const before = reportWrites;
+    listeners[type]({type, inputType, isTrusted: true});
+    assert.equal(reportWrites, before, type + ' observer must keep reporting in memory');
+  };
+  const report = () => observed.result();
   event('selectionchange');
   assert.equal(report().checkpoints_reached, '0/' + scenario.checkpoints.length);
   assert.equal(report().counts.checkpoint_advances_selectionchange, 0,
