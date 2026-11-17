@@ -2,6 +2,14 @@
 
 Status is open. This blocks complete Chrome acceptance.
 
+The approved end-only experiment was installed and tested after full x64/x86 verification,
+sanitizer and independent review. The loaded DLL matched candidate `940ee5df` and published
+its expected production identity. In the rich fixture, generated `x` followed by Ctrl+Z still
+left `x` selected. The exact initial-state oracle failed with TextMismatch. Live diagnostics
+confirmed two verified operations, no unknown result and released composition ownership.
+Removing the unchanged Finish replacement therefore did not resolve the observed Undo behavior.
+Further causal investigation and physical keyboard comparison remain open.
+
 The installed candidate built from `4471d61` reproduces different native Undo behavior in
 Chrome 157.0.8103.52 x64 rich contenteditable. The public fixture contains a fixed prefix,
 including an astral character, and a suffix. Its compiled UIA oracle checks exact UTF-16 text
