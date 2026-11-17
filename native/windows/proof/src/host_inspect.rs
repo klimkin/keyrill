@@ -263,7 +263,17 @@ pub fn inspect_host(arguments: &[String], observer_build: [u32; 8]) -> ExitCode 
             return ExitCode::FAILURE;
         }
     };
-    let threads = threads(options.pid).unwrap_or_default();
+    let threads = match threads(options.pid) {
+        Ok(threads) => threads,
+        Err(error) => {
+            eprintln!(
+                "thread enumeration failed pid={} result={:08x}",
+                options.pid,
+                error.code().0 as u32
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let id = target.identity;
     if !matches!(
         options.command,

@@ -367,7 +367,7 @@ fn process_live(process: HANDLE, pid: u32, result: &mut ThreadCheck) -> bool {
     }
     false
 }
-/// Enumerate at most 64 threads belonging to an explicit target PID.
+/// Enumerate snapshot threads belonging to an explicit target PID.
 ///
 /// # Errors
 /// Returns the first failed native operation or evidence predicate.
@@ -378,19 +378,19 @@ pub fn threads(pid: u32) -> Result<Vec<u32>> {
         ..Default::default()
     };
     let mut result = Vec::new();
-    if unsafe { Thread32First(snapshot.0, &mut entry) }.is_err() {
-        return Ok(result);
-    }
+    let mut step = unsafe { Thread32First(snapshot.0, &mut entry) };
     loop {
+        if let Err(error) = step {
+            return if error.code() == ERROR_NO_MORE_FILES.to_hresult() {
+                Ok(result)
+            } else {
+                Err(error)
+            };
+        }
         if entry.th32OwnerProcessID == pid {
-            if result.len() == 64 {
-                return Err(windows::core::Error::from_hresult(E_FAIL));
-            }
             result.push(entry.th32ThreadID);
         }
-        if unsafe { Thread32Next(snapshot.0, &mut entry) }.is_err() {
-            return Ok(result);
-        }
+        step = unsafe { Thread32Next(snapshot.0, &mut entry) };
     }
 }
 
