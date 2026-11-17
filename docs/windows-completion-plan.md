@@ -34,6 +34,9 @@ The required application and installation matrix still needs final-candidate evi
 | Exact service metadata validation before migration and recovery | `b1bc606` |
 | Canonical Settings shortcut target regression | `78696be` |
 | Verified ordinary Shell path for the Settings shortcut | `84ee321` |
+| Approved end-only termination of an unchanged owned composition | `f34861f` |
+| Browser observers retain results in memory until explicit refresh | `7023336` |
+| Complete target-thread enumeration and explicit diagnostic errors | `9d73928` |
 
 The integrated implementation passed full local verification for x64 and x86, including
 214 controlled tests and 53 proof-library tests per architecture. The x64 AddressSanitizer gate
@@ -47,6 +50,21 @@ thirteen native qualification cases on each architecture, approved profile recov
 Independent installed package verification and receipt readback passed. Application automation
 and physical acceptance are in progress. Candidate identities, executable commands, current machine metadata,
 verification reports, and remaining result cells belong in the prepared local worksheet.
+
+The maintainer subsequently installed experimental candidate `940ee5df` from `975f45a`.
+Independent package, registration, receipt and loaded Chrome DLL checks passed. This candidate
+passed full x64 and x86 checks, sanitizer verification and byte-identical package rebuilds.
+Its approved end-only termination experiment leaves Chrome Undo acceptance open. Correcting the
+browser fixture's synchronous report updates restored text removal on first Undo, while the
+restored selection still covers suffix characters. The remaining failure and isolated browser
+comparisons are recorded in [Chrome Undo investigation](windows-chrome-undo.md).
+
+The diagnostic thread-enumeration fix removes an artificial 64-thread rejection that prevented
+observation of a live Edge process. The 65-worker regression passed on x64 and x86, and the
+rebuilt inspector successfully enumerated that Edge process and armed its observer. Full
+`cargo xtask windows check --arch all` and `cargo xtask windows sanitize` passed, including
+217 controlled cases per run and the required sanitizer canary. Edge functional acceptance
+still requires the installed source to be activated and its document behavior checked.
 
 The first maintainer migration of the `f79a3eb` candidate refused an existing machine service-root
 `Enable` value. The corrected boundary recognizes only absent metadata or exact `REG_SZ` `1`,
