@@ -10,6 +10,17 @@ confirmed two verified operations, no unknown result and released composition ow
 Removing the unchanged Finish replacement therefore did not resolve the observed Undo behavior.
 Further causal investigation and physical keyboard comparison remain open.
 
+Physical input reproduced the same selected `x` on the experimental candidate. A second
+physical trial used a word whose composition had already ended through Escape. The exact
+word and caret matched before Ctrl+Z, and service ownership was empty. Physical Ctrl+Z left
+the word selected. Verified native effect counters stayed unchanged during this Undo.
+The currently loaded Chrome version for these experimental trials is 157.0.8103.79. The
+157.0.8103.52 version below belongs to the earlier baseline.
+
+These observations rule out generated shortcut delivery and finalization during the Undo
+keystroke as sufficient explanations. The experiment remains unsuccessful. Chromium's own
+composition-confirmation replacement and Blink Undo registration require further investigation.
+
 The installed candidate built from `4471d61` reproduces different native Undo behavior in
 Chrome 157.0.8103.52 x64 rich contenteditable. The public fixture contains a fixed prefix,
 including an astral character, and a suffix. Its compiled UIA oracle checks exact UTF-16 text
