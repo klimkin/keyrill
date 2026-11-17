@@ -20,9 +20,11 @@
 resources. It checks only what this browser reports for its own text field. It cannot tell
 whether input came through Keyrill, from another input source or from automation.</p>
 <p>Choose a scenario, press <b>Reset field</b>, then follow the steps without clicking in the
-field. Reset places the caret. The result updates as you type.</p>
+field. Reset places the caret. After composition finishes, click <b>Refresh results</b> to
+update the report without moving focus. Results show the last reset or refresh.</p>
 <p><label>Scenario <select id="scenario"></select></label>
-  <button id="reset" type="button">Reset field</button></p>
+  <button id="reset" type="button">Reset field</button>
+  <button id="refresh" type="button">Refresh results</button></p>
 <ol id="steps"></ol>
 <textarea id="field" rows="5" spellcheck="false" autocorrect="off" autocapitalize="off"
           autocomplete="off" aria-label="Fixture field"></textarea>
@@ -146,7 +148,6 @@ function observe(event) {
     run.counts[event.type === 'input' ? 'checkpoint_advances_input' :
                                       'checkpoint_advances_composition']++;
   run.reached = reached;
-  render();
 }
 
 for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input'])
@@ -157,15 +158,17 @@ document.addEventListener('selectionchange', () => {
                           field.selectionEnd);
   if (reached > run.reached) run.counts.checkpoint_advances_selectionchange++;
   run.reached = reached;
-  render();
+});
+
+const refresh = document.getElementById('refresh');
+refresh.addEventListener('pointerdown', event => event.preventDefault());
+refresh.addEventListener('click', () => {
+  if (!run.composing) render();
 });
 
 // The only programmatic edit or caret placement; refused while a composition is open
 function reset() {
-  if (run.composing) {
-    document.getElementById('summary').textContent = 'Finish the composition before resetting';
-    return;
-  }
+  if (run.composing) return;
   scenario = SCENARIOS.find(s => s.id === select.value) || SCENARIOS[0];
   const steps = document.getElementById('steps');
   steps.replaceChildren(...scenario.steps.map(text => {
@@ -321,7 +324,6 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).get(
     const reached = advance(active, windowsRun.reached, text, start, end);
     if (reached > windowsRun.reached) windowsRun.counts[event.type === 'input' ? 'checkpoint_advances_input' : 'checkpoint_advances_composition']++;
     windowsRun.reached = reached;
-    show();
   }
   for (const node of controls.values()) for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input']) node.addEventListener(type, capture);
   document.addEventListener('selectionchange', () => {
@@ -330,8 +332,12 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).get(
     const reached = advance(active, windowsRun.reached, text, start, end);
     if (reached > windowsRun.reached) windowsRun.counts.checkpoint_advances_selectionchange++;
     windowsRun.reached = reached;
-    show();
   });
+  refresh.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!windowsRun.composing) show();
+  }, true);
   function resetWindows(event) {
     if (event) { event.preventDefault(); event.stopImmediatePropagation(); }
     if (windowsRun.composing) {
