@@ -47,6 +47,31 @@ impl Drop for Gated {
     }
 }
 #[test]
+fn host_threads_enumerates_more_than_64_live_workers() {
+    let workers: Vec<_> = (0..65).map(|_| Gated::create(None)).collect();
+    for worker in &workers {
+        assert_eq!(
+            unsafe { WaitForSingleObject(worker.thread.0, 0) },
+            WAIT_TIMEOUT
+        );
+    }
+    let captured = threads(unsafe { GetCurrentProcessId() })
+        .expect("enumeration must capture a process with 65 live worker threads");
+    for worker in &workers {
+        assert!(
+            captured.contains(&worker.tid),
+            "live worker {} missing from {} captured threads",
+            worker.tid,
+            captured.len()
+        );
+    }
+    println!(
+        "live_workers={} captured_threads={}",
+        workers.len(),
+        captured.len()
+    );
+}
+#[test]
 fn host_threads_live_exited_missing_invalid_and_denied() {
     let process = unsafe { GetCurrentProcess() };
     let pid = unsafe { GetCurrentProcessId() };
