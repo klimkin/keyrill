@@ -1563,3 +1563,40 @@ evidence and cannot establish that the TSF service produced the result. Use `fie
 metadata-only exclusion observations and identity-bound `service PID` publication for native
 counters. The controlled hidden RichEdit UIA test proves provider text/selection mechanics.
 Real browser, VS Code, Word, formatting, and physical-input acceptance remain separate gates.
+
+#### Prepare the VS Code public editor
+
+Create an owned temporary profile through `Profiles: New Window with Temporary Profile` in
+an ordinary VS Code editor window. Open that profile's User Settings JSON and add these settings.
+
+```json
+{
+  "editor.accessibilitySupport": "on",
+  "window.title": "${activeEditorShort}"
+}
+```
+
+The active-editor template makes the Document title follow the current filename. The public
+observer can then use its existing exact filename checks across temporary profile names.
+Record the actual profile name displayed by VS Code.
+
+Assign `$code` to the installed Code CLI and `$profileName` to that temporary profile's name.
+Assign `$fixture` to the generated public text file's full path. Open the fixture.
+
+```powershell
+& $code --profile $profileName --reuse-window --goto "${fixture}:1:20"
+```
+
+Confirm the opened editor's profile name and the active file's full path. Focus its public
+editor field. Assign `$clientPid` to that window's observed editor process ID, then check the
+initial complete document and caret.
+
+```powershell
+KeyrillHostInspect public-fixture $clientPid vscode empty
+```
+
+This preparation passed the unchanged native document and UTF-16 caret oracle in two fresh
+temporary profiles on VS Code Insiders 1.146.0 x64. A wrong public text case failed with
+`TextMismatch`, and a wrong fixture selector failed with `Binding`. These results establish the
+prepared observer. Default accessibility mode, extension configurations, attributed TSF editing,
+physical input, and x86 application acceptance remain open.
