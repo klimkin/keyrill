@@ -1548,8 +1548,11 @@ compiled public case such as `empty`, `fixture-en-word`, or `fixture-ru-word`. T
 control selectors are `input`, `textarea`, `plain`, `rich`, `field-b`, `vscode`, and `word`.
 Browser controls must expose their exact public accessible label and the public Document
 ancestor title. Editor documents must expose their exact public filename through the required
-provider metadata. A logical control with HWND zero also needs a bounded same-process ancestor
-chain, a matching native HWND ancestor, stable RuntimeId, and fresh focused-element comparison.
+provider metadata. Word accepts the exact `keyrill-public-fixture-v1.rtf` name and
+`keyrill-public-fixture-v1.rtf  -  Compatibility Mode`, with two spaces on each side of the
+hyphen. Other unmeasured Word name forms refuse. A logical control with HWND zero also needs a
+bounded same-process ancestor chain, a matching native HWND ancestor, stable RuntimeId, and
+fresh focused-element comparison.
 A private tab, other field, renamed document, unavailable provider, or changed focus refuses
 before document text is read. The generic-host `public-case` path refuses character inspection
 without an explicit fixture identity.

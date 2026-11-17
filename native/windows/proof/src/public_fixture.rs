@@ -54,11 +54,17 @@ impl Fixture {
     }
     #[cfg(any(windows, test))]
     pub(crate) fn control_name_matches(self, name: &str) -> bool {
+        if self == Self::Word {
+            return word_provider_name_matches(name);
+        }
         name == self.label()
             || (self == Self::VsCode && name == format!("{}, Editor content", self.label()))
     }
     #[cfg(any(windows, test))]
     pub(crate) fn document_name_matches(self, name: &str) -> bool {
+        if self == Self::Word {
+            return word_provider_name_matches(name);
+        }
         name == if self.browser() { MARKER } else { self.label() }
     }
     /// Whether the selector names a local browser logical control.
@@ -73,6 +79,12 @@ impl Fixture {
             SUFFIX
         }
     }
+}
+
+#[cfg(any(windows, test))]
+fn word_provider_name_matches(name: &str) -> bool {
+    name == Fixture::Word.label()
+        || name == format!("{}  -  Compatibility Mode", Fixture::Word.label())
 }
 
 /// Require complete public text, unchanged prefix/suffix, and exact collapsed UTF-16 caret.
