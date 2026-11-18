@@ -53,7 +53,7 @@ cases that still need an installed-candidate run.
 |---|---|
 | Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
-| Edge | The public input passed an initial text and caret check. The public `textarea` passed physical command delivery and automated checks of text and caret through conversion, reversal, and refusal of a late reversal. Other scenarios remain pending. [Edge manual commands](#edge-manual-commands). |
+| Edge | The public `textarea` passed automated text and caret checks for manual and automatic conversion and reversal. Physical command delivery passed. Native Undo in rich `contenteditable` restored text but selected part of the suffix. [Edge qualification](#edge-qualification). |
 | Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
 | VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
 | Word | The tested Compatibility Mode body, new document body, and table cell passed input through after an input-scope refusal. Editing in these controls remains unqualified. [Word editing limits](#word-editing-limits). |
@@ -62,7 +62,10 @@ cases that still need an installed-candidate run.
 Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
 lifecycle cases. Record the exact candidate and application architecture with each result.
 
-### Edge manual commands
+### Edge qualification
+
+The public input passed the initial text and caret check. The following results cover the
+public `textarea` and rich `contenteditable` in Edge 157.0.4341.60 x64.
 
 The service observer matched candidate `940ee5df` in Edge 157.0.4341.60 x64 with Keyrill
 English active. The preserved left Ctrl+Alt+K and left Ctrl+Alt+Z commands both reached
@@ -79,6 +82,20 @@ returned the caret to the end of the word. A second Z reached the executor, whic
 with zero additional writes. The final text and caret matched, and the service reported zero
 unknown effects throughout. Exact intermediate document states during physical input remain
 pending.
+
+With automatic correction enabled, generated `cgbcjr` followed by Space became `список`
+followed by one Space. Ctrl+Alt+Z restored `cgbcjr` with the Space in the same owned
+composition. Independent UIA checks matched the full text and caret after conversion,
+reversal, and composition end.
+
+In the rich field, Ctrl+Z after generated `x` restored the original text and selected UTF-16
+offsets 19 through 20. After generated `xy` and Escape, Ctrl+Z restored the original text and
+selected offsets 19 through 21. Keyrill owned no composition before the second Ctrl+Z and its
+write count stayed fixed during that Undo. The selection matches the discrepancy observed in
+[Chrome](windows-chrome-undo.md). Ctrl+Y restored `xy` and collapsed the caret after it at
+offset 21. The browser report and accessible field value matched, and Keyrill's write count
+stayed fixed. Both Undo tests used Keyrill English. The ordinary English baseline and physical
+Undo and Redo comparisons in Edge remain pending.
 
 ## Automatic source handoff
 
