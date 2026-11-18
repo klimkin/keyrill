@@ -53,10 +53,10 @@ cases that still need an installed-candidate run.
 |---|---|
 | Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
-| Edge | The public input passed an initial text and caret check. In the public `textarea`, the candidate handled physical conversion and reversal in one owned composition. Exact text and caret checks for those edits remain open. [Edge manual commands](#edge-manual-commands). |
+| Edge | The public input passed an initial text and caret check. The public `textarea` passed physical command delivery and automated checks of text and caret through conversion, reversal, and refusal of a late reversal. Other scenarios remain pending. [Edge manual commands](#edge-manual-commands). |
 | Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
 | VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
-| Word | The measured RTF body in Compatibility Mode passes input through after an input-scope refusal. Table cells and other document modes remain unqualified. [Word document body](#word-document-body). |
+| Word | The tested Compatibility Mode body, new document body, and table cell passed input through after an input-scope refusal. Editing in these controls remains unqualified. [Word editing limits](#word-editing-limits). |
 | Windows Terminal | Source inspection predicts input-scope refusal. Paired ordinary and no-echo checks in the installed application remain pending. [Input scope](#input-scope-in-windows-terminal-12527330). |
 
 Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
@@ -69,8 +69,16 @@ English active. The preserved left Ctrl+Alt+K and left Ctrl+Alt+Z commands both 
 the executor and recorded a verified `ManualMark` on the same owned composition. The
 service reported zero unknown effects, and focus retirement ended the composition. The
 maintainer reported `ghbdtn` at the end. The independent UIA observer missed the initial
-`textarea` reset and the intermediate conversion state. Exact document text and caret
-at each step still require a fresh run.
+`textarea` reset and the intermediate conversion state during that physical run.
+
+A separate run used automated keystrokes on the same candidate and Edge version. The UIA
+observer matched the whole public `textarea` and the exact caret after the reset, after typing
+`ghbdtn`, after K converted it to `привет`, and after Z restored `ghbdtn`. Each command added
+one verified write in the same owned composition. Right then Left ended the composition and
+returned the caret to the end of the word. A second Z reached the executor, which refused it
+with zero additional writes. The final text and caret matched, and the service reported zero
+unknown effects throughout. Exact intermediate document states during physical input remain
+pending.
 
 ## Automatic source handoff
 
@@ -1617,7 +1625,7 @@ metadata-only exclusion observations and identity-bound `service PID` publicatio
 counters. The controlled hidden RichEdit UIA test proves provider text/selection mechanics.
 Real browser, VS Code, Word, formatting, and physical-input acceptance remain separate gates.
 
-#### Word document body
+#### Word editing limits
 
 Manual conversion passes through in the tested public RTF body in Word 16.0.20527.20196
 (x64, Compatibility Mode) with candidate `940ee5df`. With Keyrill English active, six
@@ -1627,8 +1635,11 @@ input scope. Keyrill could not establish that the range was safe to inspect. It 
 zero writes and owned no composition. The independent UIA observer confirmed that the
 public word remained `ghbdtn` with the expected caret after the command.
 
-This limitation applies to the measured document body. Table cells, other document modes
-and x86 Word still require their own application checks.
+On the same build, a generated letter in a new document outside Compatibility Mode reached
+a granted session and returned the same `GetValue` error. A letter in the first cell of a
+new two-cell table did the same. Both letters appeared in Word, with zero Keyrill writes and
+no owned composition. These checks cover pass-through for the two tested positions.
+Formatting preservation during conversion, protected documents, and x86 Word remain open.
 
 #### Prepare the VS Code public editor
 
