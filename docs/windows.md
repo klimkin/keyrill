@@ -53,7 +53,7 @@ cases that still need an installed-candidate run.
 |---|---|
 | Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
-| Edge | The public input passed an initial text and caret check and the process loaded the candidate DLL. Source attribution and editing behavior still need a live run. |
+| Edge | The public input passed an initial text and caret check. In the public `textarea`, the candidate handled physical conversion and reversal in one owned composition. Exact text and caret checks for those edits remain open. [Edge manual commands](#edge-manual-commands). |
 | Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
 | VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
 | Word | The measured RTF body in Compatibility Mode passes input through after an input-scope refusal. Table cells and other document modes remain unqualified. [Word document body](#word-document-body). |
@@ -61,6 +61,16 @@ cases that still need an installed-candidate run.
 
 Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
 lifecycle cases. Record the exact candidate and application architecture with each result.
+
+### Edge manual commands
+
+The service observer matched candidate `940ee5df` in Edge 157.0.4341.60 x64 with Keyrill
+English active. The preserved left Ctrl+Alt+K and left Ctrl+Alt+Z commands both reached
+the executor and recorded a verified `ManualMark` on the same owned composition. The
+service reported zero unknown effects, and focus retirement ended the composition. The
+maintainer reported `ghbdtn` at the end. The independent UIA observer missed the initial
+`textarea` reset and the intermediate conversion state. Exact document text and caret
+at each step still require a fresh run.
 
 ## Automatic source handoff
 
