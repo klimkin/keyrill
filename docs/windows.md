@@ -42,6 +42,26 @@ revision conflict detection. The [package guide](windows-package.md) describes p
 dual-architecture artifacts, explicit installation, and recovery. Actual installed application and
 package-lifecycle results must identify the candidate used.
 
+## Application qualification
+
+Experimental package `940ee5df` passed local x64 and x86 native checks, the x64 sanitizer
+gate, and a clean reproducibility check. Installed COM activation loaded the expected DLL in
+an x64 process and an x86 process. The table records application evidence and holds open the
+cases that still need an installed-candidate run.
+
+| Application | Evidence and remaining checks |
+|---|---|
+| Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
+| Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
+| Edge | The public input passed an initial text and caret check and the process loaded the candidate DLL. Source attribution and editing behavior still need a live run. |
+| Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
+| VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
+| Word | The measured RTF body in Compatibility Mode passes input through after an input-scope refusal. Table cells and other document modes remain unqualified. [Word document body](#word-document-body). |
+| Windows Terminal | Source inspection predicts input-scope refusal. Paired ordinary and no-echo checks in the installed application remain pending. [Input scope](#input-scope-in-windows-terminal-12527330). |
+
+Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
+lifecycle cases. Record the exact candidate and application architecture with each result.
+
 ## Automatic source handoff
 
 When automatic correction and source switching are enabled, a verified converted word plus
@@ -419,8 +439,8 @@ KeyrillHostInspect.exe public-case TARGET_PID fixture-en-corrected
 ```
 
 `host` reports package version and focused native window class without reading window titles or
-document text. `service --arm-seconds` creates up to 64 ephemeral pages for the target's current
-threads and holds them for the specified period, capped at one hour. Arm before the maintainer
+document text. `service --arm-seconds` creates an ephemeral page for each captured live thread
+and holds the pages for the specified period, capped at one hour. Arm before the maintainer
 activates the source. A newly created thread needs explicit rearming and source reactivation.
 The thread snapshot does not retain thread lifetime. The inspector omits only a signaled,
 exited thread or an `OpenThread` failure with `ERROR_INVALID_PARAMETER`. It retains live thread

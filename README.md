@@ -6,9 +6,9 @@ native macOS InputMethodKit adapter. Inference runs offline against a frozen fre
 and your own Vim spelling files if you keep them; nothing is logged, persisted or sent over the network.
 
 This is an alpha. macOS has an adapter, and Windows has a Rust TSF runtime and proof tools.
-The Windows port awaits complete native-suite execution and renewed physical application
-acceptance. Linux remains open work. See [porting](docs/porting.md) and
-[Windows TSF proof](docs/windows.md).
+The Windows x64 and x86 native suites have passed locally. Application and physical input
+acceptance are in progress. Linux remains open work. See [porting](docs/porting.md) and
+[Windows application qualification](docs/windows.md#application-qualification).
 
 ## How it works
 
