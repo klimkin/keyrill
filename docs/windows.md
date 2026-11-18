@@ -1567,6 +1567,19 @@ metadata-only exclusion observations and identity-bound `service PID` publicatio
 counters. The controlled hidden RichEdit UIA test proves provider text/selection mechanics.
 Real browser, VS Code, Word, formatting, and physical-input acceptance remain separate gates.
 
+#### Word document body
+
+Manual conversion passes through in the tested public RTF body in Word 16.0.20527.20196
+(x64, Compatibility Mode) with candidate `940ee5df`. With Keyrill English active, six
+generated letters and the left Ctrl+Alt+K command reached seven granted edit sessions.
+In every session, `ITfReadOnlyProperty::GetValue` returned `E_FAIL` for the application
+input scope. Keyrill could not establish that the range was safe to inspect. It attempted
+zero writes and owned no composition. The independent UIA observer confirmed that the
+public word remained `ghbdtn` with the expected caret after the command.
+
+This limitation applies to the measured document body. Table cells, other document modes
+and x86 Word still require their own application checks.
+
 #### Prepare the VS Code public editor
 
 Create an owned temporary profile through `Profiles: New Window with Temporary Profile` in
