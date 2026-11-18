@@ -581,6 +581,29 @@ impl Drop for Keyboard {
 }
 
 #[test]
+fn generic_default_scope_has_no_sensitive_field_authority() {
+    let keyboard = Keyboard::new();
+    let c = Client::ordinary("Chrome_WidgetWin_1");
+    c.a.scope.set(IS_DEFAULT);
+    let eaten = keyboard.down(&c, b'G');
+    assert_eq!(
+        (
+            eaten,
+            c.a.starts.get(),
+            c.a.writes.get(),
+            c.a.reads.get() > 0,
+            c.host.trace.borrow().contains(&"range.ACP"),
+        ),
+        (false, 0, 0, false, false),
+        "ordinary scope cannot establish sensitive-field authority"
+    );
+    no_admission(&c);
+    assert!(c.a.active.borrow().is_none());
+    assert!(!c.host.trace.borrow().contains(&"GetSelection"));
+    c.host.drained();
+}
+
+#[test]
 fn generic_native_classes_use_normal_key_entry_and_verified_executor() {
     let keyboard = Keyboard::new();
     for class in [

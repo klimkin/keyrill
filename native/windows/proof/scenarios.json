@@ -2392,6 +2392,7 @@
         "runtime::test-api::diagnostics::tests::lifecycle_allocation_and_sequence_saturate_independently",
         "runtime::test-api::diagnostics::tests::lifecycle_retains_the_newest_sixteen_events",
         "runtime::test-api::diagnostics::tests::observation_saturation_freezes_events_and_new_tickets",
+        "controlled::scenarios_admission::generic_default_scope_has_no_sensitive_field_authority",
         "controlled::scenarios_admission::generic_native_classes_use_normal_key_entry_and_verified_executor",
         "controlled::scenarios_admission::generic_native_identity_and_sensitive_scope_refuse_without_text",
         "controlled::scenarios_admission::generic_scope_and_focus_changes_revoke_range_permission",
