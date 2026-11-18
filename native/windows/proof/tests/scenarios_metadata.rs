@@ -68,13 +68,40 @@ fn unchanged(c: &Client) {
     oracle::document(c, "", 7);
     oracle::no_effects(c);
     assert_eq!(c.a.reads.get(), 0);
-    for boundary in ["GetExtent", "ShiftStart", "EnumCompositions"] {
+    for boundary in ["GetExtent", "ShiftStart", "EnumCompositions", "range.ACP"] {
         assert!(
             !c.host.trace.borrow().contains(&boundary),
             "unexpected {boundary}"
         );
     }
 }
+#[test]
+fn unknown_notepad_metadata_has_scope_without_acp_or_editing_authority() {
+    for scope in [IS_DEFAULT, IS_TEXT] {
+        let window = Window::new(false);
+        let c = Client::notepad_version([11, 2609, 12, 0]);
+        c.a.view_window.set(window.0);
+        c.a.scope.set(scope);
+        let observed = run(&c, &1);
+        assert_eq!(
+            (
+                observed.reason,
+                observed.entered,
+                observed.completed,
+                observed.selection,
+                observed.scope,
+                observed.acp,
+            ),
+            (1, 1, 1, 1, if scope == IS_DEFAULT { 2 } else { 3 }, 0)
+        );
+        assert!(c.host.trace.borrow().contains(&"GetInputScopes"));
+        unchanged(&c);
+        c.a.request_flags.set(TF_ES_SYNC | TF_ES_READWRITE);
+        assert!(!c.key(b'g' as u16, false));
+        unchanged(&c);
+    }
+}
+
 #[test]
 fn metadata_refusals_are_read_only_and_preserve_exact_reason() {
     for case in 0..12 {
@@ -88,7 +115,7 @@ fn metadata_refusals_are_read_only_and_preserve_exact_reason() {
         let reason = match case {
             1 => {
                 c.a.acp.set(false);
-                10
+                1
             }
             2 => {
                 c.a.status.set(TF_SD_READONLY);
@@ -127,11 +154,11 @@ fn metadata_refusals_are_read_only_and_preserve_exact_reason() {
                 14
             }
             11 => 15,
-            _ => 11,
+            _ => 1,
         };
         let observed = run(&c, &1);
         assert_eq!(observed.reason, reason, "case {case}: {observed:?}");
-        assert_eq!(observed.acp != 0, case == 0 || case == 10);
+        assert_eq!(observed.acp, 0);
         if case == 1 {
             assert_eq!((observed.selection, observed.scope), (1, 2));
         }
@@ -158,8 +185,8 @@ fn metadata_all_compartments_preserve_variant_and_hresult_meaning() {
             c.a.view_window.set(window.0);
             let alive = Rc::new(Cell::new(1));
             let (result, kind, reason) = match case {
-                0 => (S_FALSE, VT_EMPTY, 11),
-                1 => (S_OK, VT_EMPTY, 11),
+                0 => (S_FALSE, VT_EMPTY, 1),
+                1 => (S_OK, VT_EMPTY, 1),
                 2 => (S_FALSE, VT_I4, 3),
                 3 => (E_UNEXPECTED, VT_EMPTY, 3),
                 4 => (S_OK, VT_BOOL, 6),
@@ -193,10 +220,10 @@ fn metadata_all_compartments_preserve_variant_and_hresult_meaning() {
                 observed.reason, reason,
                 "compartment {compartment} case {case}"
             );
-            if reason == 11 {
+            if reason == 1 {
                 assert_eq!(
                     (observed.selection, observed.scope, observed.acp),
-                    (1, 2, 1)
+                    (1, 2, 0)
                 );
             } else {
                 assert_eq!((observed.selection, observed.acp), (0, 0));
@@ -228,7 +255,6 @@ fn metadata_liveness_is_rechecked_at_every_native_query() {
         "GetAppProperty",
         "scope.GetValue",
         "GetInputScopes",
-        "range.ACP",
     ] {
         let window = Window::new(false);
         let c = Client::new();
@@ -261,7 +287,7 @@ fn metadata_duplicate_callback_cannot_overwrite_completed_observation() {
         }
         assert_eq!(*host.trace.borrow(), trace);
     });
-    assert_eq!(run(&c, &1).reason, 11);
+    assert_eq!(run(&c, &1).reason, 1);
     c.a.drain_retained();
     unchanged(&c);
 }

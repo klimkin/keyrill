@@ -18,9 +18,11 @@ Historical packaged x64 Notepad 11.2607.14.0 acceptance covered the owned-compos
 executor, shared model, and vocabulary integration. Exact UIA checks covered both model
 directions, retained reversal, rapid continuation, native Undo, and vocabulary reloads.
 Physical command checks covered conversion and held reversal within one focus interval.
-Other versions use the shared ordinary-scope path. Its implementation requires exact native
-identity, writable state, ordinary scope, owned-range verification, and status/compartment
-subscriptions. Application qualification, settings integration, and packaging remain in progress.
+Other versions now pass input under bounded-only containment, as do generic TSF hosts.
+Editing requires the compiled proof-editor or exact-version Notepad main-field contract, fresh
+native identity, writable state, scope, owned-range verification and revocation subscriptions.
+Browser and other generic application correction remains unimplemented pending authoritative
+per-field semantic evidence. Full Windows qualification remains in progress.
 No Linux adapter exists. An explicit-PID inspector supplies independent field evidence and
 named public-document checks. The evidence limits are recorded with
 [Windows admission](windows.md#bounded-notepad-admission-and-observation).
@@ -137,9 +139,9 @@ The windows-rs implementation is in `native/windows/rust/`. Its build, maintaine
 registration commands, evidence limits, and physical acceptance matrix are in
 [Windows TSF proof](windows.md). The bounded first-editor proof includes observed owned
 termination on focus loss in the historical C++ backend. The Rust Notepad physical results are
-recorded separately from the pending completion-candidate matrix. Shared ordinary-field admission
+recorded separately from the pending completion-candidate matrix. Bounded field admission
 requires the [native contract](windows-admission-contract.md), including coherent metadata and
-revocation notifications. The version-bounded Notepad exception remains separate. Granted edit
+revocation notifications. Generic TSF scope admission is disabled. Granted edit
 sessions, explicit contexts, and owned compositions provide the native editing mechanism.
 [TSF design](adr/007-windows-tsf.md).
 

@@ -1,8 +1,14 @@
 # Windows admission stability
 
-An ordinary input scope permits one operation after fresh identity and status validation.
-Each later operation collects new evidence. Native field classification supplies metadata
-for that validation.
+Editing requires a compiled bounded field contract for the proof editor or an exact supported
+Notepad version and native main-field hierarchy. Ordinary TSF scope alone supplies no field
+semantics and cannot grant editing authority. Generic hosts, including browser widgets, Word,
+terminal wrappers and unknown Notepad versions, pass input without character reads, ACP access
+or composition effects. Application settings cannot grant admission.
+
+Within an admitted bounded field, each operation requires fresh identity, status and scope
+validation. The bounded contract supplies ordinary-field authority under its qualified host
+assumptions. It does not grant permission to every control in the application.
 
 ## Documented guarantees
 
@@ -37,7 +43,7 @@ Character reads, composition starts, replacements, selection changes, and compos
 retain a named permit. Revocation after a character write stops further character reads and
 produces an unknown outcome with consumed input.
 
-## Supported host contract
+## Bounded host assumptions
 
 Application-provided input scope enters TSF through host attributes. Attribute-change
 notifications describe changes to that data. Text-edit notifications arrive after the editing
@@ -47,7 +53,7 @@ values. [GetAttribute](https://learn.microsoft.com/en-us/windows/win32/api/msctf
 [OnAttrsChange](https://learn.microsoft.com/en-us/windows/win32/api/textstor/nf-textstor-itextstoreacpsink-onattrschange),
 [OnEndEdit](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itftexteditsink-onendedit).
 
-The supported host returns an accurate property for the requested range and an accurate current
+The admitted bounded host returns an accurate property for the requested range and an accurate current
 scope from its input-scope interface during the granted property access. Dynamic status,
 compartment, and context changes notify the installed sinks before the pending operation resumes.
 This coherence and notification-before-resume requirement is an additional supported-host
@@ -64,8 +70,9 @@ Controlled schedules cover every reached getter and release boundary for scope r
 plus every reached metadata boundary for notified status, compartment, and context changes.
 The external silent-mutation reproducer retains counterexamples for the unsupported behaviors
 above. Application qualification collects independent UIA public-document and caret observations
-alongside TSF lifecycle evidence on actual application builds. The shared path's physical
-application matrix remains pending.
+alongside TSF lifecycle evidence on actual application builds. The containment candidate still
+requires installed denied-browser and working bounded-Notepad checks. Full Windows application
+support remains open.
 
 ## Browser payment field counterexample
 
@@ -86,7 +93,14 @@ the raw scope value returned by the tested Edge binary.
 [Blink IME type](https://chromium.googlesource.com/chromium/src/+/bc7da50d38d0bde911cb7762c7c418f8a2708730/third_party/blink/renderer/core/editing/ime/input_method_controller.cc#1765),
 [TSF property creation](https://chromium.googlesource.com/chromium/src/+/bc7da50d38d0bde911cb7762c7c418f8a2708730/ui/base/ime/win/tsf_text_store.cc#932).
 
-This blocks browser qualification. Application settings can disable Keyrill in Edge while
-the gap is open. The measured native window and currently used TSF scope do not provide a
-field-level payment distinction. Ordinary browser support still needs an admission contract
-that refuses sensitive controls before character reads or composition.
+The bounded-only containment removes generic editing authority. It refuses both ordinary and
+sensitive browser fields because their measured native identity and existing TSF metadata do not
+establish the required distinction. The unknown-Notepad observer remains read-only and scope-only.
+A completed ordinary-scope observation reports `Unsupported` with `acp=0`; retired wire values
+remain reserved. Observation never supplies editing authority.
+
+Browser correction remains unimplemented. Restoring it requires authoritative semantic field
+identity and revision bound to the actual native TSF context and range, with synchronous
+revocation. Native window identity, app selection and an ordinary scope cannot substitute for
+that contract. Future qualification must include same-context ordinary/payment distinctions,
+A-B-A changes and silent provider mutation. No finite metadata-query loop proves those cases safe.

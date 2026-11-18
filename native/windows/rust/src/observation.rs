@@ -40,7 +40,6 @@ pub(crate) enum Kind {
 pub(crate) enum Reason {
     #[default]
     Unobserved,
-    #[expect(dead_code, reason = "Protocol 4 reserves this SDK wire discriminant.")]
     Unsupported,
     Stale,
     Native,
@@ -50,7 +49,15 @@ pub(crate) enum Reason {
     Selection,
     MissingScope,
     Scope,
+    #[expect(
+        dead_code,
+        reason = "Protocol 4 reserves this retired wire discriminant."
+    )]
     MissingAcp,
+    #[expect(
+        dead_code,
+        reason = "Protocol 4 reserves this retired wire discriminant."
+    )]
     ProofOnly,
     Request,
     Session,

@@ -176,7 +176,6 @@ fn bounded(facts: &Facts) -> Option<Identity> {
 pub(crate) enum Contract {
     ProofRichEdit,
     NotepadBounded,
-    OrdinaryTsf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,7 +187,6 @@ pub(crate) struct CandidateField {
 
 pub(crate) fn classify(facts: &Facts) -> Option<CandidateField> {
     let field = &facts.field;
-    let root = &facts.proof_root;
     let native_edit = [
         "Edit",
         "RICHEDIT50W",
@@ -212,43 +210,15 @@ pub(crate) fn classify(facts: &Facts) -> Option<CandidateField> {
     {
         return None;
     }
-    if let Some(identity) = bounded(facts) {
-        return Some(CandidateField {
-            contract: if identity.kind == 1 {
-                Contract::NotepadBounded
-            } else {
-                Contract::ProofRichEdit
-            },
-            identity,
-            started: facts.host.started,
-        });
-    }
-    if facts.host.process != facts.process
-        || facts.host.thread != facts.thread
-        || facts.host.started == 0
-        || facts.root.0.is_null()
-        || facts.root != facts.foreground
-        || root.handle != facts.root
-        || root.complete == 0
-        || root.process != facts.process
-        || root.thread == 0
-        || root.enabled == 0
-        || root.style & WS_DISABLED.0 as isize != 0
-    {
-        return None;
-    }
+    let identity = bounded(facts)?;
     Some(CandidateField {
-        contract: Contract::OrdinaryTsf,
-        started: facts.host.started,
-        identity: Identity {
-            kind: 2,
-            field: field.handle,
-            parent: facts.parent.handle,
-            root: facts.root,
-            process: facts.process,
-            thread: facts.thread,
-            root_thread: root.thread,
+        contract: if identity.kind == 1 {
+            Contract::NotepadBounded
+        } else {
+            Contract::ProofRichEdit
         },
+        started: facts.host.started,
+        identity,
     })
 }
 

@@ -298,18 +298,7 @@ impl Frame {
             self.reason(Reason::Scope);
             return None;
         }
-        let acp = self.query::<_, ITfRangeACP>(&range);
-        if !self.alive() {
-            return None;
-        }
-        self.update(|value| {
-            value.acp = u32::from(acp.is_some());
-            value.reason = if acp.is_some() {
-                Reason::ProofOnly
-            } else {
-                Reason::MissingAcp
-            };
-        });
+        self.reason(Reason::Unsupported);
         Some(())
     }
 

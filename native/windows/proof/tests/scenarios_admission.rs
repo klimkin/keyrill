@@ -23,10 +23,7 @@ fn explicit_ordinary_application_scopes_admit_one_owned_mark() {
 fn uncertain_application_scope_refuses_before_acp_or_text() {
     for version in [None, Some([11, 2607, 14, 0]), Some([11, 2609, 11, 0])] {
         for case in 0..22 {
-            let c = version.map_or_else(
-                || Client::ordinary("ArbitraryTsfHost"),
-                Client::notepad_version,
-            );
+            let c = version.map_or_else(Client::new, Client::notepad_version);
             let d = &c.a;
             match case {
                 0 => {
@@ -117,57 +114,62 @@ fn notepad_exact_unavailable_scope_has_bounded_authority() {
 #[test]
 fn notepad_field_fact_mutations_refuse_before_acp() {
     for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
-        for case in 0..44 {
-            let c = Client::notepad_version(version);
-            c.a.scope_type.set(VT_EMPTY);
-            c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
-            {
-                let mut facts = c.host.field_facts.borrow_mut();
-                let f = facts.as_mut().unwrap();
-                match case {
-                    0 => f.host.kind = 0,
-                    1 => f.host.process += 1,
-                    2 => f.host.thread += 1,
-                    3 => f.process = 0,
-                    4 => f.thread = 0,
-                    5 => f.focus = HWND::default(),
-                    6 => f.view = HWND::default(),
-                    7 => f.foreground = HWND::default(),
-                    8 => f.root = HWND::default(),
-                    9 => f.field.style &= !0x40000000,
-                    10 => f.field.style &= !4,
-                    11 => f.field.style |= 0x20,
-                    12 => f.field.style |= 0x800,
-                    13 => f.field.thread += 1,
-                    14 => f.parent.thread += 1,
-                    15 => f.grandparent.handle = f.parent.handle,
-                    16..=19 => f.host.version[case - 16] += 1,
-                    _ => {
-                        let node = (case - 20) / 8;
-                        let field = match node {
-                            0 => &mut f.field,
-                            1 => &mut f.parent,
-                            _ => &mut f.grandparent,
-                        };
-                        match (case - 20) % 8 {
-                            0 => field.complete = 0,
-                            1 => field.handle = HWND::default(),
-                            2 => field.process += 1,
-                            3 => field.thread = 0,
-                            4 => field.control += 1,
-                            5 => field.enabled = 0,
-                            6 => field.style |= 0x08000000,
-                            7 => field.class_name[0] = b'!' as u16,
-                            _ => unreachable!(),
+        for unavailable in [false, true] {
+            for case in 0..44 {
+                let c = Client::notepad_version(version);
+                if unavailable {
+                    c.a.scope_type.set(VT_EMPTY);
+                    c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
+                }
+                {
+                    let mut facts = c.host.field_facts.borrow_mut();
+                    let f = facts.as_mut().unwrap();
+                    match case {
+                        0 => f.host.kind = 0,
+                        1 => f.host.process += 1,
+                        2 => f.host.thread += 1,
+                        3 => f.process = 0,
+                        4 => f.thread = 0,
+                        5 => f.focus = HWND::default(),
+                        6 => f.view = HWND::default(),
+                        7 => f.foreground = HWND::default(),
+                        8 => f.root = HWND::default(),
+                        9 => f.field.style &= !0x40000000,
+                        10 => f.field.style &= !4,
+                        11 => f.field.style |= 0x20,
+                        12 => f.field.style |= 0x800,
+                        13 => f.field.thread += 1,
+                        14 => f.parent.thread += 1,
+                        15 => f.grandparent.handle = f.parent.handle,
+                        16..=19 => f.host.version[case - 16] += 1,
+                        _ => {
+                            let node = (case - 20) / 8;
+                            let field = match node {
+                                0 => &mut f.field,
+                                1 => &mut f.parent,
+                                _ => &mut f.grandparent,
+                            };
+                            match (case - 20) % 8 {
+                                0 => field.complete = 0,
+                                1 => field.handle = HWND::default(),
+                                2 => field.process += 1,
+                                3 => field.thread = 0,
+                                4 => field.control += 1,
+                                5 => field.enabled = 0,
+                                6 => field.style |= 0x08000000,
+                                7 => field.class_name[0] = b'!' as u16,
+                                _ => unreachable!(),
+                            }
                         }
                     }
                 }
+                assert!(!c.key(b'g' as u16, false), "case{case}");
+                no_admission(&c);
             }
-            assert!(!c.key(b'g' as u16, false), "case{case}");
-            no_admission(&c);
         }
     }
 }
+
 #[test]
 fn writable_policy_requires_exact_status_and_interfaces() {
     for version in [[11, 2607, 14, 0], [11, 2609, 11, 0]] {
@@ -507,7 +509,8 @@ fn notepad_executor_refusals_expire_retained_callbacks() {
 }
 
 #[test]
-fn unknown_notepad_versions_require_explicit_ordinary_scope() {
+fn unknown_notepad_versions_refuse_even_explicit_ordinary_scope() {
+    let keyboard = Keyboard::new();
     for version in [
         [0; 4],
         [11, 2607, 13, 0],
@@ -516,28 +519,24 @@ fn unknown_notepad_versions_require_explicit_ordinary_scope() {
         [11, 2609, 12, 0],
         [11, 2609, 11, 1],
     ] {
-        for unavailable in [false, true] {
+        for scope in [Some(IS_DEFAULT), Some(IS_TEXT), None] {
             let c = Client::notepad_version(version);
-            if unavailable {
+            if let Some(scope) = scope {
+                c.a.scope.set(scope);
+            } else {
                 c.a.scope_type.set(VT_EMPTY);
                 c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
             }
-            assert_eq!(
-                c.key(b'g' as u16, true),
-                !unavailable,
-                "version {version:?}, unavailable {unavailable}"
+            assert!(
+                !keyboard.down(&c, b'G'),
+                "version {version:?}, scope {scope:?}"
             );
-            oracle::document(&c, "g", 8);
-            if !unavailable {
-                assert_eq!(c.a.starts.get(), 1);
-                assert_eq!(c.a.writes.get(), 1);
-                continue;
-            }
-            oracle::no_effects(&c);
-            assert_eq!(c.a.reads.get(), 0);
-            assert!(c.a.text_reads.borrow().is_empty());
-            assert!(!c.host.trace.borrow().contains(&"range.ACP"));
+            no_admission(&c);
             assert!(c.a.active.borrow().is_none());
+            assert!(!c.host.trace.borrow().contains(&"GetSelection"));
+            c.a.native_text(&[b'g' as u16]);
+            oracle::document(&c, "g", 8);
+            oracle::no_effects(&c);
         }
     }
 }
@@ -604,10 +603,11 @@ fn generic_default_scope_has_no_sensitive_field_authority() {
 }
 
 #[test]
-fn generic_native_classes_use_normal_key_entry_and_verified_executor() {
+fn generic_native_classes_pass_normal_keys_without_document_access() {
     let keyboard = Keyboard::new();
     for class in [
         "ArbitraryTsfHost",
+        "Chrome_WidgetWin_1",
         "Chrome_RenderWidgetHostHWND",
         "MozillaWindowClass",
         "_WwG",
@@ -616,7 +616,6 @@ fn generic_native_classes_use_normal_key_entry_and_verified_executor() {
         for scope in [IS_DEFAULT, IS_TEXT] {
             let c = Client::ordinary(class);
             c.a.scope.set(scope);
-            // These are unrelated class-defined bits, not Edit password or readonly flags.
             c.host
                 .field_facts
                 .borrow_mut()
@@ -624,14 +623,13 @@ fn generic_native_classes_use_normal_key_entry_and_verified_executor() {
                 .unwrap()
                 .field
                 .style |= 0x820;
-            for key in b"GHBDTN " {
-                assert!(keyboard.down(&c, *key), "class {class}, scope {scope:?}");
-            }
-            oracle::document(&c, "привет ", 14);
-            assert_eq!(c.a.starts.get(), 1);
-            assert_eq!(c.a.writes.get(), 7);
-            assert!(keyboard.down(&c, b'X'));
-            oracle::document(&c, "привет x", 15);
+            assert!(!keyboard.down(&c, b'G'), "class {class}, scope {scope:?}");
+            no_admission(&c);
+            assert!(!c.host.trace.borrow().contains(&"GetSelection"));
+            assert!(c.a.active.borrow().is_none());
+            c.a.native_text(&[b'g' as u16]);
+            oracle::document(&c, "g", 8);
+            oracle::no_effects(&c);
         }
     }
 }
@@ -697,7 +695,7 @@ fn generic_native_identity_and_sensitive_scope_refuse_without_text() {
 }
 
 #[test]
-fn generic_scope_and_focus_changes_revoke_range_permission() {
+fn bounded_scope_and_focus_changes_revoke_range_permission() {
     let keyboard = Keyboard::new();
     for owned in [false, true] {
         for boundary in [
@@ -714,7 +712,7 @@ fn generic_scope_and_focus_changes_revoke_range_permission() {
                 continue;
             }
             for change in 0..3 {
-                let c = Client::ordinary("ArbitraryTsfHost");
+                let c = Client::notepad();
                 if owned {
                     assert!(keyboard.down(&c, b'G'));
                 }
@@ -749,9 +747,9 @@ fn generic_scope_and_focus_changes_revoke_range_permission() {
 }
 
 #[test]
-fn generic_exclusion_after_write_stops_readback_and_replay() {
+fn bounded_exclusion_after_write_stops_readback_and_replay() {
     let keyboard = Keyboard::new();
-    let c = Client::ordinary("ArbitraryTsfHost");
+    let c = Client::notepad();
     assert!(keyboard.down(&c, b'G'));
     let reads = c.a.reads.get();
     let document = Rc::clone(&c.a);
@@ -773,7 +771,7 @@ fn generic_exclusion_after_write_stops_readback_and_replay() {
 }
 
 #[test]
-fn generic_native_failures_preserve_content_free_refusal_evidence() {
+fn bounded_native_failures_preserve_content_free_refusal_evidence() {
     use crate::support::dll::snapshot;
     let keyboard = Keyboard::new();
     for boundary in [
@@ -787,7 +785,7 @@ fn generic_native_failures_preserve_content_free_refusal_evidence() {
         "GetInputScopes",
     ] {
         for result in [S_FALSE, E_FAIL] {
-            let c = Client::ordinary("ArbitraryTsfHost");
+            let c = Client::notepad();
             if matches!(boundary, "GetFocus" | "GetTop") {
                 c.manager.results.borrow_mut().insert(boundary, result);
             } else {
@@ -803,7 +801,7 @@ fn generic_native_failures_preserve_content_free_refusal_evidence() {
         }
     }
     for boundary in ["GetFocus", "GetTop", "GetActiveView", "GetAppProperty"] {
-        let c = Client::ordinary("ArbitraryTsfHost");
+        let c = Client::notepad();
         if matches!(boundary, "GetFocus" | "GetTop") {
             c.manager.nulls.borrow_mut().push(boundary);
         } else {
@@ -816,7 +814,7 @@ fn generic_native_failures_preserve_content_free_refusal_evidence() {
         assert_eq!(observed.first[2], 8);
         assert_eq!(observed.first[3], 0);
     }
-    let c = Client::ordinary("ArbitraryTsfHost");
+    let c = Client::new();
     c.a.scope_type.set(VT_EMPTY);
     c.a.results.borrow_mut().insert("scope.GetValue", E_FAIL);
     assert!(!keyboard.down(&c, b'G'));
@@ -825,7 +823,7 @@ fn generic_native_failures_preserve_content_free_refusal_evidence() {
 }
 
 #[test]
-fn generic_reentrant_context_callbacks_revoke_pending_admission() {
+fn bounded_reentrant_context_callbacks_revoke_pending_admission() {
     let keyboard = Keyboard::new();
     for boundary in [
         "manager.GetFocus",
@@ -843,7 +841,7 @@ fn generic_reentrant_context_callbacks_revoke_pending_admission() {
         "scope.GetValue",
         "GetInputScopes",
     ] {
-        let c = Client::ordinary("ArbitraryTsfHost");
+        let c = Client::notepad();
         let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
         let other = c.context_b.clone();
         c.host.on(boundary, 0, move || unsafe {

@@ -31,9 +31,10 @@ correction. The `keyrill-windows` package in `native/windows/rust/` implements t
 registrar with `windows` and `windows-core` 0.62.2. The proof editor, UIA inspectors,
 controlled COM providers, and build tools are also Rust. The service links the portable engine
 through [the C ABI](../include/keyrill.h). It has no replacement backend,
-hooks, input injection, clipboard transport, or runtime network access. Shared ordinary-field
-admission requires the [native admission contract](windows-admission-contract.md). The tested
-version-bounded Notepad unavailable-scope exception retains its separate requirements.
+hooks, input injection, clipboard transport, or runtime network access. Editing requires a
+compiled bounded field contract under the [native admission contract](windows-admission-contract.md).
+Generic TSF hosts remain unadmitted even with ordinary scope. The tested version-bounded Notepad
+unavailable-scope exception retains its separate requirements.
 The [completion plan](windows-completion-plan.md) defines the pending application acceptance matrix.
 
 Complete persisted preferences default automatic correction off. Automatic, Manual, and Off
@@ -329,24 +330,26 @@ must obey the standard HRESULT and no-throw contract. The former C++ exception-r
 and its throw-injection schedules are retired. Public COM diagnostic and wire versions retain
 their contracts. The private test API is version 3. UIA remains limited to tests and diagnostics.
 
-## Shared ordinary-field admission
+## Bounded-only field admission
 
-The runtime classifies an ordinary TSF candidate from exact native view/focus, process, thread,
-foreground root, enabled state, and process creation identity. A private range permit additionally
-requires the current top context, writable status, disabling-compartment evidence, and a single
-`IS_DEFAULT` or `IS_TEXT` scope. Native Edit password and read-only style bits apply to native Edit
-classes. Other classes obtain their sensitivity evidence from the scoped TSF metadata.
+The runtime admits editing only in the compiled proof-editor contract and the exact-version
+Notepad main-field contract below. Generic TSF native identity and `IS_DEFAULT` or `IS_TEXT`
+do not establish semantic field authority. Browser widgets, Word, terminal wrappers and unknown
+Notepad versions pass input without character reads, ACP access or composition effects.
+Application settings cannot grant authority. Browser correction remains unimplemented.
 
-Status and compartment subscriptions revoke pending operations on notification. Scope is the
-last application query before an operation. Its native interfaces remain retained through that
-operation and the final Win32 field check. The implementation assumes coherent host metadata
-and notification timing during the granted access. The contract, counterexample boundaries, and
-physical qualification requirements are recorded in [Windows admission stability](windows-admission-contract.md).
+Admitted bounded fields still require the current top context, writable status, disabling
+compartments, fresh native identity and range-specific scope evidence. Status and compartment
+subscriptions revoke pending operations. Scope is the last application query before each
+operation, with its native interfaces retained through the final field check and operation.
+The host coherence assumptions and browser counterexample are recorded in
+[Windows admission stability](windows-admission-contract.md).
 
-Controlled schedules exercise arbitrary and wrapper class names through normal advised key
-entry, secure/read-only/disabled refusal, every reached late metadata boundary, reference release,
-context changes, and unknown-effect containment. The new generic path's real-application matrix
-remains pending. Historical bounded-Notepad observations retain their original artifact identities.
+Controlled schedules separate generic refusal through normal advised key entry from admitted
+bounded fields' late metadata, reference release, context and unknown-effect schedules. Every
+expected injected boundary must be reached. This containment does not complete the Windows
+application matrix. Installed denied-browser and working bounded-Notepad checks remain separate
+maintainer-run gates. Historical observations retain their original artifact identities.
 
 ## Bounded Notepad admission and observation
 
@@ -354,7 +357,7 @@ The runtime recognizes packaged x64 Notepad **11.2607.14.0** and **11.2609.11.0*
 for the bounded main-document path through the owned-composition executor. Its package family
 `Microsoft.WindowsNotepad_8wekyb3d8bbwe`, package name `Microsoft.WindowsNotepad`, architecture,
 executable basename and exact version are captured at service activation. Other Notepad versions
-require explicit ordinary scope through the shared path.
+remain unadmitted even with an explicit ordinary scope.
 
 A live pre-change run on 11.2609.11.0 confirmed the expected native hierarchy, writable UIA
 binding, and missing input-scope result `E_FAIL`. The full public word passed through unchanged,
@@ -372,8 +375,8 @@ control ID zero, on the current process and TSF thread. Its immediate parent mus
 the field's `GA_ROOT`. The root may belong to a different thread. All three nodes must have
 complete metadata and be enabled. The field requires `WS_CHILD` and `ES_MULTILINE` and refuses
 `ES_PASSWORD`, `ES_READONLY` and `WS_DISABLED`. Dynamic scrollbar bits do not establish identity.
-This unavailable-scope exception requires the exact hierarchy and versions above. Other fields
-and versions follow the shared ordinary-scope path.
+Both ordinary-scope admission and the unavailable-scope exception require this exact hierarchy
+and one of these versions. Other Notepad fields and versions remain unadmitted.
 
 Writable context status and all three disabled compartments precede raw selection acquisition.
 `GetStatus` requires exactly `S_OK`. A disabling compartment permits `S_OK` with `VT_EMPTY`
@@ -451,9 +454,10 @@ generation requests a separate `TF_ES_SYNC | TF_ES_READ` metadata session. It pa
 The session checks the focused document's exact context identity and reports the TSF view's
 relationship to native focus without weakening the editing predicate. Known password, disabled
 and read-only controls stop before selection. It checks disabling compartments, obtains a raw
-selection range and queries the application input scope before asking whether ACP exists.
-Missing, ambiguous and non-text scopes stop before ACP. It never reads document characters,
-queries a boundary, plans an engine event or starts or changes a composition. Unknown hosts
+selection range and queries the application input scope. A completed ordinary-scope observation
+reports `Unsupported` with `acp=0`. Missing, ambiguous and non-text scopes retain their precise
+refusal reasons. The observer never queries ACP or a boundary, reads document characters,
+plans an engine event, or starts or changes a composition. Unknown hosts
 receive no additional observation session. Request result, session result and callback completion
 are distinct. Requests expire on return and never retry asynchronously. Lifecycle invalidation
 expires cached metadata. Reentrant key callbacks abort observation through the existing generation.

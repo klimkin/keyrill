@@ -29,7 +29,7 @@ fn down(c: &Client) -> bool {
 
 #[test]
 fn admission_notifications_revoke_every_late_metadata_occurrence() {
-    let baseline = Client::ordinary("ArbitraryTsfHost");
+    let baseline = Client::notepad();
     baseline.host.trace.borrow_mut().clear();
     assert!(down(&baseline));
     let trace = baseline.host.trace.borrow().clone();
@@ -48,15 +48,15 @@ fn admission_notifications_revoke_every_late_metadata_occurrence() {
         "GetExtent",
         "Clone",
         "ShiftStart",
-        "ShiftEnd",
         "GetRange",
         "compartment.GetValue",
         "thread.GetValue",
     ] {
         let count = trace.iter().filter(|entry| **entry == boundary).count();
+        assert!(count > 0, "metadata boundary {boundary} must be exercised");
         for skip in 0..count {
             for change in 0..4 {
-                let c = Client::ordinary("ArbitraryTsfHost");
+                let c = Client::notepad();
                 let document = Rc::clone(&c.a);
                 let manager = Rc::clone(&c.manager);
                 let host = Rc::clone(&c.host);
@@ -131,7 +131,7 @@ fn admission_notifications_revoke_every_late_metadata_occurrence() {
 #[test]
 fn partial_watch_acquisition_and_failed_retirement_stop_authority() {
     for skip in 0..3 {
-        let c = Client::ordinary("ArbitraryTsfHost");
+        let c = Client::notepad();
         let host = Rc::clone(&c.host);
         c.host.on("AdviseAdmission", skip, move || {
             host.watch_result.set(E_FAIL)
@@ -142,7 +142,7 @@ fn partial_watch_acquisition_and_failed_retirement_stop_authority() {
         assert!(c.host.watches.borrow().is_empty());
         c.host.drained();
     }
-    let c = Client::ordinary("ArbitraryTsfHost");
+    let c = Client::notepad();
     c.host.unwatch_result.set(E_FAIL);
     assert!(down(&c));
     let previous = (c.a.reads.get(), c.a.writes.get(), c.a.starts.get());
@@ -158,7 +158,7 @@ fn partial_watch_acquisition_and_failed_retirement_stop_authority() {
 #[test]
 fn missing_admission_watch_refuses_without_text_or_composition() {
     for result in [E_FAIL, S_FALSE] {
-        let c = Client::ordinary("ArbitraryTsfHost");
+        let c = Client::notepad();
         c.host.watch_result.set(result);
         assert!(!down(&c));
         assert_eq!(c.a.reads.get(), 0);
@@ -170,7 +170,7 @@ fn missing_admission_watch_refuses_without_text_or_composition() {
 
 #[test]
 fn successful_watch_without_cookie_is_terminal_until_reactivation() {
-    let c = Client::ordinary("ArbitraryTsfHost");
+    let c = Client::notepad();
     c.host.watch_missing_cookie.set(true);
     assert!(!down(&c));
     assert_eq!(c.host.watches.borrow().len(), 1);
@@ -189,7 +189,7 @@ fn successful_watch_without_cookie_is_terminal_until_reactivation() {
 
 #[test]
 fn scope_revocation_at_every_late_getter_and_release_precedes_next_operation() {
-    let baseline = Client::ordinary("ArbitraryTsfHost");
+    let baseline = Client::notepad();
     baseline.host.trace.borrow_mut().clear();
     assert!(down(&baseline));
     let trace = baseline.host.trace.borrow().clone();
@@ -202,7 +202,7 @@ fn scope_revocation_at_every_late_getter_and_release_precedes_next_operation() {
         let count = trace.iter().filter(|entry| **entry == boundary).count();
         assert!(count > 0, "metadata boundary must be exercised");
         for skip in 0..count {
-            let c = Client::ordinary("ArbitraryTsfHost");
+            let c = Client::notepad();
             let document = Rc::clone(&c.a);
             let at = Rc::new(Cell::new(None));
             let observed = Rc::clone(&at);
@@ -229,14 +229,15 @@ fn scope_revocation_at_every_late_getter_and_release_precedes_next_operation() {
 
 #[test]
 fn advised_context_notifications_revoke_every_late_metadata_occurrence() {
-    let baseline = Client::ordinary("ArbitraryTsfHost");
+    let baseline = Client::notepad();
     baseline.host.trace.borrow_mut().clear();
     assert!(down(&baseline));
     let trace = baseline.host.trace.borrow().clone();
     for boundary in ["GetWnd", "GetInputScopes", "Release.before"] {
         let count = trace.iter().filter(|entry| **entry == boundary).count();
+        assert!(count > 0, "metadata boundary {boundary} must be exercised");
         for skip in 0..count {
-            let c = Client::ordinary("ArbitraryTsfHost");
+            let c = Client::notepad();
             let document = Rc::clone(&c.a);
             let manager = Rc::clone(&c.manager);
             let other = c.context_b.cast::<windows_core::IUnknown>().unwrap();
