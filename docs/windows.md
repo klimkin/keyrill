@@ -780,6 +780,26 @@ application acceptance remain maintainer gates.
 
 ## Public Terminal child
 
+### Input scope in Windows Terminal 1.25.2733.0
+
+The Windows Terminal 1.25.2733.0 source shows an admission limitation. Its TSF
+context owner returns `VT_EMPTY` for input scope unless `DefaultInputScope` is
+`AlphanumericHalfWidth`. In that case it supplies `IS_ALPHANUMERIC_HALFWIDTH`. Keyrill's
+ordinary-field path requires a single `IS_DEFAULT` or `IS_TEXT`. Both Terminal source
+paths therefore predict refusal before Keyrill reads or writes text. Confirm the actual
+return and refusal stage in the installed application.
+[Terminal control settings](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/cascadia/TerminalControl/TermControl.cpp#L985-L986),
+[Terminal TSF attribute and scope](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/tsf/Implementation.cpp#L386-L397),
+[scope value](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/tsf/Implementation.cpp#L544-L556).
+
+The TSF attribute depends on the Terminal setting. `ENABLE_ECHO_INPUT` is a mode on the
+console input buffer. The published scope values supply no evidence that the child has
+enabled echo. Terminal correction and manual conversion remain unqualified. The paired
+public console and no-echo runs below test the installed behavior.
+[Console input mode](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/host/getset.cpp#L334-L405).
+
+### Check child input and echo mode
+
 `KeyrillTerminalProbe.exe` compares a bounded public input line with fixed UTF-8 bytes,
 including its final CRLF. It prints the scenario, byte count, and comparison result. Observed
 input remains in memory. The ordinary console modes set and verify the input code page and
