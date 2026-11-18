@@ -66,3 +66,27 @@ The external silent-mutation reproducer retains counterexamples for the unsuppor
 above. Application qualification collects independent UIA public-document and caret observations
 alongside TSF lifecycle evidence on actual application builds. The shared path's physical
 application matrix remains pending.
+
+## Browser payment field counterexample
+
+The installed candidate `940ee5df` fails the sensitive-field exclusion gate in Edge
+157.0.4341.60 x64. A generated `g` in a local `type=text autocomplete=cc-number` fixture
+entered a granted TSF session and created an owned composition with one verified write.
+The fixture contained only public test data. A separate readonly field denied the session,
+and a password field refused at the disabled-context check. Neither created a composition
+or attempted a write. The browser used the same native window for the logical fields.
+
+In the reviewed upstream Chromium revision, Autofill recognizes the payment token.
+The IME type still comes from the form-control type, and the input-scope property uses
+that type, the input mode, and the learning preference. This path does not pass the
+payment token through to TSF. The source predicts ordinary default scope for the fixture.
+The Edge runtime journal proves that Keyrill admitted the field, but does not identify
+the raw scope value returned by the tested Edge binary.
+[Autofill token mapping](https://chromium.googlesource.com/chromium/src/+/bc7da50d38d0bde911cb7762c7c418f8a2708730/components/autofill/core/common/autocomplete_parsing_util.cc#40),
+[Blink IME type](https://chromium.googlesource.com/chromium/src/+/bc7da50d38d0bde911cb7762c7c418f8a2708730/third_party/blink/renderer/core/editing/ime/input_method_controller.cc#1765),
+[TSF property creation](https://chromium.googlesource.com/chromium/src/+/bc7da50d38d0bde911cb7762c7c418f8a2708730/ui/base/ime/win/tsf_text_store.cc#932).
+
+This blocks browser qualification. Application settings can disable Keyrill in Edge while
+the gap is open. The measured native window and currently used TSF scope do not provide a
+field-level payment distinction. Ordinary browser support still needs an admission contract
+that refuses sensitive controls before character reads or composition.

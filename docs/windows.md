@@ -53,7 +53,7 @@ cases that still need an installed-candidate run.
 |---|---|
 | Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
-| Edge | The public `textarea` passed automated text and caret checks for manual and automatic conversion and reversal. Physical command delivery passed. Native Undo in rich `contenteditable` restored text but selected part of the suffix. [Edge qualification](#edge-qualification). |
+| Edge | The public `textarea` passed generated conversion and reversal checks. Two gates remain open: rich Undo selected part of the suffix, and the payment fixture was admitted. [Edge qualification](#edge-qualification), [payment counterexample](windows-admission-contract.md#browser-payment-field-counterexample). |
 | Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
 | VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
 | Word | The tested Compatibility Mode body, new document body, and table cell passed input through after an input-scope refusal. Editing in these controls remains unqualified. [Word editing limits](#word-editing-limits). |
