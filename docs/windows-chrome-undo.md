@@ -2,6 +2,39 @@
 
 Status is open. This blocks complete Chrome acceptance.
 
+## Browser-only reproduction
+
+Chrome 157.0.8103.79 and Edge 157.0.4341.60 reproduce the selection difference in
+isolated headless sessions. The sessions use new browser profiles and send composition
+commands directly to Chromium without routing input through Windows TSF or Keyrill.
+
+Each case starts with fresh rich `contenteditable` or `textarea` text containing a fixed
+prefix and suffix. The caret starts between them at UTF-16 offset 19. The rich element
+uses `white-space: pre-wrap` to preserve the fixture's spaces.
+
+The plain insertion case sends `Input.insertText`. The composition cases first send
+`Input.imeSetComposition` for `x`, and then `xy` for the two-letter case, with the
+composition selection collapsed at the end of each update. `Input.insertText` commits
+the final text. The fixture checks that composition ended and calls the browser's Undo
+and Redo editing commands. It reads the complete text and selection after each command.
+[Chrome DevTools Protocol Input domain](https://chromedevtools.github.io/devtools-protocol/tot/Input/).
+
+Both browsers and both controls produced the following results.
+
+| Input | Selection after Undo | Selection after Redo |
+|---|---|---|
+| Plain insertion of `x` | Collapsed at 19 | Collapsed at 20 |
+| Composed `x` | 19 through 20 | Collapsed at 20 |
+| Composed `xy` | 19 through 21 | Collapsed at 21 |
+
+Every Undo restored the original text. Every Redo restored the inserted text. A composition
+was sufficient to reproduce the suffix selection without invoking a TSF text service. The
+experiment does not trace Blink's internal Undo record or establish a supported adapter
+workaround. These results explain why the selection discrepancy can persist after Keyrill
+retires its composition and leave the installed application acceptance open.
+
+## Installed candidate
+
 The approved end-only experiment was installed and tested after full x64/x86 verification,
 sanitizer and independent review. The loaded DLL matched candidate `940ee5df` and published
 its expected production identity. In the rich fixture, generated `x` followed by Ctrl+Z still
