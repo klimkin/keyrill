@@ -59,6 +59,22 @@ browser fixture's synchronous report updates restored text removal on first Undo
 restored selection still covers suffix characters. The remaining failure and isolated browser
 comparisons are recorded in [Chrome Undo investigation](windows-chrome-undo.md).
 
+A separate containment candidate, `f3831bbe` from `0582eb7`, requires bounded field authority
+before editing. It puts generic controls into pass-through while the browser payment-field
+admission gap remains open. Local x64 and x86 checks and the x64 AddressSanitizer run passed.
+A clean rebuild in a separate checkout matched all 119 package paths and SHA-256 hashes.
+
+The maintainer installed `f3831bbe`. Both machine COM registry views matched the package and
+both operation receipts agreed on all 22 completed changes. Separate x64 and x86 processes
+loaded the corresponding registered DLL and matched its file hash. The stored Preferences
+value matched its pre-upgrade digest.
+
+With that installed DLL, physical input in Notepad 11.2609.11.0 x64 produced `ghbdtn`, then
+`привет` with left Ctrl+Alt+K, then `ghbdtn` with left Ctrl+Alt+Z. UI Automation matched the
+whole document and end caret at each step. The TSF journal recorded both commands on the same
+owned composition and zero unknown effects. The containment comparison in Edge, ordinary
+browser editing, and the final application and lifecycle matrix remain open.
+
 The diagnostic thread-enumeration fix removes an artificial 64-thread rejection that prevented
 observation of a live Edge process. The 65-worker regression passed on x64 and x86, and the
 rebuilt inspector successfully enumerated that Edge process and armed its observer. Full
