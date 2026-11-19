@@ -59,7 +59,8 @@ browser fixture's synchronous report updates restored text removal on first Undo
 restored selection still covers suffix characters. The remaining failure and isolated browser
 comparisons are recorded in [Chrome Undo investigation](windows-chrome-undo.md).
 
-A separate containment candidate, `f3831bbe` from `0582eb7`, requires bounded field authority
+The Windows branch includes the admission fix tested in candidate `f3831bbe` from `0582eb7`.
+It requires bounded field authority
 before editing. It puts generic controls into pass-through while the browser payment-field
 admission gap remains open. Local x64 and x86 checks and the x64 AddressSanitizer run passed.
 A clean rebuild in a separate checkout matched all 119 package paths and SHA-256 hashes.
@@ -73,6 +74,13 @@ With that installed DLL, physical input in Notepad 11.2609.11.0 x64 produced `gh
 `привет` with left Ctrl+Alt+K, then `ghbdtn` with left Ctrl+Alt+Z. UI Automation matched the
 whole document and end caret at each step. The TSF journal recorded both commands on the same
 owned composition and zero unknown effects.
+
+In the x86 RichEdit proof editor, physical input of `ghbdtn` followed by Space produced
+`привет` followed by one space. The independent inspector matched the whole field, the
+collapsed caret at UTF-16 offset seven, and the empty second field. TSF recorded seven
+verified effects and zero unknown effects. The editor's activation manifest loaded an
+adjacent copy with the installed x86 DLL's exact hash. Testing an x86 target application
+through machine registration remains open.
 
 On Edge 157.0.4341.60 x64, the maintainer confirmed that a physical `g` went into the
 public `textarea`. The matching `f3831bbe` publication recorded one more key callback and

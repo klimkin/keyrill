@@ -191,6 +191,93 @@ fn text_reads(c: &Client) -> usize {
 }
 
 #[test]
+fn generic_field_policy_and_command_routes_never_grant_authority() {
+    use windows::Win32::UI::TextServices::*;
+    use windows_core::GUID;
+    let settings = Settings::new();
+    let _keyboard = Keyboard::new();
+    for policy in [0, 1, 2] {
+        settings.save(true, "en.add", Some(policy));
+        let c = Client::ordinary("Chrome_WidgetWin_1");
+        until(&c, |status| status.revision > 0 && status.model_ready == 1);
+        for scope in [IS_DEFAULT, IS_TEXT] {
+            c.a.scope.set(scope);
+            unsafe { SetKeyboardState(&[0; 256]).unwrap() };
+            let sink = c.manager.key_sink.borrow().clone().unwrap().sink.clone();
+            let mut eaten = BOOL(0);
+            unsafe {
+                assert_eq!(
+                    (sink.vtable().OnTestKeyDown)(
+                        sink.as_raw(),
+                        c.context_a.as_raw(),
+                        WPARAM(71),
+                        LPARAM(1),
+                        &mut eaten
+                    ),
+                    S_OK
+                );
+            }
+            assert_eq!(
+                eaten.as_bool(),
+                policy != 2,
+                "application Off declines interest"
+            );
+            assert!(!down(&c, b'G' as u16));
+            let mut chord = [0; 256];
+            for key in [VK_CONTROL, VK_LCONTROL, VK_MENU, VK_LMENU] {
+                chord[key.0 as usize] = 0x80;
+            }
+            unsafe { SetKeyboardState(&chord).unwrap() };
+            for (key, command) in [
+                (
+                    b'K',
+                    GUID::from_u128(0xd7abce42_c8a9_4a43_990a_4a8d6c011ebb),
+                ),
+                (
+                    b'Z',
+                    GUID::from_u128(0x16531b70_516e_4dfb_9f18_cb760de590b4),
+                ),
+            ] {
+                assert!(!down(&c, key as u16));
+                unsafe {
+                    assert_eq!(
+                        (sink.vtable().OnPreservedKey)(
+                            sink.as_raw(),
+                            c.context_a.as_raw(),
+                            &command,
+                            &mut eaten
+                        ),
+                        S_OK
+                    );
+                }
+                assert!(!eaten.as_bool(), "denied preserved command passes");
+            }
+            unsafe {
+                SetKeyboardState(&[0; 256]).unwrap();
+                assert_eq!(
+                    (sink.vtable().OnKeyUp)(
+                        sink.as_raw(),
+                        c.context_a.as_raw(),
+                        WPARAM(VK_MENU.0 as usize),
+                        LPARAM(0xc0000001u32 as isize),
+                        &mut eaten
+                    ),
+                    S_OK
+                );
+            }
+            assert!(!eaten.as_bool());
+            oracle::document(&c, "", 7);
+            oracle::no_effects(&c);
+            assert_eq!(text_reads(&c), 0);
+            assert!(!c.host.trace.borrow().contains(&"range.ACP"));
+            assert!(!c.host.trace.borrow().contains(&"GetSelection"));
+            assert_eq!(c.profile_state.language_calls.get(), 0);
+            assert_eq!(c.profile_state.activation_calls.get(), 0);
+        }
+    }
+}
+
+#[test]
 fn persisted_defaults_manual_automatic_and_off_use_advised_entry() {
     let settings = Settings::new();
     let _unused_developer_dictionary = Environment::set(
