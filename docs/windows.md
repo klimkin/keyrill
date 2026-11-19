@@ -55,10 +55,10 @@ cases that still need an installed-candidate run.
 | Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
 | Edge | The public `textarea` passed generated conversion and reversal checks. Two gates remain open: rich Undo selected part of the suffix, and the payment fixture was admitted. [Edge qualification](#edge-qualification), [payment counterexample](windows-admission-contract.md#browser-payment-field-counterexample). |
-| Firefox | Editing, caret, and exclusion checks remain pending in the public browser fields. |
+| Firefox | On ESR 153.7.0 x86, the maintainer saw the public test character in the ordinary textarea and the synthetic payment field. In separate windows, the matching English service recorded two and one key callbacks respectively. All stopped at `ProofWindow` with zero consumed keys, attempted edits or owned compositions. Independent field and caret observations and browser correction remain open. |
 | VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
 | Word | The tested Compatibility Mode body, new document body, and table cell passed input through after an input-scope refusal. Editing in these controls remains unqualified. [Word editing limits](#word-editing-limits). |
-| Windows Terminal | Source inspection predicts input-scope refusal. Paired ordinary and no-echo checks in the installed application remain pending. [Input scope](#input-scope-in-windows-terminal-12527330). |
+| Windows Terminal | Physical ordinary and no-echo input reached the child unchanged on 1.25.2733.0 x64. Keyrill activation and manual commands remain unverified. [Terminal checks](#input-scope-in-windows-terminal-12527330). |
 
 Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
 lifecycle cases. Record the exact candidate and application architecture with each result.
@@ -843,10 +843,10 @@ application acceptance remain maintainer gates.
 
 The Windows Terminal 1.25.2733.0 source shows an admission limitation. Its TSF
 context owner returns `VT_EMPTY` for input scope unless `DefaultInputScope` is
-`AlphanumericHalfWidth`. In that case it supplies `IS_ALPHANUMERIC_HALFWIDTH`. Keyrill's
-ordinary-field path requires a single `IS_DEFAULT` or `IS_TEXT`. Both Terminal source
-paths therefore predict refusal before Keyrill reads or writes text. Confirm the actual
-return and refusal stage in the installed application.
+`AlphanumericHalfWidth`. In that case it supplies `IS_ALPHANUMERIC_HALFWIDTH`. Neither
+value identifies an ordinary, echo-enabled child input buffer. Candidate `f3831bbe` also
+requires a supported field before inspecting characters or starting a composition.
+Terminal has no such field in this candidate.
 [Terminal control settings](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/cascadia/TerminalControl/TermControl.cpp#L985-L986),
 [Terminal TSF attribute and scope](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/tsf/Implementation.cpp#L386-L397),
 [scope value](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/tsf/Implementation.cpp#L544-L556).
@@ -856,6 +856,23 @@ console input buffer. The published scope values supply no evidence that the chi
 enabled echo. Terminal correction and manual conversion remain unqualified. The paired
 public console and no-echo runs below test the installed behavior.
 [Console input mode](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/host/getset.cpp#L334-L405).
+
+With candidate `f3831bbe`, the maintainer entered the public original-en sequence in both
+modes. Each child received the expected nine bytes and verified restoration of the original
+console mode and input code page. The observer armed against the Terminal window's process
+before source selection. It obtained no Keyrill service publication during these runs.
+A subsequent module check found Terminal Control and MSCTF in that process. It found no
+loaded Keyrill DLL at that time. The actual key callback, refusal stage and no-echo exclusion
+inside Keyrill remain unverified.
+
+Terminal Control creates the TSF handle in the UI process. Its thread manager requests
+deferred TIP activation. Windows can activate a service asynchronously when the calling
+thread gains focus. These flags alone do not establish whether Keyrill activated during
+input. A repeat needs the focused Terminal thread and a matching live Keyrill publication
+before the child reads its test line.
+[Terminal Control](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/cascadia/TerminalControl/TermControl.cpp#L80-L86),
+[Terminal TSF initialization](https://github.com/microsoft/terminal/blob/v1.25.2733.0/src/tsf/Implementation.cpp#L68-L91),
+[ActivateEx](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfthreadmgrex-activateex).
 
 ### Check child input and echo mode
 
