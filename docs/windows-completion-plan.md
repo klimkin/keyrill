@@ -72,8 +72,17 @@ value matched its pre-upgrade digest.
 With that installed DLL, physical input in Notepad 11.2609.11.0 x64 produced `ghbdtn`, then
 `привет` with left Ctrl+Alt+K, then `ghbdtn` with left Ctrl+Alt+Z. UI Automation matched the
 whole document and end caret at each step. The TSF journal recorded both commands on the same
-owned composition and zero unknown effects. The containment comparison in Edge, ordinary
-browser editing, and the final application and lifecycle matrix remain open.
+owned composition and zero unknown effects.
+
+On Edge 157.0.4341.60 x64, the maintainer confirmed that a physical `g` went into the
+public `textarea`. The matching `f3831bbe` publication recorded one more key callback and
+refused at `ProofWindow`, before character access. After six Tab presses and one `g` in
+the reported synthetic payment field, the same TSF instance recorded seven more key
+callbacks and six more `ProofWindow` refusals. One request stopped at `Session`. The last
+refusal was at `ProofWindow`. The consumed-key, attempted-effect, verified-effect,
+unknown-effect, and owned-composition counts stayed at zero across both tests. The maintainer
+identified the payment field. Independent browser field and caret checks, ordinary browser
+editing, and the final application and lifecycle matrix remain open.
 
 The diagnostic thread-enumeration fix removes an artificial 64-thread rejection that prevented
 observation of a live Edge process. The 65-worker regression passed on x64 and x86, and the
