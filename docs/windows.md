@@ -47,17 +47,18 @@ package-lifecycle results must identify the candidate used.
 
 Experimental package `940ee5df` passed local x64 and x86 native checks, the x64 sanitizer
 gate, and a clean reproducibility check. Installed COM activation loaded the expected DLL in
-an x64 process and an x86 process. The table records application evidence and holds open the
-cases that still need an installed-candidate run.
+an x64 process and an x86 process. The subsequent installed candidate `f3831bbe` restricts
+editing to fields for which the adapter can verify ownership and field eligibility. The table
+identifies which application checks used that candidate.
 
 | Application | Evidence and remaining checks |
 |---|---|
-| Notepad | Earlier tests passed correction and reversal in the main document. Repeat the document and excluded-control cases on the candidate. |
+| Notepad | On 11.2609.11.0 x64 with `f3831bbe`, UI Automation confirmed physical manual conversion and reversal, with both commands on the same owned TSF composition. In a separate test it matched automatic EN-to-RU correction of `cgbcjr` to `список`, including the trailing space and final caret. The TSF publication was unavailable after that automatic correction. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
-| Edge | The public `textarea` passed generated conversion and reversal checks. Two gates remain open: rich Undo selected part of the suffix, and the payment fixture was admitted. [Edge qualification](#edge-qualification), [payment counterexample](windows-admission-contract.md#browser-payment-field-counterexample). |
+| Edge | Earlier candidate `940ee5df` admitted the payment fixture. On 157.0.4341.60 x64 with `f3831bbe`, both the ordinary textarea and the reported payment-field sequence passed input through with zero attempted writes. Editing and native Undo selection remain open. [Edge qualification](#edge-qualification), [payment counterexample](windows-admission-contract.md#browser-payment-field-counterexample). |
 | Firefox | On ESR 153.7.0 x86, the maintainer saw the public test character in the ordinary textarea and the synthetic payment field. In separate windows, the matching English service recorded two and one key callbacks respectively. All stopped at `ProofWindow` with zero consumed keys, attempted edits or owned compositions. Independent field and caret observations and browser correction remain open. |
-| VS Code Insiders | The public editor passed text and caret checks with accessibility support enabled. Editing with Keyrill and the default profile remain unqualified. |
-| Word | The tested Compatibility Mode body, new document body, and table cell passed input through after an input-scope refusal. Editing in these controls remains unqualified. [Word editing limits](#word-editing-limits). |
+| VS Code Insiders | On 1.147.0 x64 with `f3831bbe`, UI Automation verified the full public document and caret after physical input of `ghbdtn`. All six key callbacks stopped at `ProofWindow` with zero attempted edits. This test used an isolated profile with accessibility support enabled and extensions disabled. Default-profile behavior and correction remain open. |
+| Word | On 16.0.20527.20196 x64 with `f3831bbe`, the public Compatibility Mode RTF body retained physical `ghbdtn`. UI Automation verified the full document and caret. All six key callbacks stopped at `ProofWindow` with zero attempted edits. The earlier new-document and table-cell results used an older DLL. [Word editing limits](#word-editing-limits). |
 | Windows Terminal | Physical ordinary and no-echo input reached the child unchanged on 1.25.2733.0 x64. Keyrill activation and manual commands remain unverified. [Terminal checks](#input-scope-in-windows-terminal-12527330). |
 
 Use the [maintainer checklist](windows-maintainer-checklist.md) for physical input and package
