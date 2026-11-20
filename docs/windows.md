@@ -53,7 +53,7 @@ identifies which application checks used that candidate.
 
 | Application | Evidence and remaining checks |
 |---|---|
-| Notepad | On 11.2609.11.0 x64 with `f3831bbe`, UI Automation confirmed physical manual conversion and reversal, with both commands on the same owned TSF composition. In a separate test it matched automatic EN-to-RU correction of `cgbcjr` to `список`, including the trailing space and final caret. The TSF publication was unavailable after that automatic correction. |
+| Notepad | On 11.2609.11.0 x64 with `f3831bbe`, UI Automation confirmed physical manual conversion and reversal, with both commands on the same owned TSF composition. In separate empty-document tests, typing the physical C G B C J R keys under Keyrill English produced `список`, and typing W O R L D under Keyrill Russian produced `world`. Each sequence ended with Space. UI Automation confirmed both words, the trailing space and the collapsed caret. Per-edit TSF evidence was unavailable for both automatic corrections. |
 | Chrome | Native Undo in rich `contenteditable` restored the original text and selected part of the suffix. Exact selection and the rest of the application matrix remain open. [Undo investigation](windows-chrome-undo.md). |
 | Edge | Earlier candidate `940ee5df` admitted the payment fixture. On 157.0.4341.60 x64 with `f3831bbe`, both the ordinary textarea and the reported payment-field sequence passed input through with zero attempted writes. Editing and native Undo selection remain open. [Edge qualification](#edge-qualification), [payment counterexample](windows-admission-contract.md#browser-payment-field-counterexample). |
 | Firefox | On ESR 153.7.0 x86, the maintainer saw the public test character in the ordinary textarea and the synthetic payment field. In separate windows, the matching English service recorded two and one key callbacks respectively. All stopped at `ProofWindow` with zero consumed keys, attempted edits or owned compositions. Independent field and caret observations and browser correction remain open. |
@@ -1119,7 +1119,8 @@ run does not isolate termination caused by the source-change callback.
 
 ## Maintainer registration and selection
 
-The full Rust service awaits physical controlled-editor and Notepad acceptance.
+For physical results with the installed Rust service, see the application results near the
+top of this document. The commands below exercise the proof registrar.
 General application reliability remains open. Installation, enablement, source selection,
 and permission changes belong to the maintainer. The default build and controlled tests never
 perform them. The maintainer-launched native source experiment below explicitly selects RU.
