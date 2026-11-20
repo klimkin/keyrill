@@ -1,15 +1,16 @@
 # Architecture
 
-Keyrill is a portable Rust engine behind a narrow C ABI, with one native adapter per platform.
-The adapter owns everything native: focus, permissions, objects, API calls, event disposition
-and verification of what the host document actually contains. Rust owns conversion,
-segmentation, lexical protection, scoring, abstention, bounded language context, manual intent
-and reversal data. A Rust plan is a proposal, never editing authority.
+Keyrill is a portable Rust engine behind a narrow C ABI, with one native adapter per platform. The
+adapter owns everything native: focus, permissions, objects, API calls, event disposition and
+verification of what the host document actually contains. Rust owns conversion, segmentation,
+lexical protection, scoring, abstention, bounded language context, manual intent and reversal data.
+A Rust plan is a proposal, never editing authority. [How Keyrill works](docs/how-it-works.md)
+follows one word through all of this; this page is the reference it leads to.
 
 ```mermaid
-flowchart LR
+flowchart TD
     K[Physical input and host lifecycle] --> M[macOS IMK, Objective-C++]
-    K --> W[Windows TSF, Rust / Linux adapter]
+    K --> W[Windows TSF, Rust]
     M -->|bounded UTF-16 facts| F[C ABI, keyrill-ffi]
     W -->|bounded UTF-16 facts| F
     F --> R[Rust session and policy, keyrill-core]
@@ -17,14 +18,18 @@ flowchart LR
     R -->|plan| F
     F -->|copied plan| M
     F -->|copied plan| W
-    M -->|owned composition only| H[Host text client]
+    M -->|owned composition| H[Host text client]
+    M -->|"compatibility backend:<br/>synthetic keys, ADR 006"| H
     W -->|owned composition only| H
 ```
 
+Linux support is planned. The macOS compatibility backend is the one path
+that edits committed text, under the terms of [ADR 006](docs/adr/006-compatibility-backend.md).
+
 | Path | Contents |
-|---|---|
+| -- | -- |
 | `crates/keyrill-core` | Mapping, model loader, inference, Vim vocabulary, word session; std only, `forbid(unsafe_code)` |
-| `crates/keyrill-ffi` | C ABI over the core, panic containment, macOS dictionary-file acquisition |
+| `crates/keyrill-ffi` | C ABI over the core, panic containment, dictionary-file acquisition |
 | `include/keyrill.h` | The ABI contract: layouts, ownership, versioning, every status code |
 | `native/macos` | InputMethodKit server, controller, settings window, compatibility backend, tests |
 | `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, raw COM HRESULT calls and typed reference leases |
@@ -37,17 +42,38 @@ flowchart LR
 | `tools/inference-probe` | Stdin probe the evaluator drives; not part of any build product |
 
 There is no shared document-editing abstraction across platforms, by design
-([ADR 001](docs/adr/001-rust-core-native-adapters.md)): IMK, TSF and Linux input frameworks
-differ in locks, callbacks, focus and composition identity, and a common facade would hide
-authority rather than prove it.
+([ADR 001](docs/adr/001-rust-core-native-adapters.md)): IMK, TSF and Linux input frameworks differ
+in locks, callbacks, focus and composition identity, and a common facade would hide authority rather
+than prove it.
 
 ## Word session
 
-Each input context has one engine handle and one word session. Its states are `Idle`,
-`Composing`, `BoundaryRetained` and `Invalidated`; the native generation is tracked separately.
+Each input context has one engine handle and one word session. Its states are `Idle`, `Composing`,
+`BoundaryRetained` and `Invalidated`; in `session.rs` the middle two are one `State::Owned` told
+apart by its `boundary` flag. The native generation is tracked separately, by the adapter.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Composing: letter at a word boundary
+    Composing --> Composing: letter, Backspace,<br/>manual conversion
+    Composing --> BoundaryRetained: Space, word plus Space<br/>marked, corrected or not
+    BoundaryRetained --> BoundaryRetained: reversal
+    Composing --> Idle: other key, Escape,<br/>Backspace to empty
+    BoundaryRetained --> Idle: next key finishes the mark
+    Idle --> Invalidated: refused or unknown outcome
+    Composing --> Invalidated: refused or unknown outcome,<br/>key in another mode
+    BoundaryRetained --> Invalidated: refused or unknown outcome,<br/>key in another mode
+    Invalidated --> Idle: reset
+```
+
+Every arrow among the first three states is a plan that takes effect only when the adapter
+acknowledges it as verified. Any other outcome, from any of them, moves the session to
+`Invalidated`, and so does a key planned in a mode other than the owned word's. `Invalidated`
+refuses every plan until the adapter resets it.
 
 | State and event | Effect |
-|---|---|
+| -- | -- |
 | Idle, eligible letter | Acquire context facts; start a new composition only if nothing is selected or foreign-marked |
 | Composing, letter | Update the owned mark, preserving case and the previous verified text |
 | Composing, Space | Infer or abstain, then mark the exact word plus one Space; keep the original only if converted |
@@ -56,13 +82,13 @@ Each input context has one engine handle and one word session. Its states are `I
 | Composing, manual command | Deterministic conversion with explicit intent; inference never undoes it |
 | Composing, Backspace | Remove only owned text; empty composition is its own native operation |
 | Escape | With a receipt, restore the original, finish and consume the key; otherwise finish the word as typed and pass Escape |
-| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The macOS adapter preserves the boundary mark and receipt for its requested mode-switch echo |
-| Foreign mark, mismatch, exception, unknown outcome | Stop correction for that word; no speculative repair. After a failed readback check, commit the client's own marked text once so the next key can't replace it. A second unknown outcome in an activation, or one before any verified write, stops the session until reactivation |
+| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The echo of a mode switch Keyrill requested keeps the boundary mark and its receipt |
+| Foreign mark, mismatch, exception, unknown outcome | Stop correction for that word, with no speculative repair; the [edit contract](#edit-contract) says what may still be written and when correction resumes |
 
 `propose` copies a latest-only token, expected text, desired text, operation and key disposition
-without changing confirmed state. `acknowledge` advances state only on a verified result.
-A refused or unknown outcome invalidates the session; reset expires tokens and receipts; a
-panic poisons the handle permanently. A plan permits at most one native write.
+without changing confirmed state. `acknowledge` advances state only on a verified result. A refused
+or unknown outcome invalidates the session; reset expires tokens and receipts; a panic poisons the
+handle permanently. A plan permits at most one native write.
 
 Ordinary Windows finalization can end an unchanged owned TSF composition without a text write.
 The native executor requires exact equality with its last verified text and checks context,
@@ -79,13 +105,70 @@ unknown outcomes cannot be admitted for automatic correction.
 
 Callbacks are not a document lock. Every native client call can reenter or invalidate state:
 snapshot the generation before a query, recheck it after each call and before any effect.
-Never hold a Rust borrow or dictionary lock across a native callback. Retained native objects
-keep memory alive, not focus or document identity.
+
+```mermaid
+sequenceDiagram
+    participant S as Session
+    participant C as Client
+    Note over S: g = generation
+    S->>C: markedRange
+    C-)S: callback during the call: focus moved, generation + 1
+    C-->>S: a range, from a context that is no longer current
+    Note over S: g ≠ generation: drop the work, write nothing
+```
+
+Never hold a Rust borrow or dictionary lock across a native callback. Retained native objects keep
+memory alive, not focus or document identity.
+
+## Edit contract
+
+A plan permits at most one native write, and this section is what an adapter must check around it.
+The mark is *owned* when the client, the start offset and the exact text match the adapter's local
+authority, the mark it verified last. *Exact text* is a readback over the expected range that
+returns the expected UTF-16 units and reports that same range. The generation and Secure Input are
+rechecked after every client call: a change before the write refuses the plan, and a change after it
+makes the outcome unknown.
+
+| Write | Checked before | Checked after, for a verified outcome | Key |
+| -- | -- | -- | -- |
+| Start a word: the first letter sets the mark | Nothing owned, marked or selected; caret where the context was read | Mark at that offset, caret at its end, exact text | Consumed |
+| Update the word: letter, Space, Backspace, manual conversion, reversal | Owned mark, caret at its end, exact text | Mark at the same offset, caret at its end, exact text | Consumed |
+| Empty the word: Backspace on the last letter | Owned mark, caret at its end, exact text | No mark, caret at the start | Consumed |
+| Finish with new text: Escape restores the original | Owned mark, caret at its end, exact text | No mark, caret after the text, exact text | Consumed |
+| Finish unchanged before a typed key | Owned mark and exact text; caret not checked | No mark, exact text over the same range | Passes to the host, or is planned again when it starts the next word |
+| Finish unchanged on a lifecycle request: commit, deactivation, mode change, click | Owned mark range; text not read | No mark; text not read | None |
+
+Each write ends in one of three acknowledgements, and only the first advances Rust:
+
+- **Verified.** Every check in the row passed. Rust advances, and after a mark write the adapter
+  takes local authority over the new mark. If Rust then refuses the acknowledgement, the contract is
+  broken and correction stops until reactivation.
+- **Refused before the write.** A check before the write failed. Nothing is written, the key goes to
+  the host as typed, Rust drops the word and the next word starts fresh.
+- **Unknown.** The write may have happened and nothing confirms what it did. Rust drops the word,
+  correction stops and nothing is retried. A key the write carried is consumed, not replayed; a
+  finish carried only the previous mark, so the key after it passes once. Reserved commands stay
+  consumed.
+
+After an unknown outcome the adapter makes at most one more write, and only when the failed check
+came after the write, on the client's own answer, with the generation unchanged and Secure Input
+off: it reads the marked text back and, if the readback covers exactly the marked range, commits it
+unchanged so that the next key can't replace it. This keeps what the user sees and repairs nothing.
+Correction resumes at the next text key only if a write in this activation was already verified and
+this was the first unknown outcome; otherwise it stays off until the input source is activated
+again. These rules contain the ambiguity without proving that the host kept the input, so a client
+that produces unknown outcomes is not admitted for automatic correction.
+
+The [macOS adapter](docs/macos.md#composition) maps each row to IMK calls and explains why the two
+unchanged finishes relax their checks. The compatibility backend is outside this contract: it
+submits a bounded batch of synthetic events whose outcome is dispatched, never verified, and it
+never runs to repair an unknown composition outcome
+([ADR 006](docs/adr/006-compatibility-backend.md)).
 
 ## Safety invariants
 
 | ID | Requirement | Falsifying test |
-|---|---|---|
+| -- | -- | -- |
 | S1 | Preserve unrelated document content and input order | Whole-document, prefix, suffix and selection oracle with input and focus changes injected at each native boundary |
 | S2 | Never treat a stale or foreign composition as owned | Match client, generation, mark, exact UTF-16 text and caret (an unchanged commit by range skips the caret, and on focus loss the text readback); reject foreign-range and reused-proxy schedules |
 | S3 | No write under uncertain target authority | Verify before the effect and after reentrant queries; zero writes after an ownership loss |
@@ -97,19 +180,20 @@ keep memory alive, not focus or document identity.
 | S9 | Native/FFI lifetime is explicit | One owner per mutable session, callbacks drained before free, ABI bounds and exception containment tested |
 | S10 | Refusal is visible and safe | Unsupported status with unchanged documents; never switch transport silently |
 
-These are acceptance requirements, not a proof that arbitrary clients obey a transaction
-protocol. An already dispatched request to a misbehaving client cannot be withdrawn, so admit a
-client only under a tested contract and exclude the ones that cannot preserve the invariants.
+These are acceptance requirements, not a proof that arbitrary clients obey a transaction protocol.
+An already dispatched request to a misbehaving client cannot be withdrawn, so admit a client only
+under a tested contract and exclude the ones that cannot preserve the invariants.
 
-The macOS compatibility backend is the one explicit exception: it does counted deletion and
-retyping, outside S1, S4 and S6, under the terms in
-[ADR 006](docs/adr/006-compatibility-backend.md). It is chosen before any edit and never used to
-repair a failed composition write.
+> [!WARNING]
+> The macOS compatibility backend is the one explicit exception: it does counted deletion and
+> retyping, outside S1, S4 and S6, under the terms in
+> [ADR 006](docs/adr/006-compatibility-backend.md). It is chosen before any edit and never used to
+> repair a failed composition write.
 
 Mechanisms rejected as generic fallbacks, each with a reproduced or source-level failure:
 
 | Mechanism | Failure |
-|---|---|
+| -- | -- |
 | Accessibility temporary selection, then replace | Input typed after selecting overwrites the exposed selection before revalidation |
 | Whole-field accessibility set from a snapshot | Concurrent input disappears when the old value is written back |
 | Counted Backspaces, then insert | Continued input changes what gets deleted; tags and pacing don't serialize the host |
@@ -117,39 +201,41 @@ Mechanisms rejected as generic fallbacks, each with a reproduced or source-level
 | Clipboard paste and restore | Exposes text to clipboard history; a late restore overwrites a newer clipboard |
 | Input suppression and replay | Focus can move while queued; replay can duplicate, redirect or drop input |
 
-[`docs/regressions.json`](docs/regressions.json) holds the negative and state-machine schedules
-for these. A test passes by detecting the prohibited transport's damage or by refusing the
-schedule; it must not make Keyrill reproduce the unsafe edit.
+[`docs/regressions.json`](docs/regressions.json) holds the negative and state-machine schedules for
+these. A test passes by detecting the prohibited transport's damage or by refusing the schedule; it
+must not make Keyrill reproduce the unsafe edit.
 
 ## Eligibility and key disposition
 
-Automatic correction requires an enabled policy, an admitted control, no Secure Input, a known
-input mode, a complete whitespace-delimited token and no foreign composition. Exclusion is
-checked before any text is read or composition starts. Secure, read-only and uncertain controls
-get neither.
+Automatic correction requires an enabled policy, an admitted control, no Secure Input, a known input
+mode, a complete whitespace-delimited token and no foreign composition. Exclusion is checked before
+any text is read or composition starts. Secure, read-only and uncertain controls must get neither,
+but the macOS adapter can't tell them apart within an application: admission is per application by
+bundle identifier, and Secure Input is one global flag, so it detects neither per-field passwords
+nor read-only or sensitive fields ([macOS](docs/macos.md)).
 
-A key is consumed only under a reviewed handling contract. A plan rejected before any write
-passes the key unchanged. Punctuation, Tab and Enter are not correction triggers: a still-owned
-word is finished under the native lifecycle and the key goes through. Never delay or replay
-Enter, Tab, navigation or shortcuts to gain inference context.
+A key is consumed only under a reviewed handling contract. A plan rejected before any write passes
+the key unchanged. Punctuation, Tab and Enter are not correction triggers: a still-owned word is
+finished under the native lifecycle and the key goes through. Never delay or replay Enter, Tab,
+navigation or shortcuts to gain inference context.
 
 ## Configuration and snapshots
 
 Disk reads stay out of keyboard callbacks. The model is embedded and validated once per process,
-before the input server starts. Personal vocabulary is parsed off the input thread into
-immutable snapshots and published whole; an invalid candidate keeps the last good snapshot.
-Each decision uses one snapshot. Invalid configuration keeps the last valid configuration and
-reports a content-free error; safety settings are never partially applied.
+before the input server starts. Personal vocabulary is parsed off the input thread into immutable
+snapshots and published whole; an invalid candidate keeps the last good snapshot. Each decision uses
+one snapshot. Invalid configuration keeps the last valid configuration and reports a content-free
+error; safety settings are never partially applied.
 
 ## Privacy and trust boundary
 
 An input method sees everything typed in a client that selects it. Safe Rust doesn't change that:
 native code, dependencies, the model, installation and updates are all inside the trust boundary.
-Keyrill keeps at most one word, one reversal receipt and 256 UTF-16 units of its own finished
-words in memory, clears them on invalidation, and writes none of it anywhere. Diagnostics are
-content-free counters and status. Private text can still exist in a crash dump; Keyrill doesn't
-claim secure erasure. Personal dictionaries stay user-owned, read-only and out of release assets.
-No telemetry, remote configuration, automatic update or privileged helper.
+Keyrill keeps at most one word, one reversal receipt and 256 UTF-16 units of its own finished words
+in memory, clears them when the session is invalidated or reset, and writes none of it anywhere.
+Diagnostics are content-free counters and status. Private text can still exist in a crash dump;
+Keyrill doesn't claim secure erasure. Personal dictionaries stay user-owned, read-only and out of
+release assets. No telemetry, remote configuration, automatic update or privileged helper.
 
 ## Lifetime
 

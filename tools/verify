@@ -1,4 +1,7 @@
 #!/bin/sh
+# Verification entry point. The default mode, check, is the integration gate on every platform;
+# the other modes need extra tools, and audit, coverage and fuzz refuse a version other than the
+# pinned one. docs/development.md lists what each mode requires
 set -eu
 cd "$(dirname "$0")/.."
 case "${1:-check}" in
@@ -9,23 +12,37 @@ case "${1:-check}" in
         ;;
     esac
     python3 tools/pack-model.py --check
+    python3 tools/check-excerpts.py
     cargo fmt --all -- --check
     cargo fmt --manifest-path fuzz/Cargo.toml -- --check
     cargo clippy --locked --workspace --all-targets -- -D warnings
     cargo test --locked --workspace
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
     cargo build --locked --workspace --release
-    clang -std=c11 -Wall -Wextra -Werror -fsyntax-only -x c include/keyrill.h
-    # The C smoke test links the staticlib with the system libraries rustc reports for it
-    libs=$(cargo rustc --locked --release -p keyrill-ffi --crate-type staticlib -- --print native-static-libs 2>&1 |
-      sed -n 's/.*native-static-libs: //p' | tr ' ' '\n' | grep -v '^/' | tr '\n' ' ')
-    clang -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude crates/keyrill-ffi/tests/abi_smoke.c \
-      target/release/libkeyrill_ffi.a $libs -o target/release/abi-smoke
-    target/release/abi-smoke
+    "$0" abi-smoke
     if [ "$(uname -s)" = Darwin ]; then
       clang-format --dry-run --Werror include/keyrill.h crates/keyrill-ffi/tests/abi_smoke.c
       native/macos/build.sh check
     fi
+    ;;
+  abi-smoke)
+    clang -std=c11 -Wall -Wextra -Werror -fsyntax-only -x c include/keyrill.h
+    # The C smoke test links the staticlib with the system libraries rustc reports for it
+    libs=$(cargo rustc --locked --release -p keyrill-ffi --crate-type staticlib -- --print native-static-libs 2>&1 |
+      sed -n 's/.*native-static-libs: //p' | tr ' ' '\n' | grep -v '^/' | tr '\n' ' ')
+    case "$(uname -s)" in
+      # Rust's MSVC staticlib expects the DLL C runtime; /defaultlib entries are dropped above
+      # and the clang driver takes a bare name.lib for an input file, not a library to search for.
+      # The driver also adds the static libcmt at link time, which would mix the two runtimes
+      MINGW* | MSYS* | CYGWIN*)
+        lib=target/release/keyrill_ffi.lib crt="-fms-runtime-lib=dll -Wl,-nodefaultlib:libcmt" exe=.exe
+        libs=$(printf '%s\n' $libs | sed 's/\.lib$//; s/^/-l/' | tr '\n' ' ')
+        ;;
+      *) lib=target/release/libkeyrill_ffi.a crt= exe= ;;
+    esac
+    clang -std=c11 -Wall -Wextra -Wpedantic -Werror $crt -Iinclude crates/keyrill-ffi/tests/abi_smoke.c \
+      "$lib" $libs -o "target/release/abi-smoke$exe"
+    "target/release/abi-smoke$exe"
     ;;
   sanitize)
     case "$(uname -s)" in
@@ -34,6 +51,20 @@ case "${1:-check}" in
     esac
     ;;
   browser-fixture) node native/macos/tests/browser-fixture.test.cjs ;;
+  markdown)
+    # model/corpora holds upstream READMEs pinned by hash, so their bytes must stay as published.
+    # pymarkdown reads .pymarkdown; line length is mdformat's job, since table rows can't wrap
+    files=$(git ls-files '*.md' ':!model/corpora/*')
+    mdformat="uvx --from mdformat==1.0.0 --with mdformat-gfm==1.0.0 --with mdformat-gfm-alerts==2.1.0 mdformat"
+    if [ "${2:-}" = fix ]; then $mdformat $files; else $mdformat --check $files; fi
+    uvx --from pymarkdownlnt==0.9.40 pymarkdown scan $files
+    python3 tools/check-translations.py
+    ;;
+  site)
+    test "$(mdbook --version)" = "mdbook v0.5.4"
+    test "$(mdbook-mermaid --version)" = "mdbook-mermaid 0.17.1"
+    python3 tools/build-site.py
+    ;;
   audit)
     test "$(cargo deny --version)" = "cargo-deny 0.20.2"
     cargo deny --locked check
@@ -73,9 +104,11 @@ case "${1:-check}" in
     tail -n 1 "$run_dir/model.log"
     ;;
   miri)
+    # Skipped: tests that use the file system, which Miri isolation blocks, and the one that
+    # walks the whole embedded model, about 26 minutes under Miri; the normal suite runs them
     cargo +nightly-2026-10-26 miri test --locked -p keyrill-ffi --lib -- \
       --skip vocabulary_source:: --skip vocabulary_host::tests::source_ \
       --skip model_policy_bridge_preserves_configuration_context_and_receipts
     ;;
-  *) echo "usage: ./tools/verify [check|sanitize|browser-fixture|audit|coverage|evaluate|fuzz|miri]" >&2; exit 2 ;;
+  *) echo "usage: ./tools/verify [check|abi-smoke|sanitize|browser-fixture|markdown [fix]|site|audit|coverage|evaluate|fuzz|miri]" >&2; exit 2 ;;
 esac

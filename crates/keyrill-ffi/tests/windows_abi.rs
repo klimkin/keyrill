@@ -5,7 +5,7 @@ use keyrill_ffi as _;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
-const ABI: u32 = 1;
+const ABI: u32 = 3;
 const OK: u32 = 0;
 const TEXT: u32 = 1;
 const ESCAPE: u32 = 3;

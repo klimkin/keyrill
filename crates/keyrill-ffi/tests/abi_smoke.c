@@ -1,6 +1,8 @@
 // Drives the C ABI the way a native adapter does, against an in-memory document.
 // The document is a run of committed text followed by the owned composition, with the caret
-// at the end. Every write is checked against the plan's expected text before it is made.
+// at the end. Every write is checked against the plan's expected text before it is made. A write
+// here cannot fail or be changed by a host, so the readback a real adapter needs is the written
+// text itself; this test exercises the protocol, not a host.
 #include "keyrill.h"
 
 #include <stdio.h>
@@ -47,6 +49,8 @@ static void key(kr_engine *engine, document *doc, uint32_t role, uint32_t mode, 
       fail("kr_plan_event refused an event");
       return;
     }
+    // PASS and UNAVAILABLE write nothing and are acknowledged as verified; an action the header
+    // does not define is refused before any write
     uint32_t outcome = KR_APPLIED_VERIFIED;
     if (plan.action == KR_MARK || plan.action == KR_FINISH)
       outcome = apply(doc, &plan);
@@ -93,6 +97,8 @@ static void expect(const document *doc, const char *utf8, int committed, const c
     fail(scenario);
 }
 
+// Types `typed`, expects the document to show `shown`, sends the `last` key, finishes a mark
+// that is still owned and expects `result` committed with no composition left
 static void scenario(uint32_t keyboard, uint32_t mode, const char *typed, const char *shown,
                      uint32_t last, const char *result, const char *name) {
   kr_engine *engine = NULL;
@@ -149,6 +155,39 @@ done:
   kr_engine_free(engine);
 }
 
+// With KR_SOURCE_MISSING_IS_EMPTY, the default dictionary under a home that doesn't exist and a
+// learned list at that missing path each publish an empty source on the first observation
+static void default_dictionary(void) {
+#ifdef _WIN32
+  static const char home[] = "C:\\keyrill-absent-home";
+#else
+  static const char home[] = "/keyrill-absent-home";
+#endif
+  kr_vocabulary *vocabulary = NULL;
+  kr_engine *engine = NULL;
+  uint32_t observation = UINT32_MAX;
+  if (kr_vocabulary_new(KR_ABI_VERSION, &vocabulary) != KR_OK || !vocabulary ||
+      kr_engine_new(KR_ABI_VERSION, &engine) != KR_OK || !engine)
+    fail("vocabulary setup");
+  else if (kr_vocabulary_configure_default(vocabulary, KR_EN, (const uint8_t *)"home", 4) !=
+           KR_PATH)
+    fail("a relative home was accepted");
+  else if (kr_vocabulary_configure_default(vocabulary, KR_EN, (const uint8_t *)home,
+                                           sizeof home - 1) != KR_OK ||
+           kr_vocabulary_observe(vocabulary, KR_EN, &observation) != KR_OK ||
+           observation != KR_SOURCE_PUBLISHED || kr_adopt_vocabulary(engine, vocabulary) != KR_OK)
+    fail("a missing default dictionary was not published empty");
+  else if (kr_vocabulary_configure(vocabulary, KR_LEARNED + KR_LEARNED_SOURCES - 1,
+                                   (const uint8_t *)home, sizeof home - 1,
+                                   KR_SOURCE_MISSING_IS_EMPTY | KR_SOURCE_EXCLUDED) != KR_OK ||
+           kr_vocabulary_observe(vocabulary, KR_LEARNED + KR_LEARNED_SOURCES - 1, &observation) !=
+               KR_OK ||
+           observation != KR_SOURCE_PUBLISHED || kr_adopt_vocabulary(engine, vocabulary) != KR_OK)
+    fail("a missing learned list was not published empty");
+  kr_engine_free(engine);
+  kr_vocabulary_free(vocabulary);
+}
+
 int main(void) {
   if (kr_abi_version() != KR_ABI_VERSION)
     fail("library and header versions differ");
@@ -170,9 +209,10 @@ int main(void) {
   scenario(apple, KR_EN, "[jhjij", "[jhjij", KR_MANUAL, "хорошо",
            "EN mode: keys for Russian letters convert");
   immutable_dictionaries();
+  default_dictionary();
 
   if (failures)
     return 1;
-  puts("abi_smoke: 9 scenarios passed");
+  puts("abi_smoke: 8 scenarios and both dictionary checks passed");
   return 0;
 }

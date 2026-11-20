@@ -231,6 +231,7 @@ pub fn production(image: &[u8], target: Target) -> Result<()> {
         "kr_vocabulary_new",
         "kr_vocabulary_free",
         "kr_vocabulary_configure",
+        "kr_vocabulary_configure_default",
         "kr_vocabulary_observe",
         "kr_adopt_vocabulary",
         "kr_plan_compatibility_event",

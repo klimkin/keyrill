@@ -11,8 +11,8 @@ diagnostic observations.
 
 Microsoft documents separate request and session outcomes for edit sessions, and composition
 creation that an owner can reject while still returning success with a null composition. The
-reference sample doesn't handle either correctly. Locks are not rollback or a focus guarantee,
-and an in-process DLL failure can take down the host editor.
+reference sample doesn't handle either correctly. Locks are not rollback or a focus guarantee, and
+an in-process DLL failure can take down the host editor.
 
 The [recorded Windows proof](../windows.md) includes native editor and Notepad document/caret
 observations, controlled denied sessions, and separate physical keyboard results. Those results

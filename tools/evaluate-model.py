@@ -7,11 +7,12 @@ from pathlib import Path
 import shutil
 import sys
 
+# Loading model/tools/evaluate.py as a module would otherwise leave __pycache__ in model/tools
 sys.dont_write_bytecode = True
 
-# Floors sit about two points below the lower of the dev and test results of the default
-# policy; bounds allow a little more than the measured counts and stay under one false
-# correction per 10,000 tokens. See docs/engine.md#evaluation.
+# Floors were set about two points below the original policy's lower split; the limits stay
+# unchanged when tuning the policy. Typo bounds stay under one false correction per 10,000
+# tokens. See docs/engine.md#evaluation.
 RECALL_FLOORS = {
     "wrong/en": {"token_recall": 0.58, "first_error_recall": 0.45},
     "wrong/ru": {"token_recall": 0.44, "first_error_recall": 0.45},
@@ -41,6 +42,8 @@ for name in ["evaluation-sources.json", "model-manifest.json"]:
     shutil.copyfile(reference / "data" / name, output / "data" / name)
 for corpus in (reference / "corpora").glob("*.conllu"):
     shutil.copyfile(corpus, output / ".cache/evaluation" / corpus.name)
+# evaluate.py reads its sources and writes its report under ROOT; pointing ROOT at a copy in
+# target/ keeps the tracked model/ tree unchanged
 spec = importlib.util.spec_from_file_location("keyrill_reference_evaluation", reference / "tools/evaluate.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

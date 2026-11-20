@@ -11,6 +11,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// The automatic-correction policy as the input menu reports it.
 typedef NS_ENUM(uint8_t, KRPolicyStatus) {
   KRPolicyStatusOff,
   KRPolicyStatusModel,
@@ -21,7 +22,10 @@ typedef NS_ENUM(uint8_t, KRPolicyStatus) {
 /// Content-free state of one language's personal source in the shared vocabulary handle. Ready
 /// means published there, not yet adopted by any particular engine.
 typedef NS_ENUM(uint8_t, KRSourceStatus) {
+  /// No vocabulary is in use (policy OFF, or the model failed validation), so no source is
+  /// configured or read.
   KRSourceStatusUnconfigured,
+  /// Configured, with no settled observation yet.
   KRSourceStatusPending,
   KRSourceStatusReady,
   /// A later read failed; the last good snapshot stays in force.
@@ -47,14 +51,18 @@ typedef struct {
   KRPolicyStatus policy;
   KRSourceStatus english;
   KRSourceStatus russian;
+  /// The Learn Spelling list. It protects and forbids words when ready, but correction never
+  /// waits for it.
+  KRSourceStatus learned;
 } KRRuntimeStatus;
 
 /// Process-wide automatic-correction configuration and personal-source acquisition. Policy and
 /// paths are read once at initialization. Under MODEL, a serial work queue observes both
-/// sources and published snapshots are adopted on the main thread into the session that last
-/// requested them, never inside a host callback. Other sessions refresh on their next request.
-/// Main-thread only except where noted. Production keeps one instance for the process lifetime;
-/// queued work retains it, so deallocation happens only after that work has drained.
+/// language sources and the learned list, and published snapshots are adopted on the main thread
+/// into the session that last requested them, never inside a host callback. Other sessions refresh
+/// on their next request. Main-thread only except where noted. Production keeps one instance for
+/// the process lifetime; queued work retains it, so deallocation happens only after that work has
+/// drained.
 @interface KRRuntime : NSObject
 
 /// MODEL when AutomaticCorrectionEnabled is a true NSNumber, else OFF. Values of any other type
@@ -65,7 +73,8 @@ typedef struct {
 /// RussianDictionaryPath must be absolute NSStrings of at most KR_MAX_PATH_BYTES file-system
 /// bytes; an absent key selects ~/.vim/spell/{en,ru}.utf-8.add, where a file that doesn't exist
 /// counts as empty, and any other value leaves that language missing, as does a configured
-/// file that doesn't exist. `homeResolver` runs on `workQueue` only when a default path is needed.
+/// file that doesn't exist. The Learn Spelling list in the AppleSpell group container under the
+/// home is read too, a missing file counting as empty. `homeResolver` runs once on `workQueue`.
 /// `mainExecutor` must run each block later on the main thread. A nonzero `observationInterval`
 /// (nanoseconds) adds a periodic observation timer at start. Validates the model asset here.
 - (instancetype)initWithPreferences:(nullable NSDictionary *)preferences

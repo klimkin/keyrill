@@ -114,7 +114,7 @@ fn runtime_worker_real_files_settle_parse_retain_and_absence() {
         unsafe { api.module.export(b"kr_dictionary_skipped_lines\0") };
     let free: unsafe extern "C" fn(*mut c_void) = unsafe { api.module.export(b"kr_engine_free\0") };
     let mut engine = std::ptr::null_mut();
-    assert_eq!(unsafe { engine_new(1, &mut engine) }, 0);
+    assert_eq!(unsafe { engine_new(3, &mut engine) }, 0);
     assert!(!engine.is_null());
     assert_eq!(
         unsafe { adopt(engine, ready.sources[0].dictionary, null()) },

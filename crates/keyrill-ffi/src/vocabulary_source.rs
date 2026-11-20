@@ -1,12 +1,32 @@
-//! Bounded macOS vocabulary acquisition, invoked outside input callbacks.
+//! Bounded reading of one dictionary file into an immutable vocabulary, outside input callbacks.
+//!
+//! A personal dictionary is a file that another program, Vim or the OS spell checker, rewrites
+//! whenever it likes, so a read can meet a half-written file, a file replaced in the middle of
+//! the read, or something at the path that is not a file at all. One observation is:
+//!
+//! ```text
+//!   stat the path          a regular file of at most 1 MiB; remember its stamp
+//!   open, fstat            nonblocking; still a regular file with the same stamp
+//!   read at most 1 MiB+1   more than 1 MiB is TooLarge
+//!   fstat, stat the path   the same stamp through both, and as many bytes as the stamp says
+//!   compare with staged    same stamp and bytes: publish; otherwise parse and stage
+//! ```
+//!
+//! A candidate is published only when two consecutive observations read it identically. That
+//! settles the usual save patterns but cannot prove a writer finished. Every failure discards
+//! the staged candidate and keeps the last published vocabulary, so protection never drops
+//! because of one bad read.
 #![forbid(unsafe_code)]
 
 use keyrill_core::vocabulary::{MAX_SOURCE_BYTES, ParseError, Vocabulary};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(unix))]
+use std::time::SystemTime;
 
 /// Content-free reason an observation failed. The last-good vocabulary remains available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +54,10 @@ pub enum Observation {
     Unchanged,
 }
 
+// What must not change during one observation or between two: identity, length, and the
+// modification and status-change times. A writer can restore the modification time but not the
+// status-change time, so a rewrite that hides behind an old mtime still changes the stamp.
+#[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     device: u64,
@@ -43,6 +67,7 @@ struct Stamp {
     changed: (i64, i64),
 }
 
+#[cfg(unix)]
 impl Stamp {
     fn of(metadata: &Metadata) -> Self {
         Self {
@@ -55,40 +80,86 @@ impl Stamp {
     }
 }
 
+// Stable std exposes no file identity on Windows, so a replacement with the same length and
+// timestamps keeps its stamp; the exact byte comparison between observations still catches it
+#[cfg(not(unix))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    length: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+}
+
+#[cfg(not(unix))]
+impl Stamp {
+    fn of(metadata: &Metadata) -> Self {
+        Self {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+        }
+    }
+}
+
+// A parsed file waiting for a second equal observation, with the bytes it was parsed from
 struct Candidate {
     stamp: Stamp,
     bytes: Vec<u8>,
     vocabulary: Arc<Vocabulary>,
 }
 
-/// Last-good personal protection plus one staged candidate. Never reads a default/home path.
+/// Parses a complete candidate in the source's word-list format: Vim's, or a plain list for
+/// learned words.
+pub type Parser = fn(&[u8]) -> Result<Vocabulary, ParseError>;
+
+/// The last published vocabulary of one file plus one staged candidate. It reads only the path
+/// it is given and knows no default or home path.
 ///
 /// Two equal observations are a settling heuristic: a writer paused across both can still
 /// expose an incomplete but valid file. This does not prove that an editor save completed.
-#[derive(Default)]
 pub struct Source {
     current: Option<Arc<Vocabulary>>,
     staged: Option<Candidate>,
+    parse: Parser,
+}
+
+/// A source that parses Vim word lists.
+impl Default for Source {
+    fn default() -> Self {
+        Self::new(Vocabulary::parse)
+    }
 }
 
 impl Source {
-    /// Retain an immutable last-good snapshot; `None` means never successfully published.
+    /// An empty source whose candidates `parse` reads.
+    pub fn new(parse: Parser) -> Self {
+        Self {
+            current: None,
+            staged: None,
+            parse,
+        }
+    }
+
+    /// Share the last published vocabulary; `None` until the first publication.
     pub fn current(&self) -> Option<Arc<Vocabulary>> {
         self.current.clone()
     }
 
     /// Read a bounded candidate without writing the source. Call on a serialized reload path,
-    /// outside input callbacks. Failure discards staging without dropping last-good protection.
-    /// An initial valid empty file also requires two equal observations.
+    /// outside input callbacks. The first valid read stages a candidate and returns
+    /// [`Observation::Pending`]; a second read with equal metadata and bytes publishes it. An
+    /// initial valid empty file also requires two equal observations.
     ///
     /// # Errors
     ///
     /// A [`SourceError`] if the file can't be read, isn't a regular file, exceeds the bound,
-    /// changes during the read or doesn't parse. Staging is discarded; the published snapshot stays.
+    /// changes during the read or doesn't parse. Staging is discarded; the published snapshot
+    /// stays.
     pub fn observe(&mut self, path: &Path) -> Result<Observation, SourceError> {
         self.observe_at(path, |_, _| {})
     }
 
+    // `checkpoint` lets tests change the file at fixed steps of one observation
     fn observe_at(
         &mut self,
         path: &Path,
@@ -117,13 +188,15 @@ impl Source {
         let stamp = Stamp::of(&before);
         checkpoint(Step::CheckedPath, None);
 
-        // Pre-stat narrows device exposure; nonblocking open also avoids waiting on a raced FIFO.
+        // Pre-stat narrows device exposure; nonblocking open also avoids waiting on a raced FIFO,
+        // and O_NOCTTY keeps a raced terminal from becoming the controlling terminal. Windows
+        // needs no flag: a named-pipe client open fails at once when no instance is free.
         // Follow symlinks because normal dotfile arrangements use them. std sets close-on-exec.
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-            .open(path)
-            .map_err(io)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+        let mut file = options.open(path).map_err(io)?;
         let opened = file.metadata().map_err(io)?;
         if !opened.is_file() {
             return Err(SourceError::NotRegular);
@@ -151,6 +224,7 @@ impl Source {
             return Err(SourceError::Changed);
         }
 
+        // Comparing bytes as well as stamps catches a rewrite that keeps size and timestamps
         if let Some(staged) = &self.staged
             && staged.stamp == stamp
             && staged.bytes == bytes
@@ -165,7 +239,7 @@ impl Source {
             self.current = Some(staged.vocabulary.clone());
             return Ok(Observation::Published);
         }
-        let vocabulary = Vocabulary::parse(&bytes).map_err(SourceError::Invalid)?;
+        let vocabulary = (self.parse)(&bytes).map_err(SourceError::Invalid)?;
         self.staged = Some(Candidate {
             stamp,
             bytes,
@@ -187,6 +261,8 @@ enum Step {
 mod tests {
     use super::*;
     use keyrill_core::vocabulary::Membership;
+    // Symlink, FIFO and permission tests are Unix-only; Windows symlinks need a privilege
+    #[cfg(unix)]
     use std::os::unix::fs::{DirBuilderExt, symlink};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -201,7 +277,10 @@ mod tests {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
+            #[cfg(unix)]
             fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            #[cfg(not(unix))]
+            fs::create_dir(&path).unwrap();
             Self(path)
         }
         fn path(&self, name: &str) -> PathBuf {
@@ -221,6 +300,8 @@ mod tests {
         source.current().unwrap()
     }
 
+    // A reader holding the old snapshot keeps it across a reload, and the file is never written
+    #[cfg(unix)]
     #[test]
     fn symlink_reload_settles_and_retains_immutable_readers() {
         let directory = Directory::new();
@@ -251,6 +332,8 @@ mod tests {
         assert_eq!(fs::read(&target).unwrap(), b"world\n");
     }
 
+    // Each kind of failure drops the staged candidate and keeps last good; an empty file is a
+    // valid source and still takes two observations
     #[test]
     fn failures_drop_staging_and_preserve_last_good() {
         let directory = Directory::new();
@@ -292,6 +375,7 @@ mod tests {
         assert!(initial.current().unwrap().is_empty());
     }
 
+    // A write at any step of one observation is caught as Changed and never staged
     #[test]
     fn deterministic_mutations_during_acquisition_never_publish() {
         for step in [Step::CheckedPath, Step::Opened, Step::Read] {
@@ -313,6 +397,9 @@ mod tests {
         }
     }
 
+    // A rename over the file during the read is caught. A truncate-then-write save is staged
+    // twice with different bytes, so the empty intermediate never publishes.
+    #[cfg(unix)]
     #[test]
     fn replacement_and_truncate_then_write_require_new_observations() {
         let directory = Directory::new();
@@ -365,6 +452,12 @@ mod tests {
             Err(SourceError::TooLarge)
         );
         fs::write(&path, b"hello").unwrap();
+        // Windows refuses to open a directory as a file, so the race fails at the open instead
+        let expected = if cfg!(windows) {
+            SourceError::Io(ErrorKind::PermissionDenied)
+        } else {
+            SourceError::NotRegular
+        };
         assert_eq!(
             source.observe_at(&path, |at, _| {
                 if at == Step::CheckedPath {
@@ -372,12 +465,15 @@ mod tests {
                     fs::create_dir(&path).unwrap();
                 }
             }),
-            Err(SourceError::NotRegular)
+            Err(expected)
         );
         assert!(source.staged.is_none());
         assert!(Arc::ptr_eq(&good, &source.current().unwrap()));
     }
 
+    // Retargeting or removing the symlink during a read is caught, and the dropped stage makes
+    // the next read start over at Pending
+    #[cfg(unix)]
     #[test]
     fn symlink_retarget_and_disappearance_discard_staging() {
         let directory = Directory::new();
@@ -415,6 +511,9 @@ mod tests {
         assert_eq!(source.observe(&path), Ok(Observation::Pending));
     }
 
+    // Without O_NONBLOCK, opening a FIFO swapped in after the stat would block the acquisition
+    // queue until a writer appeared; with it the open returns and the swap is NotRegular
+    #[cfg(unix)]
     #[test]
     fn nonblocking_flag_is_checked_before_the_fifo_race() {
         let directory = Directory::new();
@@ -454,6 +553,8 @@ mod tests {
         assert!(Arc::ptr_eq(&good, &source.current().unwrap()));
     }
 
+    // The known limit of the settling heuristic: a writer paused across both observations
+    // publishes its partial file, here an empty one
     #[test]
     fn paused_writer_across_both_observations_can_publish_empty() {
         let directory = Directory::new();
@@ -488,6 +589,8 @@ mod tests {
         );
     }
 
+    // Root ignores mode 000, so this test needs an ordinary user
+    #[cfg(unix)]
     #[test]
     fn permission_failure_preserves_last_good() {
         use std::os::unix::fs::PermissionsExt;

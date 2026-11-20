@@ -27,6 +27,9 @@ static NSString *const kEnglishPath = @"EnglishDictionaryPath";
 static NSString *const kRussianPath = @"RussianDictionaryPath";
 
 /// Runs the runtime's work queue and main-thread blocks only when drained, on the main thread.
+/// The home resolver returns `home` (nil for an unresolved home) and records how often it ran
+/// and whether it ever ran on main; `posts` counts blocks posted to main, so a test can show
+/// that a round woke nothing.
 @interface Harness : NSObject
 @property(nonatomic, readonly) dispatch_queue_t queue;
 @property(nonatomic, copy) NSString *home;
@@ -156,6 +159,8 @@ NSString *afterManual(kr_engine *engine, NSString *word) {
   return finalMark(engine, word, KR_MANUAL, 0);
 }
 
+// Only an NSNumber true selects the model; a missing domain, a string "YES" or any other type
+// leaves automatic correction off, so a malformed defaults value fails closed
 void testPolicyResolution() {
   currentTest = "policy_resolution";
   struct Case {
@@ -198,8 +203,8 @@ void testOffDoesNoSourceWork() {
   [runtime stop];
 }
 
-// Explicit paths need no home. Two equal reads publish; an unchanged read wakes nothing; the
-// requested session adopts the publication and its next decision uses both sources.
+// Two equal reads of explicit paths publish; an unchanged read wakes nothing; the
+// requested session adopts the publication and its next decision uses both sources
 void testExplicitSourcesPublishAndAdopt() {
   currentTest = "explicit_sources_publish_and_adopt";
   NSString *root = directory(@"explicit");
@@ -228,7 +233,9 @@ void testExplicitSourcesPublishAndAdopt() {
   NSUInteger posts = harness.posts;
   [runtime tick];
   [harness drain];
-  CHECK(harness.posts == posts && harness.homeCalls == 0);
+  CHECK(harness.posts == posts && harness.homeCalls == 1);
+  // No home means no learned list, and correction above didn't wait for it
+  CHECK(runtime.status.learned == KRSourceStatusMissing);
   [runtime stop];
 }
 
@@ -255,6 +262,41 @@ void testDefaultPathsFromHome() {
   // The EN entry protects the original; manual conversion still overrides it
   CHECK([afterSpace(engine, @"ghbdtn") isEqualToString:@"ghbdtn "]);
   CHECK([afterManual(engine, @"ghbdtn") isEqualToString:@"привет"]);
+  [runtime stop];
+}
+
+// The Learn Spelling list under the home protects its words beside the Vim files, and a
+// rewrite that drops a word lets correction through again
+void testLearnedWordsFromHome() {
+  currentTest = "learned_words_from_home";
+  NSString *home = directory(@"learned");
+  NSString *spell = directory(@"learned/.vim/spell");
+  write([spell stringByAppendingPathComponent:@"en.utf-8.add"], "");
+  write([spell stringByAppendingPathComponent:@"ru.utf-8.add"], "");
+  NSString *learned =
+      [directory(@"learned/Library/Group Containers/group.com.apple.AppleSpell/"
+                 @"Library/Spelling") stringByAppendingPathComponent:@"LocalDictionary"];
+  write(learned, "km/h\nghbdtn\n");
+  Harness *harness = [Harness new];
+  harness.home = home;
+  KRRuntime *runtime = [harness runtimeWithPreferences:@{kModel : @YES}];
+  CHECK(runtime.status.learned == KRSourceStatusPending);
+  kr_engine *engine;
+  KRSession *session = makeSession(runtime, engine);
+  [runtime start];
+  [harness drain];
+  [runtime tick];
+  [runtime requestAdoptionForSession:session];
+  [harness drain];
+  CHECK(sameStatus(runtime.status, KRPolicyStatusModel, KRSourceStatusReady, KRSourceStatusReady));
+  CHECK(runtime.status.learned == KRSourceStatusReady);
+  CHECK([afterSpace(engine, @"ghbdtn") isEqualToString:@"ghbdtn "]);
+
+  write(learned, "km/h\n");
+  [runtime tick];
+  [runtime tick];
+  [harness drain];
+  CHECK([afterSpace(engine, @"ghbdtn") isEqualToString:@"привет "]);
   [runtime stop];
 }
 
@@ -304,12 +346,17 @@ void testUnusablePathSettingsDoNotDiscover() {
   [runtime start];
   [runtime tick];
   [harness drain];
-  CHECK(harness.homeCalls == 0 && harness.posts == 0);
+  // The home is still resolved for the learned list, which is absent here and so empty
+  CHECK(harness.homeCalls == 1);
   CHECK(sameStatus(runtime.status, KRPolicyStatusModel, KRSourceStatusMissing,
                    KRSourceStatusMissing));
+  CHECK(runtime.status.learned == KRSourceStatusReady);
   [runtime stop];
 }
 
+// Without a home both default paths are missing, and a configured path to an absent file leaves
+// that language missing. Automatic correction then abstains, since it needs both sources, and
+// manual conversion still works.
 void testUnresolvedHomeAndMissingFile() {
   currentTest = "unresolved_home_and_missing_file";
   Harness *harness = [Harness new];
@@ -337,6 +384,7 @@ void testUnresolvedHomeAndMissingFile() {
   }];
   session = makeSession(runtime, engine);
   [runtime start];
+  [harness drain];
   [runtime tick];
   [runtime requestAdoptionForSession:session];
   [harness drain];
@@ -366,8 +414,10 @@ void testReloadKeepsLastGood() {
   KRSession *session = makeSession(runtime, engine);
   [runtime requestAdoptionForSession:session];
   [runtime start];
+  [harness drain];
   [runtime tick];
   [harness drain];
+  CHECK(sameStatus(runtime.status, KRPolicyStatusModel, KRSourceStatusReady, KRSourceStatusReady));
   CHECK([afterSpace(engine, @"ghbdtn") isEqualToString:@"ghbdtn "]);
 
   write(english, "/encoding=latin1\n");
@@ -408,6 +458,7 @@ Published publishedRuntime(NSString *name) {
     kRussianPath : russian
   }];
   [runtime start];
+  [harness drain];
   [runtime tick];
   [harness drain];
   CHECK(sameStatus(runtime.status, KRPolicyStatusModel, KRSourceStatusReady, KRSourceStatusReady));
@@ -454,6 +505,9 @@ void testRefusedAdoptionRetries() {
   [runtime stop];
 }
 
+// The runtime keeps one adoption target, the session that asked last; the controller asks each
+// time it routes a client. A later request replaces an earlier one, and a new publication reaches
+// only the current target; another session picks it up when it asks again.
 void testLatestTargetOwnsDeferredAdoption() {
   currentTest = "latest_target_owns_deferred_adoption";
   Published published = publishedRuntime(@"latest-target");
@@ -553,6 +607,9 @@ void testStopSuppressesLateWork() {
   CHECK([afterSpace(engine, @"ghbdtn") isEqualToString:@"ghbdtn "]);
 }
 
+// Compatibility and source switching are on when absent, automatic correction in unlisted
+// applications is off. Each follows an NSNumber's value, any other type turns it off, and each
+// key changes only its own setting. None of this resolves a home or queues work.
 void testCompatibilityDefaultsAndExplicitFlags() {
   currentTest = "compatibility_defaults_and_flags";
   Harness *h = [Harness new];
@@ -575,7 +632,8 @@ void testCompatibilityDefaultsAndExplicitFlags() {
     CHECK(switching.compatibilityEnabled && !switching.unlistedAutomaticCorrection);
     CHECK(enabled.automaticInputSourceSwitching && automatic.automaticInputSourceSwitching);
   }
-  // The retired key no longer turns on automatic compatibility
+  // A key with a plausible name that the runtime doesn't read changes nothing: unlisted
+  // applications stay Manual only
   KRRuntime *retired = [h runtimeWithPreferences:@{
     @"CompatibilityAutomaticCorrectionEnabled" : @YES
   }];
@@ -584,6 +642,12 @@ void testCompatibilityDefaultsAndExplicitFlags() {
   CHECK(h.homeCalls == 0 && h.posts == 0);
 }
 
+// The tier table from docs/macos.md: exact composition entries, case-insensitive compatibility
+// and Off entries, a prefix entry that needs its dot, Off for a missing or non-string identifier
+// and for Keyrill itself. Compatibility switched off turns Manual only and Automatic into Off,
+// never into composition. Overrides apply exactly, ignore malformed entries and can't admit
+// Keyrill's own identifier. A routing error here admits an untested application to composition
+// or exposes a password manager to the input method's tracking.
 void testTierTable() {
   currentTest = "tier_table";
   Harness *h = [Harness new];
@@ -760,6 +824,7 @@ int main() {
     testOffDoesNoSourceWork();
     testExplicitSourcesPublishAndAdopt();
     testDefaultPathsFromHome();
+    testLearnedWordsFromHome();
     testUnusablePathSettingsDoNotDiscover();
     testUnresolvedHomeAndMissingFile();
     testReloadKeepsLastGood();
