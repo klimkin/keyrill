@@ -3,6 +3,11 @@ set -eu
 cd "$(dirname "$0")/.."
 case "${1:-check}" in
   check)
+    case "$(uname -s)" in
+      MINGW* | MSYS* | CYGWIN*)
+        exec cargo xtask windows check
+        ;;
+    esac
     python3 tools/pack-model.py --check
     cargo fmt --all -- --check
     cargo fmt --manifest-path fuzz/Cargo.toml -- --check
@@ -14,25 +19,20 @@ case "${1:-check}" in
     # The C smoke test links the staticlib with the system libraries rustc reports for it
     libs=$(cargo rustc --locked --release -p keyrill-ffi --crate-type staticlib -- --print native-static-libs 2>&1 |
       sed -n 's/.*native-static-libs: //p' | tr ' ' '\n' | grep -v '^/' | tr '\n' ' ')
-    case "$(uname -s)" in
-      # Rust's MSVC staticlib expects the DLL C runtime; /defaultlib entries are dropped above
-      # and the clang driver takes a bare name.lib for an input file, not a library to search for.
-      # The driver also adds the static libcmt at link time, which would mix the two runtimes
-      MINGW* | MSYS* | CYGWIN*)
-        lib=target/release/keyrill_ffi.lib crt="-fms-runtime-lib=dll -Wl,-nodefaultlib:libcmt" exe=.exe
-        libs=$(printf '%s\n' $libs | sed 's/\.lib$//; s/^/-l/' | tr '\n' ' ')
-        ;;
-      *) lib=target/release/libkeyrill_ffi.a crt= exe= ;;
-    esac
-    clang -std=c11 -Wall -Wextra -Wpedantic -Werror $crt -Iinclude crates/keyrill-ffi/tests/abi_smoke.c \
-      "$lib" $libs -o "target/release/abi-smoke$exe"
-    "target/release/abi-smoke$exe"
+    clang -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude crates/keyrill-ffi/tests/abi_smoke.c \
+      target/release/libkeyrill_ffi.a $libs -o target/release/abi-smoke
+    target/release/abi-smoke
     if [ "$(uname -s)" = Darwin ]; then
       clang-format --dry-run --Werror include/keyrill.h crates/keyrill-ffi/tests/abi_smoke.c
       native/macos/build.sh check
     fi
     ;;
-  sanitize) native/macos/build.sh sanitize ;;
+  sanitize)
+    case "$(uname -s)" in
+      MINGW* | MSYS* | CYGWIN*) exec cargo xtask windows sanitize ;;
+      *) native/macos/build.sh sanitize ;;
+    esac
+    ;;
   browser-fixture) node native/macos/tests/browser-fixture.test.cjs ;;
   audit)
     test "$(cargo deny --version)" = "cargo-deny 0.20.2"
@@ -41,14 +41,14 @@ case "${1:-check}" in
     ;;
   coverage)
     test "$(cargo llvm-cov --version)" = "cargo-llvm-cov 0.6.21"
-    cargo llvm-cov --locked --workspace --exclude inference-probe --html
+    cargo llvm-cov --locked -p keyrill-core -p keyrill-ffi --html
     # Without an output directory llvm-cov writes the HTML report as one self-contained page;
     # cargo-llvm-cov has no option for that, so its own show command is reused
-    show=$(cargo llvm-cov report -v --text --output-path target/llvm-cov/coverage.txt 2>&1 |
+    show=$(cargo llvm-cov report -p keyrill-core -p keyrill-ffi -v --text --output-path target/llvm-cov/coverage.txt 2>&1 |
       sed -n 's/^ *Running `\(.*llvm-cov show\) -format=text -use-color=0\(.*\)`$/\1 -format=html\2/p')
     test -n "$show"
     eval "$show" >target/llvm-cov/keyrill-coverage.html
-    cargo llvm-cov report --fail-under-lines 95 --fail-under-regions 95 >target/llvm-cov/summary.txt
+    cargo llvm-cov report -p keyrill-core -p keyrill-ffi --fail-under-lines 95 --fail-under-regions 95 >target/llvm-cov/summary.txt
     ;;
   evaluate)
     cargo build --locked --release -p inference-probe

@@ -2,13 +2,14 @@
 //!
 //! Built as a static library and linked into each platform adapter. `include/keyrill.h` is the
 //! caller contract: struct layouts, ownership, threading, versioning and every status code. The
-//! exports here implement it and are not meant to be called from Rust.
+//! exports here implement it. Native Rust adapters use the same entry points and bounded views.
 //!
 //! - Engine handles (`kr_engine_*`, `kr_plan_event`, `kr_commit`) wrap one
 //!   [`keyrill_core::session::Session`] each, copy every buffer across the boundary, catch
 //!   panics and poison the handle on one.
 //! - Configuration (`kr_set_automatic_policy`, `kr_set_keyboard`) applies while idle.
-//! - Dictionaries (`kr_set_dictionary_utf8`, `kr_clear_dictionary`,
+//! - Dictionaries (`kr_dictionary_parse_utf8`, `kr_adopt_dictionaries`,
+//!   `kr_set_dictionary_utf8`, `kr_clear_dictionary`,
 //!   `kr_dictionary_skipped_lines`) publish and describe immutable snapshots; reading files
 //!   stays in the adapter.
 //! - The compatibility family (`kr_plan_compatibility_event`, `kr_commit_compatibility`) tracks
@@ -26,6 +27,12 @@ pub mod vocabulary_source;
 pub mod vocabulary_host;
 
 mod compatibility;
+mod dictionary;
+
+pub use dictionary::{
+    Dictionary, kr_adopt_dictionaries, kr_dictionary_free, kr_dictionary_parse_utf8,
+    kr_prepare_model,
+};
 
 #[cfg(all(test, target_os = "macos"))]
 fn descriptor_flags(file: &std::fs::File) -> i32 {
@@ -99,6 +106,7 @@ pub struct Engine {
 
 /// Fixed-size event layout matching the C header.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct NativeEvent {
     role: u32,
     mode: u32,
@@ -117,6 +125,92 @@ pub struct NativePlan {
     mark_len: u32,
     expected: [u16; 128],
     mark: [u16; 128],
+}
+
+impl NativeEvent {
+    /// Copy a bounded wire event using the tags defined in `include/keyrill.h`.
+    ///
+    /// The engine validates tags when planning. Native key translation may represent an unmapped
+    /// layout with mode zero, which the engine refuses.
+    ///
+    /// # Errors
+    /// Returns the C ABI bounds status when the input exceeds eight UTF-16 units.
+    ///
+    /// ```
+    /// let event = keyrill_ffi::NativeEvent::new(1, 1, 0, &[b'g' as u16]);
+    /// assert!(event.is_ok());
+    /// ```
+    pub fn new(role: u32, mode: u32, context: u32, units: &[u16]) -> Result<Self, u32> {
+        if units.len() > 8 {
+            return Err(BOUNDS);
+        }
+        let mut event = Self {
+            role,
+            mode,
+            context,
+            len: units.len() as u32,
+            units: [0; 8],
+        };
+        event.units[..units.len()].copy_from_slice(units);
+        Ok(event)
+    }
+
+    /// Borrow wire fields with a bounded text buffer.
+    ///
+    /// # Errors
+    /// Returns the C ABI bounds status if a foreign caller supplied an oversized length.
+    pub fn view(&self) -> Result<NativeEventView<'_>, u32> {
+        if self.len > 8 {
+            return Err(BOUNDS);
+        }
+        Ok(NativeEventView {
+            role: self.role,
+            mode: self.mode,
+            context: self.context,
+            units: &self.units[..self.len as usize],
+        })
+    }
+}
+
+/// Read-only bounded wire event. The engine remains responsible for tag validation.
+pub struct NativeEventView<'a> {
+    /// Physical input role using the C ABI tags.
+    pub role: u32,
+    /// Observed input mode, including zero for an unmapped native layout.
+    pub mode: u32,
+    /// Native eligibility context using the C ABI tags.
+    pub context: u32,
+    /// Copied physical text in UTF-16 units.
+    pub units: &'a [u16],
+}
+
+/// Read-only view of a successfully initialized proposal.
+pub struct NativePlanView<'a> {
+    /// Latest-only acknowledgement token.
+    pub plan_id: u64,
+    /// Proposed operation, using the C ABI action tags.
+    pub action: u32,
+    /// Proposed physical-key disposition.
+    pub disposition: u32,
+    /// Exact previously verified marked text.
+    pub expected: &'a [u16],
+    /// Exact proposed marked text.
+    pub mark: &'a [u16],
+}
+
+impl NativePlan {
+    /// Borrow bounded buffers after `kr_plan_event` returned the C ABI OK status.
+    ///
+    /// Buffers belong to this copied proposal. Native adapters copy them before calling a host.
+    pub fn view(&self) -> NativePlanView<'_> {
+        NativePlanView {
+            plan_id: self.plan_id,
+            action: self.action,
+            disposition: self.disposition,
+            expected: &self.expected[..self.expected_len as usize],
+            mark: &self.mark[..self.mark_len as usize],
+        }
+    }
 }
 
 /// Best-effort committed-input proposal; submission is not document verification.
@@ -563,6 +657,45 @@ pub unsafe extern "C" fn kr_commit(pointer: *mut Engine, token: u64, outcome: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_adapter_event_construction_and_borrowed_plan_match_the_abi() {
+        assert!(matches!(NativeEvent::new(1, 1, 0, &[0; 9]), Err(BOUNDS)));
+        for role in 2..=6 {
+            assert!(NativeEvent::new(role, 2, 1, &[]).is_ok());
+        }
+        let mut source = [b'g' as u16];
+        let event = NativeEvent::new(1, 1, 0, &source).unwrap();
+        source[0] = b'x' as u16;
+        assert_eq!(source, [b'x' as u16]);
+        let mut engine = std::ptr::null_mut();
+        let mut storage = std::mem::MaybeUninit::uninit();
+        // SAFETY: distinct local objects provide valid ABI storage. The unique handle drains here.
+        unsafe {
+            assert_eq!(kr_engine_new(ABI, &mut engine), OK);
+            for event in [
+                NativeEvent::new(2, 1, 0, &[1]),
+                NativeEvent::new(7, 1, 0, &[]),
+                NativeEvent::new(1, 0, 0, &[]),
+                NativeEvent::new(1, 1, 2, &[]),
+            ] {
+                let invalid = event.unwrap();
+                assert_eq!(
+                    kr_plan_event(engine, &invalid, storage.as_mut_ptr()),
+                    BAD_TAG
+                );
+            }
+            assert_eq!(kr_plan_event(engine, &event, storage.as_mut_ptr()), OK);
+            let plan = storage.assume_init();
+            let view = plan.view();
+            assert_eq!(view.action, 1);
+            assert_eq!(view.disposition, 1);
+            assert_eq!(view.expected, &[]);
+            assert_eq!(view.mark, &[b'g' as u16]);
+            assert_eq!(kr_commit(engine, view.plan_id, 0), OK);
+            kr_engine_free(engine);
+        }
+    }
 
     pub(super) unsafe fn apply_event(engine: *mut Engine, event: &NativeEvent) -> NativePlan {
         // SAFETY: the test retains the unique live handle and distinct local C objects

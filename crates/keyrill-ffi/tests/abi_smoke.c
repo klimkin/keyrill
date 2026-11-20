@@ -113,6 +113,42 @@ static void scenario(uint32_t keyboard, uint32_t mode, const char *typed, const 
   kr_engine_free(engine);
 }
 
+static void immutable_dictionaries(void) {
+  kr_engine *engine = NULL;
+  kr_dictionary *empty = NULL, *protected = NULL;
+  const uint8_t source[] = "cgbcjr\nbad/*\n";
+  if (kr_prepare_model(KR_ABI_VERSION) != KR_OK ||
+      kr_dictionary_parse_utf8(KR_ABI_VERSION, NULL, 0, &empty) != KR_OK || !empty ||
+      kr_dictionary_parse_utf8(KR_ABI_VERSION, source, sizeof source - 1, &protected) != KR_OK ||
+      !protected || kr_engine_new(KR_ABI_VERSION, &engine) != KR_OK || !engine ||
+      kr_set_automatic_policy(engine, KR_POLICY_MODEL) != KR_OK ||
+      kr_adopt_dictionaries(engine, empty, empty) != KR_OK) {
+    fail("immutable dictionary setup");
+    goto done;
+  }
+  document doc = {{0}, 0, 0};
+  type(engine, &doc, KR_EN, "cgbcjr ");
+  expect(&doc, "список ", 0, "portable parsed empty dictionaries enable the shared model");
+  if (kr_adopt_dictionaries(engine, protected, empty) != KR_OK)
+    fail("adopt while an acknowledged mark is owned");
+  kr_dictionary_free(empty);
+  empty = NULL;
+  kr_dictionary_free(protected);
+  protected = NULL;
+  uint32_t skipped = 77;
+  if (kr_dictionary_skipped_lines(engine, KR_EN, &skipped) != KR_OK || skipped != 1)
+    fail("adopted parser skipped count survives freeing handles");
+  key(engine, &doc, KR_REVERSE, KR_EN, 0);
+  expect(&doc, "cgbcjr ", 0, "dictionary adoption preserves the existing reversal receipt");
+  key(engine, &doc, KR_FINISH_REQUEST, KR_EN, 0);
+  type(engine, &doc, KR_EN, "cgbcjr ");
+  expect(&doc, "cgbcjr cgbcjr ", 0, "adopted protection survives freeing handles");
+done:
+  kr_dictionary_free(empty);
+  kr_dictionary_free(protected);
+  kr_engine_free(engine);
+}
+
 int main(void) {
   if (kr_abi_version() != KR_ABI_VERSION)
     fail("library and header versions differ");
@@ -133,9 +169,10 @@ int main(void) {
   scenario(pc, KR_EN, "`krf", "`krf", KR_MANUAL, "ёлка", "EN mode: the PC ё key converts");
   scenario(apple, KR_EN, "[jhjij", "[jhjij", KR_MANUAL, "хорошо",
            "EN mode: keys for Russian letters convert");
+  immutable_dictionaries();
 
   if (failures)
     return 1;
-  puts("abi_smoke: 8 scenarios passed");
+  puts("abi_smoke: 9 scenarios passed");
   return 0;
 }

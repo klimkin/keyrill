@@ -9,7 +9,7 @@ and reversal data. A Rust plan is a proposal, never editing authority.
 ```mermaid
 flowchart LR
     K[Physical input and host lifecycle] --> M[macOS IMK, Objective-C++]
-    K --> W[Windows / Linux adapter]
+    K --> W[Windows TSF, Rust / Linux adapter]
     M -->|bounded UTF-16 facts| F[C ABI, keyrill-ffi]
     W -->|bounded UTF-16 facts| F
     F --> R[Rust session and policy, keyrill-core]
@@ -27,6 +27,11 @@ flowchart LR
 | `crates/keyrill-ffi` | C ABI over the core, panic containment, macOS dictionary-file acquisition |
 | `include/keyrill.h` | The ABI contract: layouts, ownership, versioning, every status code |
 | `native/macos` | InputMethodKit server, controller, settings window, compatibility backend, tests |
+| `native/windows/rust` | windows-rs TSF service, owned-composition executor, registrar, vocabulary worker, diagnostics, raw COM HRESULT calls and typed reference leases |
+| `native/windows/proof` | Rust proof editor, UIA inspectors, independent raw COM providers and controlled schedules |
+| `native/windows/build-support` | Rust source and artifact identities shared by runtime and proof tools |
+| `native/windows/setup` | Explicit machine installation, durable recovery, and dual-architecture package validation |
+| `tools/xtask` | Rust Windows build, model checker, scenario coverage and sanitizer runner |
 | `assets/model.bin` | Frozen EN/RU model, generated from `model/` by `tools/pack-model.py` |
 | `model/` | Hash-pinned model source, generator, evaluator and evaluation corpora |
 | `tools/inference-probe` | Stdin probe the evaluator drives; not part of any build product |
@@ -51,13 +56,20 @@ Each input context has one engine handle and one word session. Its states are `I
 | Composing, manual command | Deterministic conversion with explicit intent; inference never undoes it |
 | Composing, Backspace | Remove only owned text; empty composition is its own native operation |
 | Escape | With a receipt, restore the original, finish and consume the key; otherwise finish the word as typed and pass Escape |
-| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The echo of a mode switch Keyrill requested keeps the boundary mark and its receipt |
+| Focus, source or client change | Invalidate stale plans; finish only a still-valid old mark; never carry a word to a new field. The macOS adapter preserves the boundary mark and receipt for its requested mode-switch echo |
 | Foreign mark, mismatch, exception, unknown outcome | Stop correction for that word; no speculative repair. After a failed readback check, commit the client's own marked text once so the next key can't replace it. A second unknown outcome in an activation, or one before any verified write, stops the session until reactivation |
 
 `propose` copies a latest-only token, expected text, desired text, operation and key disposition
 without changing confirmed state. `acknowledge` advances state only on a verified result.
 A refused or unknown outcome invalidates the session; reset expires tokens and receipts; a
 panic poisons the handle permanently. A plan permits at most one native write.
+
+Ordinary Windows finalization can end an unchanged owned TSF composition without a text write.
+The native executor requires exact equality with its last verified text and checks context,
+generation, composition identity, range extent, text and full selection around termination.
+It marks the effect attempted before `EndComposition`. Failed or unknown termination stops
+correction without replay, another termination attempt or a recovery write. Changed finishes,
+retirement and platform-requested focus-loss commits retain their replacement protocols.
 
 When a write was attempted and its result is unknown, the key that carried it is consumed and
 not replayed, because it may already be in the document. An unknown finish passes the next
@@ -143,6 +155,7 @@ No telemetry, remote configuration, automatic update or privileged helper.
 
 Quit stops new operations, finishes only a valid owned mark, detaches native sinks and releases
 handles after callbacks drain. An engine is never freed while a callback can still reach it.
-Rust panics are contained at the ABI and poison the handle; native exceptions are contained on
-the native side; neither unwinds through the other. A caught panic does not recover allocation
-aborts or a partially mutated host.
+Rust panics are contained at the ABI and poison the handle. Windows callbacks also contain Rust
+panics. Windows foreign COM implementations must obey the HRESULT and no-throw contract.
+The macOS adapter contains native exceptions on its side of the ABI. A caught panic does not
+recover allocation aborts or a partially mutated host.
