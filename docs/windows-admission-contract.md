@@ -6,6 +6,11 @@ semantics and cannot grant editing authority. Generic hosts, including browser w
 terminal wrappers and unknown Notepad versions, pass input without character reads, ACP access or
 composition effects. Application settings cannot grant admission.
 
+At `OnTestKeyDown`, Keyrill checks the receiving view's window against the focused field contract.
+It declines the key when the field is unknown or focus changes during the check. This lets hosts
+translate ordinary typing themselves. The test uses window metadata only. The actual key handler
+independently revalidates editing authority inside its edit session.
+
 Within an admitted bounded field, each operation requires fresh identity, status and scope
 validation. The bounded contract supplies ordinary-field authority under its qualified host
 assumptions. It does not grant permission to every control in the application.

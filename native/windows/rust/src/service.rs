@@ -2340,27 +2340,66 @@ impl Service {
         Ok(state.runtime)
     }
 
-    pub(crate) fn interested(&self) -> bool {
+    pub(crate) unsafe fn interested(&self, context: *mut c_void) -> bool {
         self.count(Counter::TestEntered);
-        let state = self.state.borrow();
-        let interested = state.activation == Activation::Active
-            && !state.stopped
-            && !state.application_off
-            && state.mode != 0;
+        let mut state = self.state.borrow_mut();
         let cause = if state.activation != Activation::Active {
-            Cause::Inactive
+            Some(Cause::Inactive)
         } else if state.stopped {
-            Cause::Stopped
+            Some(Cause::Stopped)
+        } else if state.application_off || state.mode == 0 {
+            Some(Cause::ModeUnset)
+        } else if state.busy || state.admitting_key || state.observing_host {
+            Some(Cause::Reentry)
+        } else if context.is_null() {
+            Some(Cause::Missing)
         } else {
-            Cause::ModeUnset
+            None
         };
-        drop(state);
-        if interested {
-            self.count(Counter::Interested);
-        } else {
+        if let Some(cause) = cause {
+            drop(state);
             self.refuse(Stage::Test, cause, S_OK);
+            return false;
         }
-        interested
+        let host = state.host_identity;
+        let guard = Guard {
+            epoch: state.epoch,
+            generation: state.generation,
+        };
+        state.admitting_key = true;
+        drop(state);
+        let _admission = AdmissionCall(self);
+
+        // A positive test can suppress native typing even if OnKeyDown later declines.
+        // Resolve the receiving view without requesting an edit session or reading text.
+        let window = (|| {
+            // SAFETY: TSF retains the receiving context through OnTestKeyDown.
+            let context = unsafe { foreign::retain::<ITfContext>(context) }.ok()?;
+            if !self.current(guard) {
+                return None;
+            }
+            let view = foreign::document::view(&context);
+            if !view.call.exact() || !self.current(guard) {
+                return None;
+            }
+            let window = foreign::document::window(&view.value?);
+            (window.call.exact() && !window.value.is_invalid()).then_some(window.value)
+        })();
+        if let Some(window) = window
+            && self.current(guard)
+        {
+            let facts = self.capture_field(window, host);
+            if facts.call.exact()
+                && crate::field::classify(&facts.value).is_some()
+                && self.current(guard)
+                && !self.state.borrow().application_off
+            {
+                self.count(Counter::Interested);
+                return true;
+            }
+        }
+        self.refuse(Stage::Test, Cause::Predicate, S_OK);
+        false
     }
 
     #[cfg(feature = "test-api")]

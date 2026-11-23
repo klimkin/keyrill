@@ -2247,6 +2247,7 @@
       "rustTests": [
         "controlled::correction_preserves_complete_documents",
         "controlled::scenarios_admission::compartment_variant_signatures_distinguish_unset_from_malformed",
+        "controlled::scenarios_admission::early_key_test_leaves_native_typing_to_unrecognized_fields",
         "controlled::scenarios_admission::exceptional_notepad_scope_requires_fresh_exact_failure",
         "controlled::scenarios_admission::explicit_ordinary_application_scopes_admit_one_owned_mark",
         "controlled::scenarios_admission::notepad_exact_unavailable_scope_has_bounded_authority",
