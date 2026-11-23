@@ -2352,7 +2352,11 @@ impl Service {
             Some(Cause::Stopped)
         } else if state.application_blocks_input() || state.mode == 0 {
             Some(Cause::ModeUnset)
-        } else if state.busy || state.admitting_key || state.observing_host {
+        } else if state.busy
+            || state.admitting_key
+            || state.observing_host
+            || state.delivery.is_some()
+        {
             Some(Cause::Reentry)
         } else if context.is_null() {
             Some(Cause::Missing)
@@ -2361,6 +2365,11 @@ impl Service {
         };
         if let Some(cause) = cause {
             drop(state);
+            if cause == Cause::Reentry {
+                // The host can deliver this key before the interrupted request resumes.
+                self.source_input();
+                self.invalidate_word(self.owned().is_some());
+            }
             self.refuse(Stage::Test, cause, S_OK);
             return false;
         }

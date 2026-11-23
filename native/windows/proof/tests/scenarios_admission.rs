@@ -49,6 +49,32 @@ fn early_key_test_leaves_native_typing_to_unrecognized_fields() {
     }
 }
 #[test]
+fn nested_native_key_invalidates_the_interrupted_key() {
+    for boundary in ["GetActiveView", "GetWnd", "capture", "GetSelection"] {
+        let c = Rc::new(Client::notepad());
+        let nested = Rc::clone(&c);
+        c.host.on(boundary, 0, move || {
+            assert!(!nested.test_key_down(b'X'));
+            nested.a.native_text(&[u16::from(b'x')]);
+        });
+        let claimed = if boundary == "GetSelection" {
+            c.key(u16::from(b'g'), false)
+        } else {
+            c.test_key_down(b'G')
+        };
+        assert!(
+            !claimed,
+            "{boundary}: the interrupted key must go to the host"
+        );
+        c.a.native_text(&[u16::from(b'g')]);
+        c.host.drained();
+        oracle::document(&c, "xg", 9);
+        oracle::no_effects(&c);
+        assert_eq!(c.a.reads.get(), 0);
+    }
+}
+
+#[test]
 fn explicit_ordinary_application_scopes_admit_one_owned_mark() {
     for scope in [IS_DEFAULT, IS_TEXT] {
         let c = Client::new();
