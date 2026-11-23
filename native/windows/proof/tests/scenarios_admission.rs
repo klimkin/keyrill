@@ -646,6 +646,33 @@ impl Drop for Keyboard {
 }
 
 #[test]
+fn direct_key_rechecks_a_changed_field_after_a_positive_key_test() {
+    let keyboard = Keyboard::new();
+    for boundary in [None, Some("AdviseAdmission"), Some("GetStatus")] {
+        let c = Client::notepad();
+        assert!(c.test_key_down(b'G'));
+        let host = Rc::clone(&c.host);
+        let lose_focus =
+            move || host.field_facts.borrow_mut().as_mut().unwrap().focus = HWND::default();
+        if let Some(boundary) = boundary {
+            c.host.on(boundary, 0, lose_focus);
+        } else {
+            lose_focus();
+        }
+        c.host.trace.borrow_mut().clear();
+        assert!(!keyboard.down(&c, b'G'));
+        c.host.drained();
+        assert!(
+            !c.host.trace.borrow().contains(&"RequestEditSession"),
+            "{boundary:?}"
+        );
+        no_admission(&c);
+        c.a.native_text(&[u16::from(b'g')]);
+        oracle::document(&c, "g", 8);
+    }
+}
+
+#[test]
 fn generic_default_scope_has_no_sensitive_field_authority() {
     let keyboard = Keyboard::new();
     let c = Client::ordinary("Chrome_WidgetWin_1");
@@ -672,6 +699,7 @@ fn generic_default_scope_has_no_sensitive_field_authority() {
 fn generic_native_classes_pass_normal_keys_without_document_access() {
     let keyboard = Keyboard::new();
     for class in [
+        "Scintilla",
         "ArbitraryTsfHost",
         "Chrome_WidgetWin_1",
         "Chrome_RenderWidgetHostHWND",
@@ -690,6 +718,7 @@ fn generic_native_classes_pass_normal_keys_without_document_access() {
                 .field
                 .style |= 0x820;
             assert!(!keyboard.down(&c, b'G'), "class {class}, scope {scope:?}");
+            assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));
             no_admission(&c);
             assert!(!c.host.trace.borrow().contains(&"GetSelection"));
             assert!(c.a.active.borrow().is_none());

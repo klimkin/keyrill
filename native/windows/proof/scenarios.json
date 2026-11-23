@@ -2399,6 +2399,7 @@
         "runtime::test-api::diagnostics::tests::lifecycle_retains_the_newest_sixteen_events",
         "runtime::test-api::diagnostics::tests::observation_saturation_freezes_events_and_new_tickets",
         "controlled::scenarios_admission::generic_default_scope_has_no_sensitive_field_authority",
+        "controlled::scenarios_admission::direct_key_rechecks_a_changed_field_after_a_positive_key_test",
         "controlled::scenarios_admission::generic_native_classes_pass_normal_keys_without_document_access",
         "controlled::scenarios_admission::generic_native_identity_and_sensitive_scope_refuse_without_text",
         "controlled::scenarios_admission::bounded_scope_and_focus_changes_revoke_range_permission",

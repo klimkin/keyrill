@@ -498,7 +498,7 @@ impl Service {
         }
         self.state.borrow_mut().busy = true;
         let busy = ExecutionCall(self);
-        let result = frame.request_editing();
+        let result = frame.request_retirement();
         if result.effect == crate::edit::Effect::Attempted {
             self.invalidate_if(guard, true);
         }
@@ -1881,6 +1881,13 @@ impl Service {
             self.refuse(Stage::Session, Cause::Stale, S_OK);
             return Execution::default();
         }
+        // TSF can deliver a key without testing it first. An unrecognized field keeps native input.
+        let Some(watch) = frame.prepare_input() else {
+            if self.current(guard) && self.owned().is_some() {
+                self.invalidate_word(true);
+            }
+            return Execution::default();
+        };
         frame.allow_source_handoff(source_candidate);
         self.count(Counter::Requested);
         {
@@ -1890,7 +1897,7 @@ impl Service {
             state.diagnostics.request_result = 0;
             state.diagnostics.session_result = 0;
         }
-        let result = frame.request_editing();
+        let result = frame.request_input(watch);
         {
             let mut state = self.state.borrow_mut();
             state.diagnostics.request_present = 1;
