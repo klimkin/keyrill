@@ -1,5 +1,6 @@
 use super::*;
 use crate::edit::Frame;
+use crate::engine::{Action, Disposition};
 use crate::field::Identity;
 use crate::vocabulary_contract::DictionaryOwner;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -270,12 +271,12 @@ impl Service {
             state.source.cancel();
             return None;
         }
-        if plan.action == 2 {
+        if plan.action == Action::Finish {
             let SourceState::Retained(intent) = &state.source else {
                 return None;
             };
             let finished = (candidate
-                && plan.disposition == 2
+                && plan.disposition == Disposition::Replan
                 && state.owned.is_none()
                 && intent.guard.epoch == guard.epoch
                 && intent.guard.generation == guard.generation
@@ -305,7 +306,7 @@ impl Service {
             state.source = SourceState::Changing(Rc::clone(&operation));
             return Some(operation);
         }
-        if plan.action == 1
+        if plan.action == Action::Mark
             && view.role == 1
             && view.units == [b' ' as u16]
             && plan.mark.last() == Some(&(b' ' as u16))

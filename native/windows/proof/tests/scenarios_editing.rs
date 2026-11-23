@@ -101,6 +101,142 @@ fn owned_denial_stops_without_cleanup_or_later_repair() {
     assert_eq!(c.a.writes.get(), writes);
 }
 #[test]
+fn uncertain_composition_start_passes_unwritten_key_and_stops_without_repair() {
+    for case in 0..9 {
+        let c = Client::new();
+        let retained = Rc::new(std::cell::RefCell::new(None));
+        let keep = Rc::clone(&retained);
+        let d = Rc::clone(&c.a);
+        let focus = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+        let event = c.api.event;
+        let handle = c.handle as usize;
+        let context = c.context_a.as_raw() as usize;
+        c.host.on("StartComposition.after", 0, move || {
+            let pointer = d.active.borrow().as_ref().unwrap().pointer;
+            *keep.borrow_mut() =
+                Some(unsafe { IUnknown::from_raw(crate::support::com_slots::retain(pointer)) });
+            match case {
+                0 | 2 => {
+                    d.results.borrow_mut().insert("StartComposition", E_FAIL);
+                }
+                1 | 3 => {
+                    d.results.borrow_mut().insert("StartComposition", S_FALSE);
+                }
+                5 => {
+                    d.results.borrow_mut().insert("QI", E_FAIL);
+                }
+                6 => d.nulls.borrow_mut().push("QI"),
+                7 => unsafe {
+                    assert_eq!(
+                        (focus.vtable().OnSetFocus)(
+                            focus.as_raw(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut()
+                        ),
+                        S_OK
+                    );
+                },
+                8 => unsafe {
+                    let mut eaten = -1;
+                    assert_eq!(
+                        event(
+                            handle as *mut _,
+                            context as *mut _,
+                            &Event::text(b'z' as u16),
+                            &mut eaten
+                        ),
+                        S_OK
+                    );
+                    assert_eq!(eaten, 0);
+                },
+                _ => (),
+            }
+            if matches!(case, 2..=4) {
+                d.nulls.borrow_mut().push("StartComposition");
+            }
+        });
+        let before = snapshot(&c.service);
+        assert!(!c.key(b'g' as u16, true), "case {case}");
+        oracle::document(&c, "g", 8);
+        assert!(stopped(&c), "case {case}");
+        assert_eq!(
+            snapshot(&c.service).counts[11],
+            before.counts[11] + 1,
+            "case {case}"
+        );
+        assert_eq!(c.a.starts.get(), 1);
+        assert_eq!(c.a.writes.get(), 0);
+        assert_eq!(c.a.ends.get(), 0);
+        assert!(c.a.active.borrow().is_some());
+        let reads = c.a.reads.get();
+        assert!(!c.key(b'x' as u16, true));
+        oracle::document(&c, "gx", 9);
+        assert_eq!(c.a.reads.get(), reads);
+        assert_eq!(c.a.starts.get(), 1);
+        assert_eq!(c.a.writes.get(), 0);
+        assert_eq!(c.a.ends.get(), 0);
+        assert_eq!(c.deactivate(), S_OK);
+        assert_eq!(c.a.ends.get(), 0);
+        c.a.results.borrow_mut().remove("QI");
+        c.a.nulls.borrow_mut().retain(|name| *name != "QI");
+        drop(retained);
+    }
+}
+#[test]
+fn canonical_composition_refusal_allows_a_later_fresh_word() {
+    let c = Client::new();
+    c.a.reject_composition.set(true);
+    let before = snapshot(&c.service);
+    assert!(!c.key(b'g' as u16, true));
+    oracle::document(&c, "g", 8);
+    assert!(!stopped(&c));
+    assert!(c.a.active.borrow().is_none());
+    assert_eq!(c.a.writes.get(), 0);
+    assert_eq!(snapshot(&c.service).counts[11], before.counts[11]);
+    c.a.native_text(&[b' ' as u16]);
+    c.a.reject_composition.set(false);
+    c.type_text("ghbdtn ");
+    oracle::document(&c, "g привет ", 16);
+}
+#[test]
+fn late_composition_start_cannot_stop_a_new_activation() {
+    for failed in [false, true] {
+        let c = Client::new();
+        let retained = Rc::new(std::cell::RefCell::new(None));
+        let keep = Rc::clone(&retained);
+        let d = Rc::clone(&c.a);
+        let service = c.service.clone();
+        let manager = c.thread.clone();
+        c.host.on("StartComposition.after", 0, move || unsafe {
+            let pointer = d.active.borrow().as_ref().unwrap().pointer;
+            *keep.borrow_mut() = Some(IUnknown::from_raw(crate::support::com_slots::retain(
+                pointer,
+            )));
+            assert_eq!((service.vtable().base__.Deactivate)(service.as_raw()), S_OK);
+            assert_eq!(
+                (service.vtable().ActivateEx)(service.as_raw(), manager.as_raw(), 42, 0),
+                S_OK
+            );
+            if failed {
+                d.results.borrow_mut().insert("StartComposition", E_FAIL);
+            }
+        });
+        assert!(!c.key(b'g' as u16, true));
+        oracle::document(&c, "g", 8);
+        assert!(!stopped(&c));
+        assert_eq!(c.a.starts.get(), 1);
+        assert_eq!(c.a.writes.get(), 0);
+        assert_eq!(c.a.ends.get(), 0);
+        assert!(c.a.active.borrow().is_some());
+        c.a.active.borrow_mut().take();
+        drop(retained);
+        c.a.results.borrow_mut().remove("StartComposition");
+        c.a.native_text(&[b' ' as u16]);
+        c.type_text("ghbdtn ");
+        oracle::document(&c, "g привет ", 16);
+    }
+}
+#[test]
 fn failed_outer_request_after_mark_keeps_consumption_and_expires_callback() {
     for continuation in [false, true] {
         let c = Client::new();

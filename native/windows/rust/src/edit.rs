@@ -1,6 +1,6 @@
 use crate::com::OwnServiceLease;
 use crate::diagnostics::{Cause, Counter, LifecycleCause, LifecycleKind, Stage, Unresolved};
-use crate::engine::Plan;
+use crate::engine::{Action, Disposition, Plan};
 use crate::field::{self, CandidateField, Contract, Identity};
 use crate::foreign::document as native;
 use crate::foreign::{self, Call, InterfaceError, Lease, Returned};
@@ -20,6 +20,7 @@ use windows_core::{BOOL, HRESULT, IUnknown, Interface, Result, implement};
 pub(crate) enum Effect {
     #[default]
     Unattempted,
+    CompositionAttempted,
     Attempted,
     Verified,
 }
@@ -67,8 +68,8 @@ pub(crate) struct Frame {
     ownership: RefCell<Option<Rc<OwnedIdentity>>>,
     eaten: Cell<bool>,
     completion: Cell<Completion>,
-    last_action: Cell<u32>,
-    last_disposition: Cell<u32>,
+    last_action: Cell<Action>,
+    last_disposition: Cell<Disposition>,
     outcome_recorded: Cell<bool>,
     diagnose: bool,
     decision: Option<Rc<Cell<bool>>>,
@@ -145,8 +146,8 @@ impl Frame {
             ownership: RefCell::new(ownership),
             eaten: Cell::new(false),
             completion: Cell::new(Completion::Refused),
-            last_action: Cell::new(0),
-            last_disposition: Cell::new(0),
+            last_action: Cell::new(Action::Pass),
+            last_disposition: Cell::new(Disposition::Pass),
             outcome_recorded: Cell::new(false),
             diagnose,
             decision,
@@ -934,11 +935,11 @@ impl Frame {
     fn apply(&self, editing: &Editing, cookie: u32, plan: &Plan) -> bool {
         let _observe = self.observe(Stage::Apply);
         let operation = match (plan.action, plan.mark == plan.expected, &self.owner) {
-            (1, _, _) => OwnedOperation::Mark,
-            (2, true, FrameOwner::Incoming(_)) => OwnedOperation::EndVerifiedUnchanged,
+            (Action::Mark, _, _) => OwnedOperation::Mark,
+            (Action::Finish, true, FrameOwner::Incoming(_)) => OwnedOperation::EndVerifiedUnchanged,
             _ => OwnedOperation::ReplaceAndEnd,
         };
-        if plan.action == 2 {
+        if plan.action == Action::Finish {
             self.service.revoke_release_if(editing.authority.guard);
         }
         let range = if let Some(owned) = self.service.owned() {
@@ -949,10 +950,10 @@ impl Frame {
                 editing,
                 cookie,
                 &plan.expected,
-                plan.action != 2 || plan.mark != plan.expected,
+                plan.action != Action::Finish || plan.mark != plan.expected,
             )
         } else {
-            if plan.action != 1 || !plan.expected.is_empty() {
+            if plan.action != Action::Mark || !plan.expected.is_empty() {
                 return false;
             }
             let Some(selection) = self.selection(editing, cookie, true) else {
@@ -970,12 +971,26 @@ impl Frame {
             let FrameOwner::Incoming(owner) = &self.owner else {
                 return false;
             };
-            let Some(composition) = self.required(native::start_composition(
+            self.effect.set(Effect::CompositionAttempted);
+            let started = native::start_composition(
                 &context,
                 cookie,
                 &selection.range,
                 owner.composition_sink(),
-            )) else {
+            );
+            if started.call.exact() && started.value.is_none() {
+                // S_OK plus null is TSF's clean rejection only while the field is still
+                // current and independently confirms no composition or selection change.
+                if self.alive()
+                    && self.no_foreign(editing).is_some()
+                    && self.selection_matches(editing, cookie, selection.value)
+                {
+                    self.effect.set(Effect::Unattempted);
+                }
+                self.check(false, Cause::Missing);
+                return false;
+            }
+            let Some(composition) = self.required(started) else {
                 return false;
             };
             drop(permit);
@@ -1014,7 +1029,7 @@ impl Frame {
         let Some(range) = range else {
             return false;
         };
-        let original = if plan.action == 2 && plan.mark == plan.expected {
+        let original = if plan.action == Action::Finish && plan.mark == plan.expected {
             let Some(saved) = self.capture_finish_selection(editing, cookie) else {
                 return false;
             };
@@ -1068,7 +1083,7 @@ impl Frame {
         {
             return false;
         }
-        if plan.action == 1 || plan.mark != plan.expected {
+        if plan.action == Action::Mark || plan.mark != plan.expected {
             let Some(caret) = self.required(native::clone_range(&actual)) else {
                 return false;
             };
@@ -1100,7 +1115,7 @@ impl Frame {
                 return false;
             }
         }
-        if plan.action == 1 {
+        if plan.action == Action::Mark {
             self.service
                 .verify_owned(editing.authority.guard, &owned.identity, &plan.mark)
         } else {
@@ -1208,14 +1223,14 @@ impl Frame {
                 return;
             };
             if matches!(self.owner, FrameOwner::Retirement { .. })
-                && (plan.action != 2 || plan.mark != plan.expected)
+                && (plan.action != Action::Finish || plan.mark != plan.expected)
             {
                 self.invalidate(true);
                 return;
             }
             self.last_action.set(plan.action);
             self.last_disposition.set(plan.disposition);
-            if plan.action != 1 && plan.action != 2 {
+            if matches!(plan.action, Action::Pass | Action::Unavailable) {
                 if !self.alive()
                     || self
                         .service
@@ -1226,7 +1241,7 @@ impl Frame {
                     self.invalidate(true);
                     return;
                 }
-                self.eaten.set(plan.disposition == 1);
+                self.eaten.set(plan.disposition == Disposition::Consumed);
                 self.completion.set(if self.eaten.get() {
                     Completion::Reserved
                 } else {
@@ -1278,7 +1293,7 @@ impl Frame {
                 return;
             }
             self.effect.set(Effect::Verified);
-            self.eaten.set(plan.disposition == 1);
+            self.eaten.set(plan.disposition == Disposition::Consumed);
             let source = self.field.get().and_then(|field| {
                 self.service.verified_source_edit(
                     editing.authority.guard,
@@ -1288,14 +1303,17 @@ impl Frame {
                     self.source_candidate.get(),
                 )
             });
-            if self.source_candidate.get() && plan.action == 2 && plan.disposition == 2 {
+            if self.source_candidate.get()
+                && plan.action == Action::Finish
+                && plan.disposition == Disposition::Replan
+            {
                 *self.source_handoff.borrow_mut() = source;
                 return;
             }
-            if plan.action == 1 && (view.role == 4 || view.role == 5) {
+            if plan.action == Action::Mark && (view.role == 4 || view.role == 5) {
                 self.completion.set(Completion::ManualMark);
             }
-            if plan.disposition != 2 {
+            if plan.disposition != Disposition::Replan {
                 return;
             }
             let Some(next) = self.selection(editing, cookie, true) else {
@@ -1310,8 +1328,9 @@ impl Frame {
     }
 
     pub(crate) fn unknown_disposition(&self) -> bool {
-        self.effect.get() != Effect::Unattempted
-            && (self.last_action.get() == 1 || self.last_disposition.get() == 1)
+        matches!(self.effect.get(), Effect::Attempted | Effect::Verified)
+            && (self.last_action.get() == Action::Mark
+                || self.last_disposition.get() == Disposition::Consumed)
     }
 
     pub(crate) fn completion(&self) -> Completion {

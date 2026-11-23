@@ -1051,8 +1051,8 @@ fn empty_start_exclusion_stops_before_character_access() {
         );
         assert!(stopped(&c));
         let after = crate::support::dll::snapshot(&c.service);
-        assert_eq!(after.counts[10], before.counts[10] + 1);
-        assert_eq!(after.counts[11], before.counts[11]);
+        assert_eq!(after.counts[10], before.counts[10]);
+        assert_eq!(after.counts[11], before.counts[11] + 1);
         oracle::document(&c, "", 7);
         assert!(!c.key(b'x' as u16, false));
         assert_eq!(c.a.reads.get(), reads.get());

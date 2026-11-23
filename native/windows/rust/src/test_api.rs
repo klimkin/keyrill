@@ -570,7 +570,7 @@ unsafe extern "system" fn KeyrillTestProbe(
                         output.completed = BOOL(result.completed as i32);
                         output.effect = match result.effect {
                             Effect::Unattempted => 0,
-                            Effect::Attempted => 1,
+                            Effect::CompositionAttempted | Effect::Attempted => 1,
                             Effect::Verified => 2,
                         };
                     }
