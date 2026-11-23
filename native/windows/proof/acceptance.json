@@ -62,10 +62,13 @@
       {"id": "terminal-command-output", "mode": "manual", "expected": "Enter, Tab, navigation, Ctrl+C, pane changes and concurrent output preserve the captured terminal baseline and byte order."}
     ]},
     "excluded": {"evidence": ["generated", "physical"], "oracles": "exclusion", "scenarios": [
-      {"id": "pass-through", "mode": "off", "expected": "Excluded control receives normal input. Keyrill performs zero character reads, composition starts and character writes. Secret values remain unqueried."}
+      {"id": "pass-through", "mode": "automatic", "expected": "With Keyrill enabled, excluded controls retain their native input behavior. Keyrill performs zero character reads, composition starts and character writes. Secret values remain unqueried."}
     ]},
     "terminal-excluded": {"evidence": ["physical"], "oracles": "exclusion", "scenarios": [
-      {"id": "secret-no-echo", "mode": "off", "expected": "Metadata distinguishes secret/no-echo or uncertain context before character access. Public test input passes through with no inspection or composition."}
+      {"id": "secret-no-echo", "mode": "manual", "expected": "With Keyrill enabled, the no-echo fixture receives public input and the manual command follows the native baseline. Keyrill performs zero character reads, composition starts and character writes."}
+    ]},
+    "application-off": {"evidence": ["generated", "physical"], "oracles": "exclusion", "scenarios": [
+      {"id": "ordinary-field-off", "mode": "off", "expected": "With the Notepad application policy set to Off and the Keyrill source selected, typing ghbdtn and Space in the qualified document inserts ghbdtn and one Space. Keyrill performs zero character reads, composition starts and character writes."}
     ]},
     "faults": {"evidence": ["controlled"], "oracles": "fault", "scenarios": [
       {"id": "denied-edit-session", "mode": "manual", "expected": "Denied or deferred edit session refuses before writing and passes ordinary input once."},
@@ -84,7 +87,7 @@
     {"application": "proof-editor", "id": "read-only", "architectures": "both", "groups": ["excluded"]},
     {"application": "proof-editor", "id": "password", "architectures": "both", "groups": ["excluded"]},
     {"application": "proof-provider", "id": "native-boundaries", "architectures": "both", "groups": ["faults"]},
-    {"application": "notepad", "id": "document", "architectures": "installed", "groups": ["ordinary", "editor"]},
+    {"application": "notepad", "id": "document", "architectures": "installed", "groups": ["ordinary", "editor", "application-off"]},
     {"application": "notepad", "id": "find", "architectures": "installed", "groups": ["excluded"]},
     {"application": "chrome", "id": "text-input", "architectures": "installed", "groups": ["ordinary", "editor", "browser"]},
     {"application": "chrome", "id": "textarea", "architectures": "installed", "groups": ["ordinary", "editor", "browser"]},

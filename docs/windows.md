@@ -908,7 +908,9 @@ shortcuts, cancellation, and no-echo isolation still require the dedicated physi
 
 `native/windows/proof/acceptance.json` defines the approved application/control matrix and its
 controlled, generated-input, and physical-input obligations. Both native architecture tracks
-are required. Installed-application metadata supplies each actual application architecture.
+are required. At least one installed target application beyond the proof editor must run as x86
+through the registered service. Installed-application metadata records each application architecture;
+its process/module observation must agree.
 Historical C++ results retain their separate source and artifact identities.
 
 ```powershell
@@ -919,12 +921,91 @@ cargo xtask windows acceptance results .audit/windows-final-results.json
 The first command validates and prints the expanded matrix. Full check and sanitizer commands
 also validate its structure. The second checks a complete local ledger against the current
 source and both production identities, fresh publication, armed/observed client identity,
-required oracle records, and hashes of existing local evidence files. One session artifact can
-support several obligations. Pending, missing, stale, duplicate, or mismatched records fail.
+required oracle records, and hashes of existing local evidence files. Schema 2 also requires
+`package: {"path": "candidate-directory", "sha256": "<package.json SHA-256>"}`. Paths resolve
+relative to the ledger directory. The validator opens and verifies the actual complete package,
+checks its exact manifest hash and architecture identities, and compares observed DLL file hashes
+with the package's verified x64 and x86 DLL receipts. Rebuilding the same source does not identify
+the same candidate bytes. One session artifact can support several obligations. Pending, missing,
+stale, duplicate, or mismatched records fail. Schema 1 ledgers remain historical evidence and
+cannot pass this gate. Collect the missing evidence before creating a schema 2 ledger.
 
-Ledger validation establishes record consistency. Independent artifact review and physical
-application observations establish the behavior claimed by those records. Keep completed ledgers
-and real desktop evidence under uncommitted `.audit/`.
+Each generated/physical result has `activation: "registered"` and a separate
+`moduleObservation: {"path": "module-1234.json", "sha256": "<observation SHA-256>"}`.
+The proof editor may use `activation: "registration-free"`; it never supplies the installed x86
+application requirement. The observation contains exactly `schema: 1`, `processId`,
+`processCreated`, `target`, `dllSha256`, and `packageManifestSha256`. The captured manifest hash
+binds the run to the complete candidate, including the other architecture and resources.
+Changing only the ledger's package hash cannot reuse an earlier run. The PID and Windows FILETIME creation time must match
+the result, and `target` is the full MSVC target triple. Existing screenshots and logs retain
+their separate `artifact` reference and format. Controlled records use `activation: "controlled"`
+and `moduleObservation: null`. They can exercise a test-API DLL or pure provider schedules and
+do not assert that an installed production DLL ran.
+
+Collect a module observation in 64-bit PowerShell 7 while the exact target process remains live.
+Use the PID already bound by `KeyrillHostInspect`; the following read-only procedure opens no
+document and prints no executable path or text. An unavailable module, denied access, exit, or
+changed identity leaves the observation unavailable.
+The procedure derives the manifest from the loaded DLL's installed version directory.
+For a registration-free proof-editor copy, replace the `$candidateDirectory = Split-Path ...`
+assignment below with the path to the reviewed package from which you copied the DLL.
+
+```powershell
+$targetProcessId = 1234
+$observationPath = '.audit/module-1234.json'
+$observedProcess = [Diagnostics.Process]::GetProcessById($targetProcessId)
+$created = $observedProcess.StartTime.ToUniversalTime().ToFileTimeUtc()
+$modules = @($observedProcess.Modules | Where-Object ModuleName -IEQ 'KeyrillTsf.dll')
+if ($modules.Count -ne 1) { throw 'Exactly one loaded Keyrill module required' }
+$modulePath = $modules[0].FileName
+$candidateDirectory = Split-Path -Parent (Split-Path -Parent $modulePath)
+$candidateHash = (Get-FileHash -LiteralPath (Join-Path $candidateDirectory 'package.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+$file = [IO.File]::Open($modulePath, 'Open', 'Read', 'Read')
+try {
+    $dllHash = (Get-FileHash -InputStream $file -Algorithm SHA256).Hash.ToLowerInvariant()
+    $reader = [IO.BinaryReader]::new($file, [Text.Encoding]::UTF8, $true)
+    $file.Position = 0
+    if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'Invalid PE module' }
+    $file.Position = 0x3c
+    $peOffset = $reader.ReadInt32()
+    $file.Position = $peOffset
+    if ($reader.ReadUInt32() -ne 0x4550) { throw 'Invalid PE signature' }
+    $target = switch ($reader.ReadUInt16()) {
+        0x8664 { 'x86_64-pc-windows-msvc' }
+        0x014c { 'i686-pc-windows-msvc' }
+        default { throw 'Unsupported module architecture' }
+    }
+    $observedProcess.Refresh()
+    $after = @($observedProcess.Modules | Where-Object ModuleName -IEQ 'KeyrillTsf.dll')
+    if ($observedProcess.HasExited -or
+        $observedProcess.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $created -or
+        $after.Count -ne 1 -or $after[0].FileName -ine $modulePath) {
+        throw 'Target process or module changed'
+    }
+    $observation = [ordered]@{ schema = 1; processId = $targetProcessId
+        processCreated = $created; target = $target; dllSha256 = $dllHash
+        packageManifestSha256 = $candidateHash }
+    [IO.File]::WriteAllText($observationPath, ($observation | ConvertTo-Json),
+        [Text.UTF8Encoding]::new($false))
+} finally { $file.Dispose() }
+Get-FileHash -LiteralPath $observationPath -Algorithm SHA256
+```
+
+This records the file hash at an OS-observed loaded-module path, with the file held against
+replacement during observation. It does not hash relocated memory or prove an activation route.
+Record `registered` only after launching the ordinary installed application without a proof
+activation manifest and activating the registered Keyrill profile. Check the appropriate
+Registry32 or Registry64 `HKLM\Software\Classes\CLSID\{1A746212-84DB-4ACF-88B3-CAAA26352774}\InprocServer32`
+against that loaded module as corroborating evidence. Check for a conflicting per-user
+`HKCU\Software\Classes` override in the same registry view. A matching registration path alone does
+not prove registered activation. Repeat module capture around the application run and retain
+the matching service publications. A new process or module requires fresh evidence.
+
+Ledger fields such as activation route, result status, and oracle verdicts are maintainer reports.
+Module observations record runtime facts collected by the procedure above; the validator checks
+their integrity and candidate binding but cannot attest who collected them or how. Independent
+artifact review and physical application observations establish the behavior claimed by those
+records. Keep completed ledgers and real desktop evidence under uncommitted `.audit/`.
 
 ## Shared model and personal vocabulary
 

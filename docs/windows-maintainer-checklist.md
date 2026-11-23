@@ -40,6 +40,7 @@ physical-validation handoff.
 
 - [ ] Implement shared native TSF admission for validated control contracts across applications.
 - [ ] Preserve secure, read-only, excluded, uncertain, and unsupported-control pass-through.
+- [ ] Keep the Keyrill source selected and automatic correction enabled for the excluded-field checks. Use Manual for Terminal no-echo. Check per-app Off separately in the qualified Notepad document by typing `ghbdtn` followed by Space and confirming the literal input.
 - [ ] Complete x64/x86 builds, ABI handling, matching-bitness loading, and registration logic.
 - [ ] Complete keyboard, manual-command, reversal, source-switch, and lifecycle behavior.
 - [ ] Complete persistent settings, per-app restrictions, vocabulary, status, and settings UI.
