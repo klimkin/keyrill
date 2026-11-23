@@ -9,30 +9,12 @@ fn no_admission(c: &Client) {
     assert!(!c.host.trace.borrow().contains(&"range.ACP"));
 }
 
-fn test_key_down(c: &Client, key: u8) -> bool {
-    let sink = c.manager.key_sink.borrow().clone().unwrap().sink.clone();
-    let mut eaten = windows_core::BOOL(1);
-    unsafe {
-        assert_eq!(
-            (sink.vtable().OnTestKeyDown)(
-                sink.as_raw(),
-                c.context_a.as_raw(),
-                WPARAM(key.into()),
-                LPARAM(1),
-                &mut eaten
-            ),
-            S_OK
-        );
-    }
-    eaten.as_bool()
-}
-
 #[test]
 fn early_key_test_leaves_native_typing_to_unrecognized_fields() {
     for class in ["Scintilla", "Edit"] {
         let c = Client::ordinary(class);
         for key in b"XYZ" {
-            if !test_key_down(&c, *key) {
+            if !c.test_key_down(*key) {
                 c.a.native_text(&[u16::from(key.to_ascii_lowercase())]);
             }
         }
@@ -43,10 +25,10 @@ fn early_key_test_leaves_native_typing_to_unrecognized_fields() {
     }
 
     let c = Client::notepad();
-    assert!(test_key_down(&c, b'G'));
+    assert!(c.test_key_down(b'G'));
     // A file dialog in a supported process has a different focused field.
     c.host.field_facts.borrow_mut().as_mut().unwrap().focus = HWND::default();
-    assert!(!test_key_down(&c, b'G'));
+    assert!(!c.test_key_down(b'G'));
     no_admission(&c);
     assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));
 
@@ -60,7 +42,7 @@ fn early_key_test_leaves_native_typing_to_unrecognized_fields() {
                 S_OK
             );
         });
-        assert!(!test_key_down(&c, b'G'), "{boundary}");
+        assert!(!c.test_key_down(b'G'), "{boundary}");
         c.host.drained();
         no_admission(&c);
         assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));

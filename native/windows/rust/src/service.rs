@@ -96,6 +96,16 @@ struct State {
 }
 
 impl State {
+    fn application_blocks_input(&self) -> bool {
+        self.application_off
+            || (self.owned.is_none()
+                && self.pending_ready.as_ref().is_some_and(|ready| {
+                    ready.configuration.as_ref().is_some_and(|configuration| {
+                        configuration.application == crate::settings::AppPolicy::Off
+                    })
+                }))
+    }
+
     fn pending_restricts(&self) -> bool {
         self.pending_ready
             .as_ref()
@@ -1459,14 +1469,7 @@ impl Service {
     ) -> Result<AdmittedKey, HRESULT> {
         use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
         let state = self.state.borrow();
-        if state.application_off
-            || (state.owned.is_none()
-                && state.pending_ready.as_ref().is_some_and(|ready| {
-                    ready.configuration.as_ref().is_some_and(|configuration| {
-                        configuration.application == crate::settings::AppPolicy::Off
-                    })
-                }))
-        {
+        if state.application_blocks_input() {
             drop(state);
             self.refuse(Stage::Key, Cause::Predicate, S_OK);
             return Err(S_OK);
@@ -2347,7 +2350,7 @@ impl Service {
             Some(Cause::Inactive)
         } else if state.stopped {
             Some(Cause::Stopped)
-        } else if state.application_off || state.mode == 0 {
+        } else if state.application_blocks_input() || state.mode == 0 {
             Some(Cause::ModeUnset)
         } else if state.busy || state.admitting_key || state.observing_host {
             Some(Cause::Reentry)
@@ -2392,7 +2395,7 @@ impl Service {
             if facts.call.exact()
                 && crate::field::classify(&facts.value).is_some()
                 && self.current(guard)
-                && !self.state.borrow().application_off
+                && !self.state.borrow().application_blocks_input()
             {
                 self.count(Counter::Interested);
                 return true;
