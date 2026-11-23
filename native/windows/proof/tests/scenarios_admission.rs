@@ -8,6 +8,64 @@ fn no_admission(c: &Client) {
     assert_eq!(c.a.reads.get(), 0);
     assert!(!c.host.trace.borrow().contains(&"range.ACP"));
 }
+
+fn test_key_down(c: &Client, key: u8) -> bool {
+    let sink = c.manager.key_sink.borrow().clone().unwrap().sink.clone();
+    let mut eaten = windows_core::BOOL(1);
+    unsafe {
+        assert_eq!(
+            (sink.vtable().OnTestKeyDown)(
+                sink.as_raw(),
+                c.context_a.as_raw(),
+                WPARAM(key.into()),
+                LPARAM(1),
+                &mut eaten
+            ),
+            S_OK
+        );
+    }
+    eaten.as_bool()
+}
+
+#[test]
+fn early_key_test_leaves_native_typing_to_unrecognized_fields() {
+    for class in ["Scintilla", "Edit"] {
+        let c = Client::ordinary(class);
+        for key in b"XYZ" {
+            if !test_key_down(&c, *key) {
+                c.a.native_text(&[u16::from(key.to_ascii_lowercase())]);
+            }
+        }
+        oracle::document(&c, "xyz", 10);
+        oracle::no_effects(&c);
+        assert_eq!(c.a.reads.get(), 0);
+        assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));
+    }
+
+    let c = Client::notepad();
+    assert!(test_key_down(&c, b'G'));
+    // A file dialog in a supported process has a different focused field.
+    c.host.field_facts.borrow_mut().as_mut().unwrap().focus = HWND::default();
+    assert!(!test_key_down(&c, b'G'));
+    no_admission(&c);
+    assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));
+
+    for boundary in ["GetActiveView", "GetWnd", "capture"] {
+        let c = Client::notepad();
+        let sink = c.service.cast::<ITfThreadMgrEventSink>().unwrap();
+        let other = c.context_b.clone();
+        c.host.on(boundary, 0, move || unsafe {
+            assert_eq!(
+                (sink.vtable().OnPushContext)(sink.as_raw(), other.as_raw()),
+                S_OK
+            );
+        });
+        assert!(!test_key_down(&c, b'G'), "{boundary}");
+        c.host.drained();
+        no_admission(&c);
+        assert!(!c.host.trace.borrow().contains(&"RequestEditSession"));
+    }
+}
 #[test]
 fn explicit_ordinary_application_scopes_admit_one_owned_mark() {
     for scope in [IS_DEFAULT, IS_TEXT] {

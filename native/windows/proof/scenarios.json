@@ -2247,6 +2247,7 @@
       "rustTests": [
         "controlled::correction_preserves_complete_documents",
         "controlled::scenarios_admission::compartment_variant_signatures_distinguish_unset_from_malformed",
+        "controlled::scenarios_admission::early_key_test_leaves_native_typing_to_unrecognized_fields",
         "controlled::scenarios_admission::exceptional_notepad_scope_requires_fresh_exact_failure",
         "controlled::scenarios_admission::explicit_ordinary_application_scopes_admit_one_owned_mark",
         "controlled::scenarios_admission::notepad_exact_unavailable_scope_has_bounded_authority",
@@ -2296,6 +2297,9 @@
         "controlled::scenarios_editing::correction_and_reversal_preserve_owned_range",
         "controlled::scenarios_editing::denied_requests_and_rejected_compositions_preserve_key_order",
         "controlled::scenarios_editing::every_exercised_native_boundary_stops_writes_after_nested_input",
+        "controlled::scenarios_editing::canonical_composition_refusal_allows_a_later_fresh_word",
+        "controlled::scenarios_editing::late_composition_start_cannot_stop_a_new_activation",
+        "controlled::scenarios_editing::uncertain_composition_start_passes_unwritten_key_and_stops_without_repair",
         "controlled::scenarios_editing::failed_outer_request_after_mark_keeps_consumption_and_expires_callback",
         "controlled::scenarios_editing::hresult_before_and_after_native_effect_replaces_throw_schedules",
         "controlled::scenarios_editing::late_old_termination_and_focus_roundtrip_cannot_revive_authority",

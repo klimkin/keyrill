@@ -8,10 +8,25 @@ use std::ptr::NonNull;
 
 pub(crate) struct Engine(NonNull<NativeEngine>);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Action {
+    Pass,
+    Mark,
+    Finish,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Disposition {
+    Pass,
+    Consumed,
+    Replan,
+}
+
 pub(crate) struct Plan {
     pub(crate) id: u64,
-    pub(crate) action: u32,
-    pub(crate) disposition: u32,
+    pub(crate) action: Action,
+    pub(crate) disposition: Disposition,
     pub(crate) expected: Vec<u16>,
     pub(crate) mark: Vec<u16>,
 }
@@ -70,8 +85,19 @@ impl Engine {
         let view = plan.view();
         Ok(Plan {
             id: view.plan_id,
-            action: view.action,
-            disposition: view.disposition,
+            action: match view.action {
+                0 => Action::Pass,
+                1 => Action::Mark,
+                2 => Action::Finish,
+                3 => Action::Unavailable,
+                _ => return Err(5),
+            },
+            disposition: match view.disposition {
+                0 => Disposition::Pass,
+                1 => Disposition::Consumed,
+                2 => Disposition::Replan,
+                _ => return Err(5),
+            },
             expected: view.expected.to_vec(),
             mark: view.mark.to_vec(),
         })

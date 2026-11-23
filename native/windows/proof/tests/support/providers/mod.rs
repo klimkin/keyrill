@@ -671,6 +671,7 @@ pub const BOUNDARIES: &[&str] = &[
     "SimulatePreservedKey",
     "Skip",
     "StartComposition",
+    "StartComposition.after",
     "TakeOwnership",
     "TestKeyDown",
     "TestKeyUp",
