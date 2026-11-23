@@ -386,7 +386,7 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
 
     unsafe fn OnTestKeyDown(
         &self,
-        _: *mut c_void,
+        context: *mut c_void,
         _: WPARAM,
         _: LPARAM,
         eaten: *mut BOOL,
@@ -397,8 +397,8 @@ impl RawKeyEventSink_Impl for ServiceCom_Impl {
         // SAFETY: the SDK caller supplies one writable BOOL output.
         unsafe { eaten.write(BOOL(0)) };
         self.service.checked(|| {
-            // SAFETY: the output remains writable after the owner-thread admission check.
-            unsafe { eaten.write(BOOL(self.service.interested() as i32)) };
+            // SAFETY: TSF retains the receiving context and writable output for this callback.
+            unsafe { eaten.write(BOOL(self.service.interested(context) as i32)) };
             S_OK
         })
     }
