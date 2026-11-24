@@ -95,6 +95,24 @@ unsafe extern "system" fn KeyrillTestCounts(objects: *mut i32, workers: *mut i32
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "system" fn KeyrillTestSetKeyTranslation(
+    handle: *mut c_void,
+    translation: Option<foreign::win32::KeyTranslation>,
+) -> HRESULT {
+    fence(|| {
+        if handle.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: the caller retains this test handle and translation code until the service drains.
+        let handle = unsafe { &*handle.cast::<Handle>() };
+        handle.service.checked(|| {
+            handle.service.test_key_translation.set(translation);
+            S_OK
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "system" fn KeyrillTestTranslate(
     key: WPARAM,
     flags: LPARAM,
@@ -117,7 +135,7 @@ unsafe extern "system" fn KeyrillTestTranslate(
         }
         // SAFETY: the SDK test transport supplies exactly 256 readable keyboard-state bytes.
         let state = unsafe { &*state.cast::<[u8; 256]>() };
-        match keys::translate(key, flags, layout, state) {
+        match keys::translate(key, flags, layout, state, foreign::win32::KEY_TRANSLATION) {
             Ok(keys::Key::Modifier) => {
                 // SAFETY: the validated output remains writable.
                 unsafe { modifier_only.write(BOOL(1)) };
@@ -552,7 +570,7 @@ unsafe extern "system" fn KeyrillTestProbe(
                         output.completed = BOOL(result.completed as i32);
                         output.effect = match result.effect {
                             Effect::Unattempted => 0,
-                            Effect::Attempted => 1,
+                            Effect::CompositionAttempted | Effect::Attempted => 1,
                             Effect::Verified => 2,
                         };
                     }

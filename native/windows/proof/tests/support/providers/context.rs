@@ -354,7 +354,12 @@ unsafe extern "system" fn ITfContextComposition_StartComposition(
                 serial: d.starts.get(),
             }));
             d.effect(Effect::Start, span.get(), vec![]);
-            a4.write(value);
+            p.hit("StartComposition.after");
+            if p.null("StartComposition") {
+                drop(ITfComposition::from_raw(value));
+            } else {
+                a4.write(value);
+            }
             p.result("StartComposition")
         })
     }

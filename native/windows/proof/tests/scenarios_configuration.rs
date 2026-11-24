@@ -217,10 +217,9 @@ fn generic_field_policy_and_command_routes_never_grant_authority() {
                     S_OK
                 );
             }
-            assert_eq!(
-                eaten.as_bool(),
-                policy != 2,
-                "application Off declines interest"
+            assert!(
+                !eaten.as_bool(),
+                "unsupported fields must receive native typing under every policy"
             );
             assert!(!down(&c, b'G' as u16));
             let mut chord = [0; 256];
