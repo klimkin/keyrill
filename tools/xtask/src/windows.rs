@@ -13,8 +13,25 @@ const PUBLIC_EXPORTS: [&str; 2] = ["DllCanUnloadNow", "DllGetClassObject"];
 const PRODUCTION_PACKAGES: &[&str] = &["keyrill-windows", "keyrill-windows-setup"];
 const PRODUCTION_EXECUTABLES: &[&str] = &["KeyrillRegister", "KeyrillSettings", "KeyrillSetup"];
 
+fn verification_directory(
+    root: &Path,
+    target: Target,
+    instrumentation: Instrumentation,
+) -> PathBuf {
+    let directory_name = match instrumentation {
+        Instrumentation::None => "target/windows-rust-check",
+        Instrumentation::Address => "target/windows-rust-sanitize",
+    };
+    root.join(match target {
+        Target::X64 => directory_name.to_owned(),
+        Target::X86 => format!("{directory_name}-x86"),
+    })
+}
+
 pub(crate) fn common_checks(root: &Path, target: Target) -> Result<()> {
     require_target(target)?;
+    let build_directory =
+        verification_directory(root, target, Instrumentation::None).join("cargo-build");
     for arguments in [
         vec!["fmt", "--all", "--", "--check"],
         vec!["fmt", "--manifest-path", "fuzz/Cargo.toml", "--", "--check"],
@@ -61,6 +78,9 @@ pub(crate) fn common_checks(root: &Path, target: Target) -> Result<()> {
         } else {
             command.arg(arguments[0]);
         }
+        if arguments[0] == "build" {
+            command.env("CARGO_BUILD_BUILD_DIR", &build_directory);
+        }
         command
             .current_dir(root)
             .args(&arguments[1..])
@@ -77,7 +97,7 @@ pub(crate) struct Build {
     pub(crate) identity: Identity,
     pub(crate) test_executable: PathBuf,
     runtime_path: Option<OsString>,
-    compiler_environment: Vec<(&'static str, &'static str)>,
+    compiler_environment: Vec<(&'static str, OsString)>,
 }
 
 impl Build {
@@ -229,26 +249,29 @@ pub(crate) fn build(
         instrumentation,
     };
     let before = identity(root, config)?;
-    let (directory_name, environment, runtime_path) = match instrumentation {
+    let (mut environment, runtime_path) = match instrumentation {
         Instrumentation::None => (
-            "target/windows-rust-check",
-            vec![("KEYRILL_INSTRUMENTATION", "none"), ("RUSTFLAGS", "")],
+            vec![
+                ("KEYRILL_INSTRUMENTATION", "none".into()),
+                ("RUSTFLAGS", "".into()),
+            ],
             None,
         ),
         Instrumentation::Address => (
-            "target/windows-rust-sanitize",
             vec![
-                ("KEYRILL_INSTRUMENTATION", "address"),
-                ("RUSTC_BOOTSTRAP", "1"),
-                ("RUSTFLAGS", "-Zsanitizer=address -Cdebuginfo=1"),
+                ("KEYRILL_INSTRUMENTATION", "address".into()),
+                ("RUSTC_BOOTSTRAP", "1".into()),
+                ("RUSTFLAGS", "-Zsanitizer=address -Cdebuginfo=1".into()),
             ],
             Some(sanitize::prepare(root)?),
         ),
     };
-    let directory = root.join(match target {
-        Target::X64 => directory_name.to_owned(),
-        Target::X86 => format!("{directory_name}-x86"),
-    });
+    let directory = verification_directory(root, target, instrumentation);
+    // Final outputs remain separate so the two DLL variants never share a destination.
+    environment.push((
+        "CARGO_BUILD_BUILD_DIR",
+        directory.join("cargo-build").into_os_string(),
+    ));
     fs::create_dir_all(directory.join("tests"))?;
     let mut binary_hashes = BTreeMap::new();
     let target_directory = directory.join("cargo-production");
