@@ -1,7 +1,53 @@
 use super::*;
 use crate::support::providers::{PROFILE_EN, SERVICE_ID, source_profile};
+use crate::worker_support::{Events, PUBLISHED, WorkerApi};
 use std::rc::Rc;
+use std::sync::{Arc, atomic::Ordering};
+use windows::Win32::System::Threading::{SetEvent, WaitForSingleObject};
 use windows::Win32::UI::TextServices::*;
+
+// Construct before Fixture so the client stops its worker before these hooks drain.
+struct Publications {
+    api: WorkerApi,
+    events: Arc<Events>,
+}
+impl Publications {
+    fn new() -> Self {
+        let api = WorkerApi::load();
+        let events = Events::new();
+        events.pause.store(u32::MAX, Ordering::Release);
+        assert!(unsafe { (api.set)(&events.hooks()) }.as_bool());
+        Self { api, events }
+    }
+    fn pause(&self) {
+        assert!(unsafe { (self.api.set)(std::ptr::null()) }.as_bool());
+        self.events.pause.store(PUBLISHED, Ordering::Release);
+        self.events.published.wait();
+        self.events.published.reset();
+        assert!(!self.events.failed.load(Ordering::Acquire));
+    }
+    fn next(&self) {
+        self.events.resume.signal();
+        // Do not pump messages here. The service must see this packet for the first
+        // time at the intended key or callback boundary, not in timer maintenance.
+        self.events.published.wait();
+        self.events.published.reset();
+        assert!(!self.events.failed.load(Ordering::Acquire));
+    }
+}
+impl Drop for Publications {
+    fn drop(&mut self) {
+        let cleared = unsafe { (self.api.set)(std::ptr::null()) }.as_bool();
+        self.events.pause.store(u32::MAX, Ordering::Release);
+        let resumed = unsafe { SetEvent(self.events.resume.0) }.is_ok();
+        let finished = unsafe { WaitForSingleObject(self.events.finished.0, 15000) };
+        if !std::thread::panicking() {
+            assert!(cleared && resumed);
+            assert_eq!(finished, WAIT_OBJECT_0);
+            self.events.check();
+        }
+    }
+}
 
 fn source_status(c: &Client) -> u32 {
     let read: unsafe extern "system" fn(*mut c_void, *mut u32) -> HRESULT =
@@ -783,7 +829,9 @@ fn source_callback_capable_retirement_revokes_before_source_mutation() {
 fn source_pending_disable_vetoes_before_mutation_and_during_language_call() {
     for during in [false, true] {
         for preference in ["source", "automatic", "manual", "off"] {
+            let publications = Rc::new(Publications::new());
             let fixture = Fixture::new(1);
+            publications.pause();
             fixture.boundary();
             let mut bytes = fixture.settings.bytes(
                 preference != "automatic",
@@ -799,15 +847,16 @@ fn source_pending_disable_vetoes_before_mutation_and_during_language_call() {
             }
             if during {
                 let key = fixture.settings.key;
+                let publications = Rc::clone(&publications);
                 fixture.c.host.on("language.change", 0, move || unsafe {
                     RegSetValueExW(key, w!("Preferences"), None, REG_BINARY, Some(&bytes))
                         .ok()
                         .unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(1100));
+                    publications.next();
                 });
             } else {
                 fixture.settings.write(&bytes);
-                std::thread::sleep(std::time::Duration::from_millis(1100));
+                publications.next();
             }
             let before = fixture.c.a.writes.get();
             assert!(!down(&fixture.c, b'G' as u16));
@@ -1172,10 +1221,12 @@ fn source_matching_observations_require_actual_readback_and_fresh_authority() {
 
 #[test]
 fn source_unchanged_worker_publications_keep_intent_and_pending_snapshot() {
+    let publications = Publications::new();
     let fixture = Fixture::new(1);
+    publications.pause();
     fixture.boundary();
     let before = runtime(&fixture.c.service);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    publications.next();
     let maintain: unsafe extern "system" fn(*mut c_void) -> HRESULT =
         unsafe { fixture.c.api.export(b"KeyrillTestMaintain\0") };
     assert_eq!(unsafe { maintain(fixture.c.handle) }, S_OK);
@@ -1275,12 +1326,15 @@ fn source_pc_oem_letters_use_actual_finish_and_target_translation() {
 fn source_changed_complete_configuration_cancels_prepared_staged_and_inflight_intent() {
     for dictionary in [false, true] {
         for point in ["prepared", "staged", "during"] {
+            let publications = Rc::new(Publications::new());
             let fixture = Fixture::new(1);
+            publications.pause();
             fixture.boundary();
             let before = runtime(&fixture.c.service);
             let key = fixture.settings.key;
             let bytes = fixture.settings.bytes(true, "en.add", None);
             let path = fixture.settings.files.path("en.add");
+            let pending_publications = Rc::clone(&publications);
             let publish = move || {
                 if dictionary {
                     std::fs::write(&path, b"publicword\n").unwrap();
@@ -1291,15 +1345,19 @@ fn source_changed_complete_configuration_cancels_prepared_staged_and_inflight_in
                     .ok()
                     .unwrap();
                 }
+                pending_publications.next();
+                if dictionary {
+                    // A dictionary needs two matching observations before the worker
+                    // publishes its new owner rather than retaining the old one.
+                    pending_publications.next();
+                }
             };
             if point == "during" {
                 fixture.c.host.on("language.change", 0, move || {
                     publish();
-                    std::thread::sleep(std::time::Duration::from_millis(1600));
                 });
             } else {
                 publish();
-                std::thread::sleep(std::time::Duration::from_millis(1600));
                 if point == "staged" {
                     let maintain: unsafe extern "system" fn(*mut c_void) -> HRESULT =
                         unsafe { fixture.c.api.export(b"KeyrillTestMaintain\0") };
