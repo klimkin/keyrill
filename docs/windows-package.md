@@ -242,10 +242,14 @@ receipt preserved for inspection.
 Rollback uses the previous verified package through the same reconciler. Same-package repair
 preserves that previous version. An unrecognized changed registration is a conflict, including
 during uninstall. Uninstall preserves preferences and all dictionary contents. Old version files
-remain available to loaded clients. `cleanup` verifies the exact file receipt, keeps in-use files,
-and durably records partial cleanup for a later retry. The current and previous installed versions
-are retained for rollback. After uninstall, a Setup copy outside those directories can remove them
-once client processes and the old Setup have exited.
+remain available to loaded clients. `cleanup` verifies the receipt's file hashes through exclusive
+handles and uses those same handles to mark the files for deletion. This prevents a client from
+loading an image between verification and removal. In-use files defer cleanup, and the receipt
+allows a retry after a partial removal. The current and previous installed versions are retained for
+rollback. After uninstall, a Setup copy outside those directories can remove them once client
+processes and the old Setup have exited.
+
+[Windows file disposition](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
 
 The automated tests use synthetic PE parser fixtures, injected journal providers, real disposable
 HKCU `Software/KeyrillTests` values, and temporary files. The original-name x86 Setup test

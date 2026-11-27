@@ -1,4 +1,4 @@
-<!-- translation of docs/learn/objective-c.md at 19001764f0b914c2bc84c87f6dcb610503c5be70 -->
+<!-- translation of docs/learn/objective-c.md at 768f2c9ba7811cc30bb939403ccda69ed20525ae -->
 
 # Objective-C
 
@@ -230,13 +230,13 @@ ARC (он описан ниже, в разделе «Память: ARC») осв
 пользуется свойство; контроллер делает это, чтобы передавать новый блок Secure Input принадлежащим
 ему сеансам:
 
-[`native/macos/src/KRController.mm:168`](../../native/macos/src/KRController.mm#L168)
+[`native/macos/src/KRController.mm:175`](../../native/macos/src/KRController.mm#L175)
 
 ```obj-c++
 @synthesize secureInputEnabled = _secureInputEnabled;
 ```
 
-[`native/macos/src/KRController.mm:197-201`](../../native/macos/src/KRController.mm#L197-L201)
+[`native/macos/src/KRController.mm:204-208`](../../native/macos/src/KRController.mm#L204-L208)
 
 ```obj-c++
 - (void)setSecureInputEnabled:(BOOL (^)(void))block {
@@ -398,7 +398,7 @@ typedef NS_ENUM(uint8_t, KRInputStatus) {
 [синтаксис литералов](https://clang.llvm.org/docs/ObjectiveCLiterals.html) позволяет записывать их
 кратко. Настройка для отдельного приложения обновляется так:
 
-[`native/macos/src/KRController.mm:522-527`](../../native/macos/src/KRController.mm#L522-L527)
+[`native/macos/src/KRController.mm:520-525`](../../native/macos/src/KRController.mm#L520-L525)
 
 ```obj-c++
   NSMutableDictionary *tiers = [runtime.tierOverrides mutableCopy];
@@ -510,7 +510,7 @@ InputMethodKit отпускает последнюю ссылку на данн�
 проявляется при работе, отложенной на будущее, и адаптер решает эту задачу по схеме *«слабая
 ссылка — сильная ссылка»*:
 
-[`native/macos/src/KRController.mm:304-310`](../../native/macos/src/KRController.mm#L304-L310)
+[`native/macos/src/KRController.mm:311-317`](../../native/macos/src/KRController.mm#L311-L317)
 
 ```obj-c++
   // Permissions granted after launch take effect here; tap creation can't run in a callback
@@ -532,7 +532,7 @@ InputMethodKit отпускает последнюю ссылку на данн�
 Противоположное решение также принято сознательно. Работа, которую загрузчик словарей ставит в свою
 очередь, захватывает `self` сильно и явно пишет `self->`, чтобы захват был виден при чтении:
 
-[`native/macos/src/KRRuntime.mm:295-302`](../../native/macos/src/KRRuntime.mm#L295-L302)
+[`native/macos/src/KRRuntime.mm:296-303`](../../native/macos/src/KRRuntime.mm#L296-L303)
 
 ```obj-c++
   dispatch_async(_queue, ^{
@@ -549,7 +549,7 @@ InputMethodKit отпускает последнюю ссылку на данн�
 очередь отпускает блок. Повторяющийся таймер — другое дело: таймер живёт столько же, сколько
 загрузчик, и удерживал бы его вечно, поэтому обработчик таймера захватывает `self` слабо:
 
-[`native/macos/src/KRRuntime.mm:329-336`](../../native/macos/src/KRRuntime.mm#L329-L336)
+[`native/macos/src/KRRuntime.mm:331-338`](../../native/macos/src/KRRuntime.mm#L331-L338)
 
 ```obj-c++
   _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
@@ -673,7 +673,7 @@ Objective-C++ различно; почему это важно для данно
 пункт меню хранит селектор и при выборе посылает это сообщение своей цели. Каждый пункт «Correction
 in This App» в меню ввода указывает на метод из одной строки:
 
-[`native/macos/src/KRController.mm:542-545`](../../native/macos/src/KRController.mm#L542-L545)
+[`native/macos/src/KRController.mm:540-543`](../../native/macos/src/KRController.mm#L540-L543)
 
 ```obj-c++
 - (void)useDefaultTier:(id)sender {
@@ -703,7 +703,7 @@ in This App» в меню ввода указывает на метод из о�
 [`IMKServer`](https://developer.apple.com/documentation/inputmethodkit/imkserver) и бессрочно
 запускает **цикл выполнения** (англ. run loop) — цикл событий главного потока:
 
-[`native/macos/src/main.mm:99-127`](../../native/macos/src/main.mm#L99-L127)
+[`native/macos/src/main.mm:100-128`](../../native/macos/src/main.mm#L100-L128)
 
 ```obj-c++
 int main() {

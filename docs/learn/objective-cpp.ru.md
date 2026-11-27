@@ -1,4 +1,4 @@
-<!-- translation of docs/learn/objective-cpp.md at e7bde69d3356bfc482d757917363bb626a5dd3bb -->
+<!-- translation of docs/learn/objective-cpp.md at 48785d3f17d6183c5488c1ade35ae0aead1d0165 -->
 
 # Objective-C++
 
@@ -172,7 +172,7 @@ struct CallbackScope {
 };
 ```
 
-[`native/macos/src/KRController.mm:616-620`](../../native/macos/src/KRController.mm#L616-L620)
+[`native/macos/src/KRController.mm:614-618`](../../native/macos/src/KRController.mm#L614-L618)
 
 ```obj-c++
 - (BOOL)handleEvent:(NSEvent *)event client:(id)sender {
@@ -242,7 +242,7 @@ KRSourceStatus &source(KRRuntimeStatus &status, int index) {
 }
 ```
 
-[`native/macos/src/KRRuntime.mm:206-207`](../../native/macos/src/KRRuntime.mm#L206-L207)
+[`native/macos/src/KRRuntime.mm:207-208`](../../native/macos/src/KRRuntime.mm#L207-L208)
 
 ```obj-c++
       source(_status, i) =
@@ -265,7 +265,7 @@ KRSourceStatus &source(KRRuntimeStatus &status, int index) {
 освобождением его памяти, так что поле `std::string` вначале пусто и уничтожается вместе со своим
 объектом, как член класса C++. Рассмотрим несколько видов полей на примере загрузчика словарей:
 
-[`native/macos/src/KRRuntime.mm:117-139`](../../native/macos/src/KRRuntime.mm#L117-L139)
+[`native/macos/src/KRRuntime.mm:107-130`](../../native/macos/src/KRRuntime.mm#L107-L130)
 
 ```obj-c++
 @implementation KRRuntime {
@@ -280,6 +280,7 @@ KRSourceStatus &source(KRRuntimeStatus &status, int index) {
   uint64_t _interval;
   dispatch_source_t _timer;
   bool _configured[kSources];
+  bool _learnedWordsEnabled;
   bool _started;
   __weak id<KRVocabularyAdopting> _target;
   // Written on main; read by observation rounds to keep retrying a refused adoption
@@ -316,7 +317,7 @@ KRSourceStatus &source(KRRuntimeStatus &status, int index) {
 передаёт настроенное состояние рабочей очереди — по значению, чтобы у двух очередей не было общих
 изменяемых данных:
 
-[`native/macos/src/KRRuntime.mm:316-326`](../../native/macos/src/KRRuntime.mm#L316-L326)
+[`native/macos/src/KRRuntime.mm:318-328`](../../native/macos/src/KRRuntime.mm#L318-L328)
 
 ```obj-c++
 // Hands the configured state to the work queue, then observes immediately and periodically
@@ -347,7 +348,7 @@ C++, который этот массив содержит, — может.
 и освобождает их при создании, копировании и уничтожении структуры. Меню ввода описывает свои пункты
 локальной таблицей:
 
-[`native/macos/src/KRController.mm:442-461`](../../native/macos/src/KRController.mm#L442-L461)
+[`native/macos/src/KRController.mm:450-469`](../../native/macos/src/KRController.mm#L450-L469)
 
 ```obj-c++
   struct Choice {
