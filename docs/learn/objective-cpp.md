@@ -160,7 +160,7 @@ struct CallbackScope {
 };
 ```
 
-[`native/macos/src/KRController.mm:616-620`](../../native/macos/src/KRController.mm#L616-L620)
+[`native/macos/src/KRController.mm:614-618`](../../native/macos/src/KRController.mm#L614-L618)
 
 ```obj-c++
 - (BOOL)handleEvent:(NSEvent *)event client:(id)sender {
@@ -226,7 +226,7 @@ KRSourceStatus &source(KRRuntimeStatus &status, int index) {
 }
 ```
 
-[`native/macos/src/KRRuntime.mm:206-207`](../../native/macos/src/KRRuntime.mm#L206-L207)
+[`native/macos/src/KRRuntime.mm:207-208`](../../native/macos/src/KRRuntime.mm#L207-L208)
 
 ```obj-c++
       source(_status, i) =
@@ -249,7 +249,7 @@ methods that run their constructors when the object is allocated and their destr
 memory is freed, so a `std::string` field starts empty and is destroyed with its object, like a
 member of a C++ class. The dictionary loader's fields show several kinds:
 
-[`native/macos/src/KRRuntime.mm:117-139`](../../native/macos/src/KRRuntime.mm#L117-L139)
+[`native/macos/src/KRRuntime.mm:107-130`](../../native/macos/src/KRRuntime.mm#L107-L130)
 
 ```obj-c++
 @implementation KRRuntime {
@@ -264,6 +264,7 @@ member of a C++ class. The dictionary loader's fields show several kinds:
   uint64_t _interval;
   dispatch_source_t _timer;
   bool _configured[kSources];
+  bool _learnedWordsEnabled;
   bool _started;
   __weak id<KRVocabularyAdopting> _target;
   // Written on main; read by observation rounds to keep retrying a refused adoption
@@ -296,7 +297,7 @@ A block that captures a C++ object copies it with the object's copy constructor.
 loader hands its configured state to the work queue: by value, so the two queues share nothing that
 changes:
 
-[`native/macos/src/KRRuntime.mm:316-326`](../../native/macos/src/KRRuntime.mm#L316-L326)
+[`native/macos/src/KRRuntime.mm:318-328`](../../native/macos/src/KRRuntime.mm#L318-L328)
 
 ```obj-c++
 // Hands the configured state to the work queue, then observes immediately and periodically
@@ -327,7 +328,7 @@ The reverse also works. A C++ struct may hold pointers to Objective-C objects, a
 releases them as the struct is created, copied and destroyed. The input menu describes its items as
 a local table:
 
-[`native/macos/src/KRController.mm:442-461`](../../native/macos/src/KRController.mm#L442-L461)
+[`native/macos/src/KRController.mm:450-469`](../../native/macos/src/KRController.mm#L450-L469)
 
 ```obj-c++
   struct Choice {

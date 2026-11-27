@@ -7,12 +7,14 @@
   <key>CFBundleIdentifier</key><string>org.keyrill.inputmethod.alpha</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Keyrill Alpha</string>
+  <key>CFBundleDisplayName</key><string>Keyrill Alpha</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>9</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSAppDataUsageDescription</key><string>Keyrill reads the words you added with Learn Spelling so it can leave them as typed. It never changes this list or sends it over the network. You can turn this off in Keyrill Settings.</string>
   <key>InputMethodConnectionName</key><string>org.keyrill.inputmethod.alpha_Connection</string>
   <key>InputMethodServerControllerClass</key><string>KeyrillAlphaController</string>
   <key>tsInputMethodIconFileKey</key><string>KeyrillTemplate.tif</string>
@@ -27,6 +29,7 @@
       <dict>
         <key>TISInputSourceID</key><string>org.keyrill.inputmethod.alpha.English</string>
         <key>TISIntendedLanguage</key><string>en</string>
+        <key>TISIconLabels</key><dict><key>Primary</key><string>EN</string></dict>
         <key>tsInputModeMenuIconFileKey</key><string>KeyrillEnglishTemplate.tif</string>
         <key>tsInputModeAlternateMenuIconFileKey</key><string>KeyrillEnglishSelected.tif</string>
         <key>tsInputModePaletteIconFileKey</key><string>KeyrillEnglishPalette.tif</string>
@@ -38,6 +41,7 @@
       <dict>
         <key>TISInputSourceID</key><string>org.keyrill.inputmethod.alpha.Russian</string>
         <key>TISIntendedLanguage</key><string>ru</string>
+        <key>TISIconLabels</key><dict><key>Primary</key><string>RU</string></dict>
         <key>tsInputModeMenuIconFileKey</key><string>KeyrillRussianTemplate.tif</string>
         <key>tsInputModeAlternateMenuIconFileKey</key><string>KeyrillRussianSelected.tif</string>
         <key>tsInputModePaletteIconFileKey</key><string>KeyrillRussianPalette.tif</string>
