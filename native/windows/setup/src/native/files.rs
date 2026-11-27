@@ -4,11 +4,15 @@ use keyrill_windows_build::Digest;
 use keyrill_windows_build::artifact::Package;
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicU64, Ordering};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree, MAX_PATH};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, HLOCAL, LocalFree, MAX_PATH,
+};
 use windows::Win32::Security::Authorization::*;
 use windows::Win32::Security::*;
 use windows::Win32::Storage::FileSystem::*;
@@ -16,7 +20,7 @@ use windows::Win32::System::Com::*;
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY};
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Shell::*;
-use windows_core::{Interface, PCWSTR, PWSTR};
+use windows_core::{HRESULT, Interface, PCWSTR, PWSTR};
 
 const DACL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
 static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
@@ -363,17 +367,60 @@ pub(super) fn shortcut(root: &Path, target: &Path) -> Result<Value> {
 }
 pub(super) fn cleanup_version(root: &Path, directory: &Path) -> Result<bool> {
     match cleanup_attempt(root, directory) {
+        Ok(()) => Ok(true),
         Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|e| matches!(e.raw_os_error(), Some(32 | 33))) =>
+            if [ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION]
+                .into_iter()
+                .any(|code| {
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(std::io::Error::raw_os_error)
+                        == Some(code.0 as i32)
+                        || error
+                            .downcast_ref::<windows_core::Error>()
+                            .map(windows_core::Error::code)
+                            == Some(HRESULT::from_win32(code.0))
+                }) =>
         {
             Ok(false)
         }
-        result => result,
+        Err(error) => Err(error),
     }
 }
-fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
+
+fn open_cleanup_file(path: &Path, expected_hash: &str) -> Result<File> {
+    let mut file = OpenOptions::new()
+        .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | DELETE.0)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err("cleanup file is not an ordinary file".into());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if Digest::of_bytes(&bytes).to_string() != expected_hash {
+        return Err("cleanup refuses changed package bytes".into());
+    }
+    Ok(file)
+}
+
+fn mark_cleanup_file(file: &File) -> Result<()> {
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: the verified exclusive file handle and disposition buffer live through the call.
+    unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )?;
+    }
+    Ok(())
+}
+
+fn cleanup_attempt(root: &Path, directory: &Path) -> Result<()> {
     ordinary_ancestors(directory)?;
     let identity = directory
         .file_name()
@@ -400,25 +447,23 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
         for (name, hash) in package.files() {
             files.insert(name.clone(), json!(hash));
         }
-        files.insert(
-            "package.json".into(),
-            json!(Digest::of_bytes(&fs::read(directory.join("package.json"))?).to_string()),
-        );
+        files.insert("package.json".into(), json!(package.digest()));
         atomic(
             &receipt,
             &serde_json::to_vec(&json!({"schema":1,"package":identity,"files":files}))?,
         )?;
         files
     };
-    let mut paths = Vec::new();
+    if files.get("package.json").and_then(Value::as_str) != Some(identity) {
+        return Err("cleanup manifest hash does not match the version identity".into());
+    }
     let mut held = Vec::new();
     for (name, hash) in &files {
+        let hash = hash.as_str().ok_or("cleanup hash missing")?;
         if Path::new(name)
             .components()
             .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            || !keyrill_windows_build::artifact::is_digest(
-                hash.as_str().ok_or("cleanup hash missing")?,
-            )
+            || !keyrill_windows_build::artifact::is_digest(hash)
         {
             return Err("cleanup receipt path or hash invalid".into());
         }
@@ -427,32 +472,12 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
         if !path.exists() {
             continue;
         }
-        if Digest::of_bytes(&fs::read(&path)?).to_string()
-            != hash.as_str().ok_or("cleanup hash missing")?
-        {
-            return Err("cleanup refuses changed package bytes".into());
-        }
-        let file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&path)
-        {
-            Ok(file) => file,
-            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => return Ok(false),
-            Err(error) => return Err(error.into()),
-        };
-        held.push(file);
-        paths.push(path);
+        held.push(open_cleanup_file(&path, hash)?);
+    }
+    for file in &held {
+        mark_cleanup_file(file)?;
     }
     drop(held);
-    for path in paths {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => return Ok(false),
-            Err(error) => return Err(error.into()),
-        }
-    }
     fn empty_tree(path: &Path) -> Result<()> {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -467,7 +492,7 @@ fn cleanup_attempt(root: &Path, directory: &Path) -> Result<bool> {
     }
     empty_tree(directory)?;
     fs::remove_file(receipt)?;
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -683,5 +708,80 @@ mod tests {
         fs::write(version.join("LICENSE"), b"foreign replacement").unwrap();
         assert!(cleanup_version(&install.0, &version).is_err());
         assert!(version.join("x64/KeyrillTsf.dll").exists());
+    }
+
+    #[test]
+    fn cleanup_excludes_live_and_late_image_loads() {
+        use windows::Win32::Foundation::FreeLibrary;
+        use windows::Win32::System::LibraryLoader::*;
+        use windows_core::w;
+
+        let fixture = Fixture::new();
+        let manifest = b"Public interrupted cleanup fixture";
+        let identity = Digest::of_bytes(manifest).to_string();
+        let version = fixture.0.join("versions").join(&identity);
+        fs::create_dir_all(&version).unwrap();
+        let path = version.join("cleanup-public-image.dll");
+        let license = b"Public sibling file";
+        fs::write(version.join("package.json"), manifest).unwrap();
+        fs::write(version.join("LICENSE"), license).unwrap();
+        let mut system_path = [0u16; 1024];
+        // SAFETY: query the process's already loaded system DLL without changing its references.
+        let length = unsafe {
+            let system = GetModuleHandleW(w!("kernel32.dll")).unwrap();
+            GetModuleFileNameW(Some(system), &mut system_path) as usize
+        };
+        assert!((1..system_path.len()).contains(&length));
+        fs::copy(String::from_utf16(&system_path[..length]).unwrap(), &path).unwrap();
+        let expected = Digest::of_bytes(&fs::read(&path).unwrap()).to_string();
+        let receipt = fixture.0.join(format!("cleanup-{identity}.json"));
+        let record = |manifest_hash: &str| {
+            serde_json::to_vec(&json!({"schema": 1, "package": identity, "files": {
+                "LICENSE": Digest::of_bytes(license).to_string(),
+                "package.json": manifest_hash,
+                "cleanup-public-image.dll": expected
+            }}))
+            .unwrap()
+        };
+        let replacement = b"Unvalidated replacement manifest";
+        fs::write(version.join("package.json"), replacement).unwrap();
+        fs::write(&receipt, record(&Digest::of_bytes(replacement).to_string())).unwrap();
+        assert!(
+            cleanup_version(&fixture.0, &version)
+                .unwrap_err()
+                .to_string()
+                .contains("manifest hash")
+        );
+        assert_eq!(fs::read(version.join("LICENSE")).unwrap(), license);
+        assert_eq!(fs::read(version.join("package.json")).unwrap(), replacement);
+        fs::write(version.join("package.json"), manifest).unwrap();
+        fs::write(&receipt, record(&identity)).unwrap();
+        let wide = path_wide(&path).unwrap();
+        let load = || {
+            // SAFETY: the exact private copy is mapped without running its entry point or imports.
+            unsafe { LoadLibraryExW(PCWSTR(wide.as_ptr()), None, DONT_RESOLVE_DLL_REFERENCES) }
+        };
+
+        let mapped = load().unwrap();
+        let cleanup = cleanup_version(&fixture.0, &version);
+        // SAFETY: LoadLibraryExW transferred this reference to the fixture.
+        unsafe { FreeLibrary(mapped) }.unwrap();
+        assert!(!cleanup.unwrap());
+        assert_eq!(fs::read(version.join("LICENSE")).unwrap(), license);
+        assert_eq!(fs::read(version.join("package.json")).unwrap(), manifest);
+        assert!(receipt.exists());
+
+        let held = open_cleanup_file(&path, &expected).unwrap();
+        if let Ok(mapped) = load() {
+            // SAFETY: this branch owns the unexpected successful load.
+            unsafe { FreeLibrary(mapped) }.unwrap();
+            panic!("a verified file was mapped before the cleanup handle closed");
+        }
+        mark_cleanup_file(&held).unwrap();
+        drop(held);
+        assert!(!path.exists());
+        assert!(cleanup_version(&fixture.0, &version).unwrap());
+        assert!(!version.exists());
+        assert!(!receipt.exists());
     }
 }
